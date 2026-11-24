@@ -10,11 +10,18 @@ fn overcurrent_maps_ignore_disabled_ports_but_include_usbr_without_pdo() {
     config.usb2[15] = Usb2Port::mid(Some(3)); // USBr: OC mapping, not physical PDO
     config.usb2[2].overcurrent = Some(3); // disabled port must NOT claim OC
     config.usb3[4] = Usb3Port::standard(Some(1));
-    let maps = config.maps().unwrap();
+    let maps = config.maps_for(dmi::Kind::H).unwrap();
     assert_eq!(maps.usb2_oc[3], (1 << 1) | (1 << 15));
     assert_eq!(maps.usb3_oc[1], 1 << 4);
     assert_eq!(maps.usb2_disable, 0x3fff & !(1 << 1));
     assert_eq!(maps.usb3_disable, 0x3ff & !(1 << 4));
+
+    // LP rejects enabled ports past 12 USB2 / 6 USB3 and masks PDO to 10/6.
+    assert_eq!(config.maps_for(dmi::Kind::Lp).unwrap_err(), Error::Policy);
+    config.usb2[15] = Usb2Port::DISABLED;
+    let lp_maps = config.maps_for(dmi::Kind::Lp).unwrap();
+    assert_eq!(lp_maps.usb2_disable, 0x3ff & !(1 << 1));
+    assert_eq!(lp_maps.usb3_disable, 0x3f & !(1 << 4));
 }
 #[test]
 fn invalid_usb_afe_and_oc_policy_is_rejected_without_transport_activity() {

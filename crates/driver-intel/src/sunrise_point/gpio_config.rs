@@ -68,13 +68,17 @@ pub const fn native(pad: Pad, pull: Pull, reset: Reset, function: NativeFunction
 }
 /// `PAD_CFG_GPO`: GPIO mode, RX disabled, no pull and edge detection off.
 pub const fn output(pad: Pad, high: bool, reset: Reset) -> PadConfig {
+    output_with_pull(pad, high, Pull::None, reset)
+}
+/// `PAD_CFG_TERM_GPO`: GPIO output with explicit internal termination pull.
+pub const fn output_with_pull(pad: Pad, high: bool, pull: Pull, reset: Reset) -> PadConfig {
     PadConfig {
         pad,
         dw0: PadDw0::RESET.val(reset as u32).value
             | PadDw0::TRIGGER.val(Trigger::Off as u32).value
             | PadDw0::RX_DISABLE::SET.value
             | PadDw0::TX_STATE.val(high as u32).value,
-        dw1: 0,
+        dw1: PadDw1::PULL.val(pull as u32).value,
     }
 }
 /// `PAD_CFG_GPI_TRIG_OWN`; the owner bit is source metadata, not a hardware

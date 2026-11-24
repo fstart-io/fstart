@@ -551,7 +551,7 @@ impl Engine<'_> {
             }
             for b in 0..8 {
                 let m = &s.margin_results[ch][rank][b];
-                if m[0] == 0 || m[1] == 0 {
+                if m[0] + m[1] == 0 {
                     return Err(failed(ch, rank, b));
                 }
                 w.eh[ch][b] = (m[0] + m[1]) / 10;
@@ -904,7 +904,7 @@ impl Engine<'_> {
                         }
                         for b in 0..8 {
                             let m = &s.margin_results[ch][rank][b];
-                            if m[2] == 0 || m[3] == 0 {
+                            if v == 0 && m[2] + m[3] == 0 {
                                 return Err(failed(ch, rank, b));
                             }
                             w.eyes[v][ch][b] = [m[2], m[3]];
@@ -1083,7 +1083,7 @@ impl Engine<'_> {
                 if mask & (1 << ch) != 0 {
                     for b in 0..8 {
                         let m = &s.margin_results[ch][rank][b];
-                        if m[2] == 0 || m[3] == 0 {
+                        if m[2] + m[3] == 0 {
                             return Err(failed(ch, rank, b));
                         }
                         w.scale[ch][b] = if cfg.two_dimensional {
@@ -1114,7 +1114,7 @@ impl Engine<'_> {
                     if mask & (1 << ch) != 0 {
                         for b in 0..8 {
                             let m = &s.margin_results[ch][rank][b];
-                            if m[0] == 0 || m[1] == 0 {
+                            if t == 0 && m[0] + m[1] == 0 {
                                 return Err(failed(ch, rank, b));
                             }
                             w.eyes[t][ch][b] = [m[0], m[1]];

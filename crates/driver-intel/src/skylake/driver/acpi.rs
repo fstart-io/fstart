@@ -33,7 +33,22 @@ impl AcpiDevice for IntelSkylake {
         self.acpi_ready(config);
         // The platform renders _CRS/PDRC from the allocator's canonical
         // PciRoot. Do not duplicate resource ownership in the SA namespace.
+        // Publish standard Windows _OSI detection in \_SB._INI so OSPM
+        // recognizes Win8+ support (e.g. Linux native intel_backlight).
         let mut bytes: Vec<u8> = acpi_dsl! {
+            Scope("\\") {
+                Name("OSYS", 0x07d0u32);
+            }
+            Method("_INI", 0, NotSerialized) {
+                If (CondRefOf(_OSI)) {
+                    If (_OSI("Windows 2001")) { Store(0x07d1u32, #{const "\\OSYS"}); }
+                    If (_OSI("Windows 2006")) { Store(0x07d6u32, #{const "\\OSYS"}); }
+                    If (_OSI("Windows 2009")) { Store(0x07d9u32, #{const "\\OSYS"}); }
+                    If (_OSI("Windows 2012")) { Store(0x07dcu32, #{const "\\OSYS"}); }
+                    If (_OSI("Windows 2013")) { Store(0x07ddu32, #{const "\\OSYS"}); }
+                    If (_OSI("Windows 2015")) { Store(0x07dfu32, #{const "\\OSYS"}); }
+                }
+            }
             Device(#{const name Self::ACPI_PCI_ROOT_NAME}) {
                 Name("_HID",EisaId("PNP0A08"));
                 Name("_CID",EisaId("PNP0A03"));
@@ -43,7 +58,26 @@ impl AcpiDevice for IntelSkylake {
         }
         .into();
         if config.post_memory.devices.igd {
-            let igd:Vec<u8>=acpi_dsl! { Device(#{const name Self::ACPI_IGD_NAME}) { Name("_ADR",0x00020000u32); } }.into();
+            let gttmmio = {
+                #[cfg(not(target_os = "none"))]
+                if self.host_baseline {
+                    0
+                } else {
+                    self.scanout
+                        .map(|s| s.gtt_mmio_base)
+                        .or_else(|| EcamDevice::new(0, 2, 0).memory_bar(0x10))
+                        .unwrap_or(0)
+                }
+                #[cfg(target_os = "none")]
+                {
+                    self.scanout
+                        .map(|s| s.gtt_mmio_base)
+                        .or_else(|| EcamDevice::new(0, 2, 0).memory_bar(0x10))
+                        .unwrap_or(0)
+                }
+            };
+            let igd =
+                crate::igd::gfx0_acpi_node_with::<Self>(gttmmio, crate::igd::GfxBacklight::Gen9);
             bytes.extend_from_slice(
                 &fstart_acpi::aml_linker::scope_vec(
                     crate::namespace::pci_root::<Self>().as_str(),
@@ -78,7 +112,8 @@ impl AcpiDevice for IntelSkylake {
             fstart_arch::x86::mp::online_apic_ids().count(),
             crate::cpu::skylake_aml::Limits::current(),
         );
-        bytes.extend_from_slice(&crate::cpu::skylake_aml::cpu_devices_aml(cpus, &limits));
+        let cpus_aml = crate::cpu::skylake_aml::cpu_devices_aml(cpus, &limits);
+        bytes.extend(fstart_acpi::aml_linker::scope_vec("\\", &cpus_aml).expect("CPU scope"));
         bytes
     }
     fn extra_tables(&self, config: &Config) -> Vec<Vec<u8>> {

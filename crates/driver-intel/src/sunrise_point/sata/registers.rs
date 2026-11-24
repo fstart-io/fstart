@@ -8,11 +8,18 @@ register_bitfields![u8,
         INIT OFFSET(5) NUMBITS(1) []
     ],
     pub(super) Mode [ RAID OFFSET(0) NUMBITS(1) [] ],
+    pub(super) LpMode [ RAID OFFSET(6) NUMBITS(1) [] ],
     pub(super) RegisterLock [ LOCK OFFSET(7) NUMBITS(1) [] ],
     pub(super) CycleLow [ ENABLE OFFSET(0) NUMBITS(1) [] ]
 ];
 register_bitfields![u16,
     pub(super) PortEnable [ PORTS OFFSET(0) NUMBITS(8) [] ],
+    pub(super) LpMap [ SPEED_DISABLE OFFSET(8) NUMBITS(3) [] ],
+    pub(super) LpPcs [
+        PORTS OFFSET(0) NUMBITS(3) [],
+        PRESENT OFFSET(8) NUMBITS(3) [],
+        OOB_RETRY OFFSET(15) NUMBITS(1) []
+    ],
     pub(super) RstFeatures [
         HDD_UNLOCK OFFSET(6) NUMBITS(1) [],
         LED_LOCATE OFFSET(7) NUMBITS(1) []
@@ -22,6 +29,10 @@ register_bitfields![u32,
     pub(super) Map [
         DISABLE OFFSET(0) NUMBITS(8) [],
         SPEED_DISABLE OFFSET(16) NUMBITS(8) []
+    ],
+    pub(super) LpClockGate [
+        LOW OFFSET(0) NUMBITS(9) [],
+        DISABLE OFFSET(24) NUMBITS(3) []
     ],
     pub(super) General [
         SCFD OFFSET(10) NUMBITS(1) [],

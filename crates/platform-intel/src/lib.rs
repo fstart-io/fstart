@@ -207,6 +207,19 @@ pub trait IntelEarlyPlatform:
     fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
         None
     }
+    /// Take platform-owned CAR storage for a copy of the bootblock's entry
+    /// page tables so `--debug flash-console` can program SPI flash without
+    /// page-table walks hitting the busy flash chip. Only platforms with
+    /// ample CAR space (e.g. Skylake 256 KiB CAR) opt in.
+    #[cfg(all(
+        feature = "flash-console",
+        feature = "bundle-bootblock",
+        target_arch = "x86_64"
+    ))]
+    fn bootblock_car_page_tables()
+    -> Option<&'static mut fstart_arch::x86::boot::paging::EntryTables> {
+        None
+    }
     type Northbridge: IntelNorthbridgeDriver
         + fstart_arch::x86::cpu::intel::smm::SmramControl
         + NorthbridgeAcpi<Self::Northbridge>;

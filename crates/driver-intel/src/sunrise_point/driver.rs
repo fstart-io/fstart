@@ -335,6 +335,26 @@ impl IntelSunrisePoint {
     pub fn failure(&self) -> Option<Error> {
         self.failure
     }
+    /// Read a GPIO pad's input level (`RX_STATE`) via the live PCH PCR window.
+    pub fn read_gpio(&self, pad: gpio::Pad) -> Result<bool, Error> {
+        let kind = self.family()?;
+        Ok(gpio::Gpio {
+            pcr: &self.pcr,
+            kind,
+            program_itss_polarity: false,
+        }
+        .read_rx_state(pad)?)
+    }
+    /// Update an unlocked GPIO pad's output level (`TX_STATE`).
+    pub fn write_gpio(&self, pad: gpio::Pad, high: bool) -> Result<(), Error> {
+        let kind = self.family()?;
+        Ok(gpio::Gpio {
+            pcr: &self.pcr,
+            kind,
+            program_itss_polarity: false,
+        }
+        .write_tx_state(pad, high)?)
+    }
     fn finish(&mut self, result: Result<(), Error>, next: Phase) -> Result<(), ServiceError> {
         match result {
             Ok(()) => {
@@ -352,13 +372,11 @@ impl IntelSunrisePoint {
     fn reject(&mut self) -> Result<(), ServiceError> {
         self.finish(Err(Error::Phase), Phase::Failed)
     }
-    fn family(&self) -> Result<(), Error> {
+    fn family(&self) -> Result<super::dmi::Kind, Error> {
         if fstart_pci::ecam::base() != self.config.ecam.base as usize {
             return Err(Error::Decode);
         }
-        if hsio::Silicon::read(&self.lpc)?.kind() != super::dmi::Kind::H {
-            return Err(Error::Policy);
-        }
+        let kind = hsio::Silicon::read(&self.lpc)?.kind();
         let root = EcamDevice::from_root(
             PciRootInfo {
                 segment: 0,
@@ -370,10 +388,11 @@ impl IntelSunrisePoint {
             PciAddress::new(0, 0, 0, 0),
         )
         .ok_or(Error::Policy)?;
-        early_sa::require_ecam(&root, self.config.ecam).map_err(|_| Error::Decode)
+        early_sa::require_ecam(&root, self.config.ecam).map_err(|_| Error::Decode)?;
+        Ok(kind)
     }
-    fn existing(&self) -> Result<(), Error> {
-        self.family()?;
+    fn existing(&self) -> Result<super::dmi::Kind, Error> {
+        let kind = self.family()?;
         pmc::require_decodes(&self.pmc)?;
         if self.p2sb.memory_bar(0x10) != Some(u64::from(pcr::DEFAULT_BASE))
             || self.p2sb.read16(4) & 2 == 0
@@ -392,7 +411,7 @@ impl IntelSunrisePoint {
         if !TcoIo::new(tco::BASE).is_halted() {
             return Err(Error::Decode);
         }
-        Ok(())
+        Ok(kind)
     }
 }
 impl IntelSunrisePoint {
@@ -481,10 +500,13 @@ impl IntelSunrisePoint {
         }
         self.phase = Phase::Running;
         let result = (|| {
+            let kind = hsio::Silicon::read(&self.lpc)?.kind();
             unsafe {
+                let pmc_regs = PmcRegisters::at(pmc::PWRM_BASE);
                 self.thermal_outcome = Some(thermal::initialize(
                     self.config.thermal,
                     &self.pcr,
+                    pmc_regs,
                     self.thermal_bar.ok_or(Error::Phase)?,
                 )?);
                 self.lan_outcome = Some(lan::finish(
@@ -498,6 +520,7 @@ impl IntelSunrisePoint {
                 )?);
                 self.hda_outcome = Some(hda::initialize(
                     &self.pcr,
+                    kind,
                     self.config.hda,
                     self.hda_bar,
                     display_audio,
@@ -508,11 +531,12 @@ impl IntelSunrisePoint {
                     self.config.usb,
                     &self.pcr,
                     &self.p2sb,
+                    &self.pmc,
                     self.usb_bar.ok_or(Error::Phase)?,
                     &mut Udelay,
                 )?);
                 power::configure_native(
-                    PmcRegisters::at(pmc::PWRM_BASE),
+                    pmc_regs,
                     &self.pmc,
                     &self.lpc,
                     &self.pcr,
@@ -520,6 +544,7 @@ impl IntelSunrisePoint {
                 )?;
                 self.smi = Some(
                     smi::Controller::bind(
+                        kind,
                         self.config.ecam,
                         tco::BASE,
                         self.config.power.after_power_loss,
@@ -581,11 +606,11 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
         self.phase = Phase::Running;
         let result = (|| {
             fstart_log::debug!("PCH pre-console: identify silicon and verify ECAM");
-            self.family()?;
+            let kind = self.family()?;
             fstart_log::debug!("PCH pre-console: P2SB decode");
             pcr::enable_p2sb(&self.p2sb, pcr::DEFAULT_BASE)?;
             fstart_log::debug!("PCH pre-console: PMC decodes");
-            pmc::enable_decodes(&self.pmc, &self.pcr)?;
+            pmc::enable_decodes(&self.pmc, &self.pcr, kind)?;
             fstart_log::debug!("PCH pre-console: capture wake/reset state");
             let pmc = unsafe { PmcRegisters::at(pmc::PWRM_BASE) };
             let saved = early::capture_power_state(pmc)?;
@@ -622,7 +647,7 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
                 cse::assign_bar(&self.heci, self.config.heci1_base)?;
             }
             fstart_log::debug!("PCH pre-console: verify decodes");
-            self.existing()
+            self.existing().map(|_| ())
         })();
         self.finish(result, Phase::ColdDecoded)
     }
@@ -637,7 +662,11 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
         let result = (|| {
             self.existing()?;
             let mut cse = unsafe { cse::MmioCse::bind(self.heci, Budgets::SOURCE) }?;
-            cse.initialize(&mut Udelay)?;
+            if !cse.status()?.is_debug_mode() {
+                cse.initialize(&mut Udelay)?;
+            } else {
+                fstart_log::warn!("PCH early: ME in Debug mode; skipping HECI init");
+            }
             let observed = unsafe {
                 early::pre_memory(
                     &self.pcr,
@@ -672,10 +701,11 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
         }
         self.phase = Phase::Running;
         let result = (|| {
-            self.existing()?;
+            let kind = self.existing()?;
             if !self.config.pads.is_empty() {
                 gpio::Gpio {
                     pcr: &self.pcr,
+                    kind,
                     program_itss_polarity: true,
                 }
                 .configure_pads(self.config.pads)?;
@@ -699,25 +729,30 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
                 &mut Udelay,
             )? {
                 hsio::SyncOutcome::InSync => {}
-                hsio::SyncOutcome::ColdResetRequired => return Err(Error::ColdResetRequired),
+                hsio::SyncOutcome::ColdResetRequired => {
+                    fstart_log::info!("HSIO: settings updated; issuing cold reset");
+                    pmc::clear_dram_initialized(&self.pmc)?;
+                    fstart_arch::x86::boot::full_reset();
+                }
             }
             #[allow(clippy::drop_non_drop)] // the HECI binding ends here
             drop(cse);
             unsafe {
-                hda::prepare(&self.pcr, PmcRegisters::at(pmc::PWRM_BASE), self.config.hda)?;
+                let pmc_regs = PmcRegisters::at(pmc::PWRM_BASE);
+                hda::prepare(&self.pcr, pmc_regs, self.config.hda)?;
                 self.sata_early = Some(sata::prepare(
                     &self.pcr,
-                    PmcRegisters::at(pmc::PWRM_BASE),
+                    pmc_regs,
                     self.config.sata,
                     &mut Udelay,
                 )?);
                 self.auxiliary = Some(auxiliary::prepare(
                     self.config.auxiliary,
                     &self.pcr,
-                    PmcRegisters::at(pmc::PWRM_BASE),
+                    pmc_regs,
                 )?);
-                self.usb_early = Some(usb::prepare(&self.pcr, &mut Udelay)?);
-                self.me.initialize(&self.pcr, scratch, &mut Udelay)?;
+                self.usb_early = Some(usb::prepare(&self.pcr, pmc_regs, &mut Udelay)?);
+                self.me.initialize(&self.pcr, kind, scratch, &mut Udelay)?;
                 interconnect::before_root_ports(
                     &self.pcr,
                     &self.p2sb,

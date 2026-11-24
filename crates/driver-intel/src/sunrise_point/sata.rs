@@ -149,6 +149,7 @@ pub(crate) enum Early {
     Ahci(Prepared),
 }
 pub(crate) struct Prepared {
+    kind: super::dmi::Kind,
     policy: AhciPolicy,
     device_id: u16,
     cycle_capabilities: u8,
@@ -175,6 +176,7 @@ fn require_unlocked(device: &EcamDevice) -> Result<(), Error> {
 }
 struct Controller {
     device: EcamDevice,
+    kind: super::dmi::Kind,
 }
 impl Controller {
     // This binds the existing generic index/data transport to SATA SIR; no
@@ -284,74 +286,132 @@ impl Controller {
         }
     }
     fn early_pci(&self, lpc: &EcamDevice, delay: &mut impl DelayNs) -> Result<(), Error> {
-        self.recipe(&[(0x98, 0x1ff, 0x183), (0xa4, 0, 1 << 6)]);
-        if !matches!(
-            lpc.device_id(),
-            0xa149
-                | 0xa14a
-                | 0xa150
-                | 0xa14b
-                | 0xa2d2
-                | 0xa2d3
-                | 0xa2ce
-                | 0xa2cf
-                | 0xa2d4
-                | 0xa2d0
-                | 0xa2d1
-        ) {
-            self.recipe(&[(0x9c, 0, 1 << 22)]);
-        }
-        self.recipe(&[(0x9c, 0x1fec, 0x209c_0224)]);
-        let decode = unsafe { self.device.register::<u8, Decode::Register>(0x9c) };
-        // Only the low write-once byte. Do NOT consume the REGLOCK byte.
-        decode.modify(Decode::ASSEL.val(0) + Decode::MSS.val(2) + Decode::INIT::SET);
-        if !decode.matches_all(Decode::ASSEL.val(0) + Decode::MSS.val(2) + Decode::INIT::SET) {
-            return Err(Error::Readback);
-        }
-        let pcs = unsafe { self.device.register::<u16, PortEnable::Register>(0x94) };
-        pcs.modify(PortEnable::PORTS.val(255));
-        delay.delay_us(2);
-        // SMS is byte 2; a dword write would prematurely write REGLOCK=0.
-        let mode = unsafe { self.device.register::<u8, Mode::Register>(0x9e) };
-        mode.modify(Mode::RAID::CLEAR);
-        if mode.is_set(Mode::RAID) {
-            return Err(Error::Readback);
+        match self.kind {
+            super::dmi::Kind::H => {
+                self.recipe(&[(0x98, 0x1ff, 0x183), (0xa4, 0, 1 << 6)]);
+                if !matches!(
+                    lpc.device_id(),
+                    0xa149
+                        | 0xa14a
+                        | 0xa150
+                        | 0xa14b
+                        | 0xa2d2
+                        | 0xa2d3
+                        | 0xa2ce
+                        | 0xa2cf
+                        | 0xa2d4
+                        | 0xa2d0
+                        | 0xa2d1
+                ) {
+                    self.recipe(&[(0x9c, 0, 1 << 22)]);
+                }
+                self.recipe(&[(0x9c, 0x1fec, 0x209c_0224)]);
+                let decode = unsafe { self.device.register::<u8, Decode::Register>(0x9c) };
+                // Only the low write-once byte. Do NOT consume the REGLOCK byte.
+                decode.modify(Decode::ASSEL.val(0) + Decode::MSS.val(2) + Decode::INIT::SET);
+                if !decode
+                    .matches_all(Decode::ASSEL.val(0) + Decode::MSS.val(2) + Decode::INIT::SET)
+                {
+                    return Err(Error::Readback);
+                }
+                let pcs = unsafe { self.device.register::<u16, PortEnable::Register>(0x94) };
+                pcs.modify(PortEnable::PORTS.val(255));
+                delay.delay_us(2);
+                // SMS is byte 2; a dword write would prematurely write REGLOCK=0.
+                let mode = unsafe { self.device.register::<u8, Mode::Register>(0x9e) };
+                mode.modify(Mode::RAID::CLEAR);
+                if mode.is_set(Mode::RAID) {
+                    return Err(Error::Readback);
+                }
+            }
+            super::dmi::Kind::Lp => {
+                unsafe { self.device.register::<u32, LpClockGate::Register>(0x94) }
+                    .modify(LpClockGate::LOW.val(0x183));
+                let pcs = unsafe { self.device.register::<u16, LpPcs::Register>(0x92) };
+                pcs.modify(LpPcs::OOB_RETRY::SET);
+                let r98 = unsafe { self.device.register::<u32, ()>(0x98) };
+                r98.set((r98.get() & !0x1fec) | 0x20dc_0224);
+                let decode = unsafe { self.device.register::<u8, Decode::Register>(0x9c) };
+                decode.modify(Decode::ASSEL.val(0) + Decode::MSS.val(2) + Decode::INIT::SET);
+                if !decode
+                    .matches_all(Decode::ASSEL.val(0) + Decode::MSS.val(2) + Decode::INIT::SET)
+                {
+                    return Err(Error::Readback);
+                }
+                pcs.modify(LpPcs::PORTS.val(0x7));
+                delay.delay_us(2);
+                let mode = unsafe { self.device.register::<u8, LpMode::Register>(0x90) };
+                mode.modify(LpMode::RAID::CLEAR);
+                if mode.is_set(LpMode::RAID) {
+                    return Err(Error::Readback);
+                }
+            }
         }
         Ok(())
     }
     fn present(&self) -> u8 {
-        unsafe { self.device.register::<u32, Pcs::Register>(0x94) }.read(Pcs::PRESENT) as u8
+        match self.kind {
+            super::dmi::Kind::H => {
+                unsafe { self.device.register::<u32, Pcs::Register>(0x94) }.read(Pcs::PRESENT) as u8
+            }
+            super::dmi::Kind::Lp => unsafe { self.device.register::<u16, LpPcs::Register>(0x92) }
+                .read(LpPcs::PRESENT) as u8,
+        }
     }
     fn power_optimization(&self, hotplug: u8) {
-        self.recipe(&[
-            (0x90, 0, u32::from(!hotplug)),
-            (0x80, 0, u32::from(hotplug) << 16),
-            (0x8c, 0, 0x00ff00ff),
-            (
-                0xa0,
-                (1 << 23) | (1 << 21) | (1 << 18),
-                (1 << 22) | (1 << 20) | (1 << 19) | (1 << 15),
-            ),
-            (0x84, 0, 0x00ff00ff),
-            (0xa4, 0, 1 << 14),
-            (0xcc, u32::MAX, 0x883c9001),
-            (0xd0, 0xffff, 0x880a),
-            (0xc8, 0, 1 << 3),
-            (0xc8, 0, 1),
-            (0xc8, 0, 1 << 1),
-        ]);
+        match self.kind {
+            super::dmi::Kind::H => self.recipe(&[
+                (0x90, 0, u32::from(!hotplug)),
+                (0x80, 0, u32::from(hotplug) << 16),
+                (0x8c, 0, 0x00ff00ff),
+                (
+                    0xa0,
+                    (1 << 23) | (1 << 21) | (1 << 18),
+                    (1 << 22) | (1 << 20) | (1 << 19) | (1 << 15),
+                ),
+                (0x84, 0, 0x00ff00ff),
+                (0xa4, 0, 1 << 14),
+                (0xcc, u32::MAX, 0x883c9001),
+                (0xd0, 0xffff, 0x880a),
+                (0xc8, 0, 1 << 3),
+                (0xc8, 0, 1),
+                (0xc8, 0, 1 << 1),
+            ]),
+            super::dmi::Kind::Lp => self.recipe(&[
+                (0x50, 0, (0x7 << 16) & !(u32::from(hotplug & 0x7) << 16)),
+                (
+                    0x70,
+                    (1 << 23) | (1 << 21) | (1 << 18),
+                    0x0700_8700 | (1 << 22) | (1 << 20) | (1 << 19),
+                ),
+                (0x54, 0, 0x4700_0700 | u32::from(hotplug & 0x7)),
+                (0x64, u32::MAX, 0x883c_9001),
+                (0x68, 0xffff, 0x880a),
+                (0x60, 0, (1 << 3) | (1 << 1) | 1),
+            ]),
+        }
     }
     fn late_sir(&self) {
-        self.recipe(&[
-            (0xa8, 0, (1 << 18) | (1 << 17) | (1 << 16)),
-            (0xd4, 0x1321_0e17, 0x2c1e_1108),
-        ]);
+        match self.kind {
+            super::dmi::Kind::H => self.recipe(&[
+                (0xa8, 0, (1 << 18) | (1 << 17) | (1 << 16)),
+                (0xd4, 0x1321_0e17, 0x2c1e_1108),
+            ]),
+            super::dmi::Kind::Lp => self.recipe(&[
+                (0x5c, 0, (1 << 18) | (1 << 17) | (1 << 16)),
+                (0x6c, 0x1321_0e17, 0x2c1e_1108),
+            ]),
+        }
     }
     fn thermal(&self) {
         // Literal source SATA-device throttling recipe, NOT a mainboard fan
         // policy. Re-read actual presence; hot-plug alone is not a device.
         let present = self.present();
-        for pair in 0..4 {
+        let (pairs, base, stride) = match self.kind {
+            super::dmi::Kind::H => (4u8, 0x0cu8, 0x10u8),
+            super::dmi::Kind::Lp => (2u8, 0xa0u8, 0x04u8),
+        };
+        for pair in 0..pairs {
             let low = if present & (1 << (pair * 2)) != 0 {
                 0x0039
             } else {
@@ -362,12 +422,20 @@ impl Controller {
             } else {
                 0
             };
-            self.sir::<()>(0x0c + 0x10 * pair).set(low | high);
+            self.sir::<()>(base + stride * pair).set(low | high);
         }
     }
     fn disable(&self, hba: &AhciRegs<8>) -> Result<(), Error> {
-        unsafe { self.device.register::<u16, PortEnable::Register>(0x94) }
-            .modify(PortEnable::PORTS.val(0));
+        match self.kind {
+            super::dmi::Kind::H => {
+                unsafe { self.device.register::<u16, PortEnable::Register>(0x94) }
+                    .modify(PortEnable::PORTS.val(0));
+            }
+            super::dmi::Kind::Lp => {
+                unsafe { self.device.register::<u16, LpPcs::Register>(0x92) }
+                    .modify(LpPcs::PORTS.val(0));
+            }
+        }
         hba.pi.set(0);
         let _ = hba.pi.get();
         let _ = hba.pi.get();
@@ -376,15 +444,36 @@ impl Controller {
         }
         unsafe { self.device.register::<u16, PCI_COMMAND_BITS::Register>(4) }
             .modify(PCI_COMMAND_BITS::MEMORY_SPACE::CLEAR + PCI_COMMAND_BITS::IO_SPACE::CLEAR);
-        unsafe { self.device.register::<u32, Map::Register>(0x90) }.modify(Map::DISABLE.val(255));
-        self.recipe(&[
-            (0x9c, 0, (1 << 29) | (1 << 23)),
-            (0x8c, 0, 0x00ff00ff),
-            (0xa0, 0, 1 << 15),
-            (0x84, 0, 0x00ff0000),
-            (0xa4, (7 << 24) | (1 << 14) | (1 << 5), (1 << 14) | (1 << 5)),
-            (0xa8, 0, (1 << 17) | (1 << 16)),
-        ]);
+        match self.kind {
+            super::dmi::Kind::H => {
+                unsafe { self.device.register::<u32, Map::Register>(0x90) }
+                    .modify(Map::DISABLE.val(255));
+                self.recipe(&[
+                    (0x9c, 0, (1 << 29) | (1 << 23)),
+                    (0x8c, 0, 0x00ff00ff),
+                    (0xa0, 0, 1 << 15),
+                    (0x84, 0, 0x00ff0000),
+                    (0xa4, (7 << 24) | (1 << 14) | (1 << 5), (1 << 14) | (1 << 5)),
+                    (0xa8, 0, (1 << 17) | (1 << 16)),
+                ]);
+            }
+            super::dmi::Kind::Lp => {
+                unsafe { self.device.register::<u32, LpClockGate::Register>(0x94) }
+                    .modify(LpClockGate::DISABLE.val(0x7));
+                let r98 = unsafe { self.device.register::<u32, ()>(0x98) };
+                r98.set(r98.get() | (1 << 29) | (1 << 23));
+                self.recipe(&[
+                    (0x70, 0, 0x0700_8700),
+                    (
+                        0x54,
+                        0,
+                        (1 << 30) | (1 << 26) | (1 << 25) | (1 << 24) | (1 << 21),
+                    ),
+                    (0x58, (1 << 26) | (1 << 25) | (1 << 24), 0),
+                    (0x5c, 0, (1 << 17) | (1 << 16)),
+                ]);
+            }
+        }
         self.cycle_power(false);
         Ok(())
     }
@@ -426,18 +515,20 @@ fn quiescent(hba: &AhciRegs<8>) -> Result<(), Error> {
     Ok(())
 }
 fn any_lane(silicon: hsio::Silicon, pcr: &Pcr) -> Result<bool, Error> {
-    // Exact PCH-H candidates. Reuse canonical FIA LOS ownership; never force
-    // experimental M900 lane26 or reinterpret a PCIe-owned lane as SATA.
-    for pair in [
-        [Some(18), Some(22)],
-        [Some(19), Some(23)],
-        [Some(24), None],
-        [Some(25), None],
-        [Some(26), None],
-        [Some(27), None],
-        [Some(28), None],
-        [Some(29), None],
-    ] {
+    let candidates: &[[Option<u8>; 2]] = match silicon.kind() {
+        super::dmi::Kind::H => &[
+            [Some(18), Some(22)],
+            [Some(19), Some(23)],
+            [Some(24), None],
+            [Some(25), None],
+            [Some(26), None],
+            [Some(27), None],
+            [Some(28), None],
+            [Some(29), None],
+        ],
+        super::dmi::Kind::Lp => &[[Some(10), None], [Some(11), Some(14)], [Some(15), None]],
+    };
+    for &pair in candidates {
         for lane in pair.into_iter().flatten() {
             if silicon.lane_owner(pcr, lane)? == 2 {
                 return Ok(true);
@@ -493,15 +584,27 @@ fn early_ahci(
     );
     hba.cap2
         .modify(CAP2::APST::SET + CAP2::SDS::SET + CAP2::SADM::SET + CAP2::DESO::SET);
-    let pcs = unsafe {
-        controller
-            .device
-            .register::<u16, PortEnable::Register>(0x94)
-    };
-    pcs.modify(PortEnable::PORTS.val(0));
-    pcs.modify(PortEnable::PORTS.val(255));
-    if pcs.read(PortEnable::PORTS) & u16::from(configured) != u16::from(configured) {
-        return Err(Error::Readback);
+    match controller.kind {
+        super::dmi::Kind::H => {
+            let pcs = unsafe {
+                controller
+                    .device
+                    .register::<u16, PortEnable::Register>(0x94)
+            };
+            pcs.modify(PortEnable::PORTS.val(0));
+            pcs.modify(PortEnable::PORTS.val(255));
+            if pcs.read(PortEnable::PORTS) & u16::from(configured) != u16::from(configured) {
+                return Err(Error::Readback);
+            }
+        }
+        super::dmi::Kind::Lp => {
+            let pcs = unsafe { controller.device.register::<u16, LpPcs::Register>(0x92) };
+            pcs.modify(LpPcs::PORTS.val(0));
+            pcs.modify(LpPcs::PORTS.val(0x7));
+            if pcs.read(LpPcs::PORTS) & u16::from(configured) != u16::from(configured) {
+                return Err(Error::Readback);
+            }
+        }
     }
     // RSTF is a literal 16-bit write-once access, even in AHCI mode.
     unsafe { MmioRegister::<u16, RstFeatures::Register>::new(base + 0xc8) }
@@ -509,7 +612,7 @@ fn early_ahci(
     Ok(policy)
 }
 /// # Safety
-/// Actual PCH-H engines are exclusively owned in the authenticated cold
+/// Actual PCH-H/LP engines are exclusively owned in the authenticated cold
 /// successor, before enumeration. Own/reserve/map the complete TEMP_BASE 8K
 /// aperture as UC, disjoint from DRAM and other decodes. No DMA/SMI/OS/AP
 /// competitor exists. Partial errors are fatal; no repeated early attempt.
@@ -522,8 +625,12 @@ pub(crate) unsafe fn prepare(
     policy.validate()?;
     let lpc = EcamDevice::new(0, 0x1f, 0);
     let silicon = hsio::Silicon::read(&lpc)?;
-    if silicon.kind() != super::dmi::Kind::H {
-        return Err(Error::Device);
+    let kind = silicon.kind();
+    if let Policy::Ahci(ahci) = policy
+        && kind == super::dmi::Kind::Lp
+        && ahci.ports[3..].iter().any(|p| p.enabled)
+    {
+        return Err(Error::Policy);
     }
     if pmc.function_disable.is_set(pmc::FunctionDisable::LOCK) {
         return Err(Error::Locked);
@@ -541,7 +648,7 @@ pub(crate) unsafe fn prepare(
         return Err(Error::Locked);
     }
     temporary::preflight(&device)?;
-    let controller = Controller { device };
+    let controller = Controller { device, kind };
     controller.preflight_cycles()?;
     let disable = match policy {
         Policy::Disabled => Some(DisabledReason::Policy),
@@ -569,6 +676,7 @@ pub(crate) unsafe fn prepare(
         quiescent(hba)?;
         let policy = early_ahci(&controller, hba, policy, TEMP_BASE)?;
         Ok(Early::Ahci(Prepared {
+            kind,
             policy,
             device_id: device.device_id(),
             cycle_capabilities: capabilities,
@@ -580,7 +688,11 @@ pub(crate) unsafe fn prepare(
     if matches!(result, Early::Disabled(_)) {
         // Close/read back BAR/command BEFORE SCFD/FUNDIS can hide config.
         unsafe { device.register::<u32, General::Register>(0x9c) }.modify(General::SCFD::SET);
-        let shadow = pcr.register::<Shadow::Register>(Port::Psf1, 0xc1c)?;
+        let shadow_offset = match kind {
+            super::dmi::Kind::H => 0xc1c,
+            super::dmi::Kind::Lp => 0x101c,
+        };
+        let shadow = pcr.register::<Shadow::Register>(Port::Psf1, shadow_offset)?;
         shadow.modify(Shadow::DISABLE::SET);
         pmc.non_static_disable
             .modify(pmc::NonStaticDisable::SATA::SET);
@@ -629,7 +741,10 @@ pub(crate) unsafe fn finish(early: Early, window: Option<PciWindow>) -> Result<O
     // completing policy. No DMA rings or transfer requests are installed.
     let hba = unsafe { &*(base as *const AhciRegs<8>) };
     quiescent(hba)?;
-    let controller = Controller { device };
+    let controller = Controller {
+        device,
+        kind: prepared.kind,
+    };
     let (configured, hotplug, _) = prepared.policy.maps()?;
     if hba.pi.get() & u32::from(configured) != u32::from(configured) {
         return Err(Error::Readback);
@@ -669,17 +784,41 @@ pub(crate) unsafe fn finish(early: Early, window: Option<PciWindow>) -> Result<O
     controller.late_sir();
     controller.thermal();
     controller.cycle_power(true);
-    let map = unsafe { device.register::<u32, Map::Register>(0x90) };
-    map.modify(Map::SPEED_DISABLE.val(map.read(Map::SPEED_DISABLE) | u32::from(!final_ports)));
-    let pcs = unsafe { device.register::<u16, PortEnable::Register>(0x94) };
-    pcs.modify(PortEnable::PORTS.val(pcs.read(PortEnable::PORTS) | u16::from(final_ports)));
-    let gc = unsafe { device.register::<u32, General::Register>(0x9c) };
-    gc.modify(General::LOCK::SET);
-    if !gc.is_set(General::LOCK)
-        || map.read(Map::SPEED_DISABLE) & u32::from(!final_ports) != u32::from(!final_ports)
-        || pcs.read(PortEnable::PORTS) & u16::from(final_ports) != u16::from(final_ports)
-    {
-        return Err(Error::Readback);
+    match prepared.kind {
+        super::dmi::Kind::H => {
+            let map = unsafe { device.register::<u32, Map::Register>(0x90) };
+            map.modify(
+                Map::SPEED_DISABLE.val(map.read(Map::SPEED_DISABLE) | u32::from(!final_ports)),
+            );
+            let pcs = unsafe { device.register::<u16, PortEnable::Register>(0x94) };
+            pcs.modify(PortEnable::PORTS.val(pcs.read(PortEnable::PORTS) | u16::from(final_ports)));
+            let gc = unsafe { device.register::<u32, General::Register>(0x9c) };
+            gc.modify(General::LOCK::SET);
+            if !gc.is_set(General::LOCK)
+                || map.read(Map::SPEED_DISABLE) & u32::from(!final_ports) != u32::from(!final_ports)
+                || pcs.read(PortEnable::PORTS) & u16::from(final_ports) != u16::from(final_ports)
+            {
+                return Err(Error::Readback);
+            }
+        }
+        super::dmi::Kind::Lp => {
+            let unused = !final_ports & 0x7;
+            let map = unsafe { device.register::<u16, LpMap::Register>(0x90) };
+            map.modify(
+                LpMap::SPEED_DISABLE.val(map.read(LpMap::SPEED_DISABLE) | u16::from(unused)),
+            );
+            let pcs = unsafe { device.register::<u16, LpPcs::Register>(0x92) };
+            pcs.modify(LpPcs::PORTS.val(pcs.read(LpPcs::PORTS) | u16::from(final_ports & 0x7)));
+            let gc = unsafe { device.register::<u32, General::Register>(0x9c) };
+            gc.modify(General::LOCK::SET);
+            if !gc.is_set(General::LOCK)
+                || map.read(LpMap::SPEED_DISABLE) & u16::from(unused) != u16::from(unused)
+                || pcs.read(LpPcs::PORTS) & u16::from(final_ports & 0x7)
+                    != u16::from(final_ports & 0x7)
+            {
+                return Err(Error::Readback);
+            }
+        }
     }
     command.modify(PCI_COMMAND_BITS::BUS_MASTER::SET);
     if !command.matches_all(

@@ -94,15 +94,17 @@ fn force_host(device: EcamDevice, delay: &mut impl DelayNs) -> Result<(), Error>
     result
 }
 /// # Safety
-/// Actual cold PCH-H and exclusive mapped PCR/ECAM plus the reserved UC
+/// Actual cold PCH-H/LP and exclusive mapped PCR/ECAM/PWRM plus the reserved UC
 /// FC800000..FCA00000 aperture. No retained USB/DMA/OS/AP/SMM owner. This
 /// deliberately supports host-only policy, never pretends to enable xDCI.
-pub(crate) unsafe fn prepare(pcr: &Pcr, delay: &mut impl DelayNs) -> Result<Prepared, Error> {
+pub(crate) unsafe fn prepare(
+    pcr: &Pcr,
+    pmc: &crate::sunrise_point::pmc::PmcRegisters,
+    delay: &mut impl DelayNs,
+) -> Result<Prepared, Error> {
     let lpc = EcamDevice::new(0, 0x1f, 0);
     let silicon = crate::sunrise_point::hsio::Silicon::read(&lpc)?;
-    if silicon.kind() != crate::sunrise_point::dmi::Kind::H {
-        return Err(Error::Device);
-    }
+    let kind = silicon.kind();
     let device = EcamDevice::new(0, 0x14, 1);
     if !device.is_present() {
         return Ok(Prepared {
@@ -157,12 +159,26 @@ pub(crate) unsafe fn prepare(pcr: &Pcr, delay: &mut impl DelayNs) -> Result<Prep
     if device.read16(0x84) & 3 != 3 {
         return Err(Error::Readback);
     }
-    let shadow = pcr.register::<Shadow::Register>(Port::Psf2, 0x21c)?;
+    let shadow_offset = match kind {
+        crate::sunrise_point::dmi::Kind::H => 0x21c,
+        crate::sunrise_point::dmi::Kind::Lp => 0x61c,
+    };
+    let shadow = pcr.register::<Shadow::Register>(Port::Psf2, shadow_offset)?;
     shadow.modify(Shadow::DISABLE::SET);
     if !shadow.is_set(Shadow::DISABLE) || device.is_present() {
         return Err(Error::Readback);
     }
     // PMC NST_PG_FDIS1[24] is LP B0+ ONLY, never PCH-H.
+    if kind == crate::sunrise_point::dmi::Kind::Lp && lpc.read8(8) >= 0x10 {
+        pmc.non_static_disable
+            .modify(crate::sunrise_point::pmc::NonStaticDisable::XDCI::SET);
+        if !pmc
+            .non_static_disable
+            .is_set(crate::sunrise_point::pmc::NonStaticDisable::XDCI)
+        {
+            return Err(Error::Readback);
+        }
+    }
     Ok(Prepared {
         device_mode: DeviceMode::Disabled,
         _bsp_only: core::marker::PhantomData,

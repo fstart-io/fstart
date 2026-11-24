@@ -183,7 +183,7 @@ impl HardwarePort {
         Ok(())
     }
     fn endpoint_speed(&self) -> Result<Option<u8>, Error> {
-        if !self.present() {
+        if !self.present() || !self.r.lsta.is_set(LinkSta::ACTIVE) {
             return Ok(None);
         }
         let bus = TemporaryBus::open(self.device)?;
@@ -215,7 +215,7 @@ impl HardwarePort {
         let p = config.ports[usize::from(self.physical)];
         let previous = self.r.link2.read(Link2::SPEED);
         self.r.link2.modify(Link2::SPEED.val(1));
-        if previous > 2 && self.present() {
+        if previous > 2 && self.present() && self.r.lsta.is_set(LinkSta::ACTIVE) {
             self.force_gen1(delay)?;
         }
         let endpoint = self.endpoint_speed()?;

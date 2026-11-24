@@ -41,8 +41,8 @@ pub(crate) unsafe fn lock_native(
     xhci_enabled: bool,
 ) -> Result<(), Error> {
     let lpc = EcamDevice::new(0, 0x1f, 0);
-    if hsio::Silicon::read(&lpc).map_err(|_| Error::Device)?.kind() != super::dmi::Kind::H
-        || pmc.bus() != 0
+    let kind = hsio::Silicon::read(&lpc).map_err(|_| Error::Device)?.kind();
+    if pmc.bus() != 0
         || pmc.dev() != 0x1f
         || pmc.func() != 2
         || pmc.vendor_id() != 0x8086
@@ -92,8 +92,14 @@ pub(crate) unsafe fn lock_native(
     if !sbi.is_set(P2sbControl::SBI_LOCK) {
         return Err(Error::Readback);
     }
-    // Native PCH-H p2sb_soc_get_sb_mask: NOT LP's additional MIPI bit16.
-    for (index, mask) in [(5, 0x3c02_0402u32), (7, 0x60)] {
+    // Native p2sb_soc_get_sb_mask: LP adds MIPI/CAM bit 16 on EPMASK5.
+    let epmask5 = 0x3c02_0402u32
+        | if kind == super::dmi::Kind::Lp {
+            1 << 16
+        } else {
+            0
+        };
+    for (index, mask) in [(5, epmask5), (7, 0x60)] {
         let endpoint = unsafe { p2sb.register::<u32, ()>(0xb0 + 4 * index) };
         endpoint.set(endpoint.get() | mask);
         if endpoint.get() & mask != mask {

@@ -106,6 +106,7 @@ fn transaction(
 pub unsafe fn initialize(
     lpc: &EcamDevice,
     pcr: &Pcr,
+    kind: super::dmi::Kind,
     delay: &mut impl DelayNs,
 ) -> Result<Interface, Error> {
     if lpc.address().segment() != 0
@@ -122,9 +123,10 @@ pub unsafe fn initialize(
     {
         return Ok(Interface::Lpc);
     }
-    let second = pcr
-        .register::<SoftStraps::Register>(Port::EspiSpi, 0xc210)?
-        .is_set(SoftStraps::SECOND_SLAVE);
+    let second = kind == super::dmi::Kind::H
+        && pcr
+            .register::<SoftStraps::Register>(Port::EspiSpi, 0xc210)?
+            .is_set(SoftStraps::SECOND_SLAVE);
     let command = unsafe { lpc.register::<u16, PCI_COMMAND_BITS::Register>(0x04) };
     command.modify(PCI_COMMAND_BITS::BUS_MASTER::SET);
     if !command.is_set(PCI_COMMAND_BITS::BUS_MASTER) {

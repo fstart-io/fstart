@@ -81,6 +81,7 @@ pub struct Policy {
     pub stretch_after_suspend_loss: bool,
     pub button_override: u8,
     pub s0ix: bool,
+    pub slp_s0_vm: bool,
     pub wol_override: bool,
     pub wowlan: bool,
     pub wowlan_deep: bool,
@@ -169,9 +170,7 @@ pub unsafe fn configure_native(
 ) -> Result<(), Error> {
     policy.validate()?;
     let silicon = hsio::Silicon::read(lpc)?;
-    if silicon.kind() != super::dmi::Kind::H {
-        return Err(Error::Device);
-    }
+    let kind = silicon.kind();
     require_decodes(device).map_err(|_| Error::Decode)?;
     let a = unsafe { device.register::<u32, GenPmconA::Register>(0xa0) };
     let b = unsafe { device.register::<u32, GenPmconB::Register>(0xa4) };
@@ -185,8 +184,9 @@ pub unsafe fn configure_native(
         return Err(Error::Policy);
     }
     let espi = pcr.register::<()>(Port::EspiSpi, 0xc00c)?.get() & 1 != 0;
+    let max_usb3_lane = if kind == super::dmi::Kind::H { 9 } else { 5 };
     let mut usb3 = 0u32;
-    for lane in 0..=9 {
+    for lane in 0..=max_usb3_lane {
         if silicon.lane_owner(pcr, lane)? == 1 {
             usb3 |= 1 << lane;
         }
@@ -200,7 +200,7 @@ pub unsafe fn configure_native(
             .val(u32::from(policy.after_power_loss == AfterPowerLoss::Off)),
     );
     low.set(after.get() as u8);
-    pmc.configure_gpe_routes(pcr, policy.gpe)?;
+    pmc.configure_gpe_routes(pcr, kind, policy.gpe)?;
     let (s4, s4_enable) = match policy.s4_assert {
         S4Assert::Pch => (0, 0),
         S4Assert::Seconds1 => (3, 1),
@@ -288,7 +288,13 @@ pub unsafe fn configure_native(
     pmc.sync_c0.set(0x7000f4c0);
     pmc.power_config.modify(PowerConfig::ENERGY_REPORT::SET);
     pmc.power_config.modify(PowerConfig::ENERGY_REPORT2::SET); // two native publications
-    pmc.modphy_config[0].set(pmc.modphy_config[0].get() & !usb3);
+    let modphy_base = pmc.modphy_config[0].get()
+        | if kind == super::dmi::Kind::Lp {
+            0xffff_0000
+        } else {
+            0
+        };
+    pmc.modphy_config[0].set(modphy_base & !usb3);
     pmc.modphy_config[1].set(pmc.modphy_config[1].get() & !0x3f00_0000);
     for (r, h) in [
         (&pmc.clock_gate1, 6),
@@ -298,20 +304,26 @@ pub unsafe fn configure_native(
         r.modify(GatingPolicy::HYSTERESIS.val(h) + GatingPolicy::ENABLE::SET);
     }
     pmc.obff.set(0x1e0a4616);
-    let cppm = (1 << 29)
-        | (1 << 27)
-        | (1 << 25)
-        | (1 << 24)
-        | (1 << 23)
-        | (1 << 22)
-        | (1 << 14)
-        | 3
-        | if policy.s0ix { 1 << 15 } else { 0 };
+    let mut cppm = (1 << 29) | (1 << 27) | (1 << 25) | (1 << 24) | (1 << 23) | 3;
+    if kind == super::dmi::Kind::H {
+        cppm |= (1 << 22) | (1 << 14);
+    }
+    if policy.s0ix {
+        cppm |= 1 << 15;
+        if kind == super::dmi::Kind::Lp {
+            cppm |= if policy.slp_s0_vm { 1 << 13 } else { 1 << 22 };
+        }
+    }
     pmc.cppm_control
         .set((pmc.cppm_control.get() & !((1 << 22) | (1 << 15) | (1 << 13) | 0x1ff)) | cppm);
     pmc.cppm_misc.set(0x0005db01);
+    let gate_bit = if kind == super::dmi::Kind::H {
+        1 << 21
+    } else {
+        1 << 19
+    };
     pmc.gate_misc
-        .set(pmc.gate_misc.get() | (1 << 31) | (1 << 30) | (1 << 21));
+        .set(pmc.gate_misc.get() | (1 << 31) | (1 << 30) | gate_bit);
     pmc.vr_misc.set(pmc.vr_misc.get() | (1 << 3));
     pmc.clock_shutdown[0].set((pmc.clock_shutdown[0].get() & !0x0070_0007) | 0x0020_0001);
     if !silicon.is_kbl_h() {
@@ -340,11 +352,14 @@ pub unsafe fn configure_native(
             + GenPmconB::WOL_OVERRIDE.val(u32::from(policy.wol_override)),
     );
     pmc.power_config.modify(PowerConfig::OSC_SHUTDOWN::SET);
-    // Own the native cio2.c H-only branch here, exactly once. No LP CAM
-    // FLS/PSF recipe or synthetic camera readiness on a PCH-H platform.
-    pmc.cppm_control.modify(CppmControl::CIO2_DISABLE::SET);
-    if pmc.cppm_control.get() == u32::MAX || !pmc.cppm_control.is_set(CppmControl::CIO2_DISABLE) {
-        return Err(Error::Readback);
+    if kind == super::dmi::Kind::H {
+        // Own the native cio2.c H-only branch here, exactly once. LP CIO2 is
+        // managed separately in auxiliary.rs.
+        pmc.cppm_control.modify(CppmControl::CIO2_DISABLE::SET);
+        if pmc.cppm_control.get() == u32::MAX || !pmc.cppm_control.is_set(CppmControl::CIO2_DISABLE)
+        {
+            return Err(Error::Readback);
+        }
     }
     if policy.wowlan {
         pmc.power_config3.modify(

@@ -5,6 +5,7 @@
 //! do not try to rediscover it through a PMC function that may be hidden.
 
 use super::{
+    dmi,
     gpio::{self, Group, MiscConfig},
     pcr::{self, Pcr, Port},
 };
@@ -103,19 +104,30 @@ register_bitfields![u32,
     pub(crate) FunctionDisable [
         GBE OFFSET(0) NUMBITS(1) [],
         ISH OFFSET(5) NUMBITS(1) [],
+        CAM OFFSET(6) NUMBITS(1) [],
         LOCK OFFSET(31) NUMBITS(1) []
     ],
     pub(crate) SubsystemFuse [
         GBE OFFSET(0) NUMBITS(1) [],
-        ISH OFFSET(1) NUMBITS(1) []
+        ISH OFFSET(1) NUMBITS(1) [],
+        CAM OFFSET(2) NUMBITS(1) []
     ],
     pub(crate) SerialDisable [ FUNCTIONS OFFSET(0) NUMBITS(11) [] ],
-    pub(crate) CppmControl [ CIO2_DISABLE OFFSET(12) NUMBITS(1) [] ],
-    pub(crate) FinalLock [ LOCK OFFSET(31) NUMBITS(1) [] ],
+    pub(crate) CppmControl [
+        CIO2_DISABLE OFFSET(12) NUMBITS(1) [],
+        SCS_DISABLE OFFSET(14) NUMBITS(1) []
+    ],
+    pub(crate) FinalLock [
+        TT_STATE OFFSET(24) NUMBITS(2) [],
+        TT_EN OFFSET(26) NUMBITS(1) [],
+        LOCK OFFSET(31) NUMBITS(1) []
+    ],
     pub(crate) NonStaticDisable [
         PCIE OFFSET(2) NUMBITS(20) [],
         SATA OFFSET(22) NUMBITS(1) [],
-        ADSP OFFSET(23) NUMBITS(1) []
+        ADSP OFFSET(23) NUMBITS(1) [],
+        XDCI OFFSET(24) NUMBITS(1) [],
+        SCC OFFSET(25) NUMBITS(1) []
     ]
 ];
 register_bitfields![u32,
@@ -238,11 +250,35 @@ impl PmcRegisters {
     ///
     /// Duplicate groups reject before writes, instead of the source's silent
     /// fallback to reset selectors. All PCR endpoints are validated first.
-    pub fn configure_gpe_routes(&self, pcr: &Pcr, groups: [Group; 3]) -> Result<(), gpio::Error> {
+    pub fn configure_gpe_routes(
+        &self,
+        pcr: &Pcr,
+        kind: dmi::Kind,
+        groups: [Group; 3],
+    ) -> Result<(), gpio::Error> {
         if groups[0] == groups[1] || groups[1] == groups[2] || groups[0] == groups[2] {
             return Err(gpio::Error::DuplicateGpeGroup);
         }
-        let selectors = groups.map(|group| u32::from(group.info().pmc_selector));
+        let selectors = [
+            u32::from(
+                groups[0]
+                    .info_for(kind)
+                    .ok_or(gpio::Error::InvalidPad)?
+                    .pmc_selector,
+            ),
+            u32::from(
+                groups[1]
+                    .info_for(kind)
+                    .ok_or(gpio::Error::InvalidPad)?
+                    .pmc_selector,
+            ),
+            u32::from(
+                groups[2]
+                    .info_for(kind)
+                    .ok_or(gpio::Error::InvalidPad)?
+                    .pmc_selector,
+            ),
+        ];
         let registers = [
             pcr.register::<MiscConfig::Register>(Port::Gpio0, 0x10)?,
             pcr.register::<MiscConfig::Register>(Port::Gpio1, 0x10)?,
@@ -314,14 +350,18 @@ pub(crate) fn require_decodes(device: &EcamDevice) -> Result<(), DecodeError> {
     Ok(())
 }
 
-/// Native bootblock/pch.c ACPI/PWRM decode setup, PCH-H only. The caller
+/// Native bootblock/pch.c ACPI/PWRM decode setup, PCH-H and PCH-LP. The caller
 /// reserves these fixed resources and enables P2SB first. No wake W1C ack.
-pub fn enable_decodes(device: &EcamDevice, pcr: &Pcr) -> Result<(), DecodeError> {
+pub fn enable_decodes(device: &EcamDevice, pcr: &Pcr, kind: dmi::Kind) -> Result<(), DecodeError> {
     require_device(device)?;
     let status_b = unsafe { device.register::<u32, GenPmconB::Register>(0xa4) };
     if status_b.is_set(GenPmconB::ACPI_BASE_LOCK) {
         return Err(DecodeError::Locked);
     }
+    let pmc_dest = match kind {
+        dmi::Kind::H => 0x23a8u32,
+        dmi::Kind::Lp => 0x23a0u32,
+    };
     let control = unsafe { device.register::<u32, AcpiControl::Register>(0x44) };
     let original = control.get();
     control.set(original & !AcpiControl::ACPI_ENABLE::SET.value);
@@ -329,7 +369,7 @@ pub fn enable_decodes(device: &EcamDevice, pcr: &Pcr) -> Result<(), DecodeError>
     control.set(original | AcpiControl::ACPI_ENABLE::SET.value);
     pcr.register::<()>(Port::Dmi, 0x27b4)?
         .set((0x3f << 18) | u32::from(ACPI_BASE) | 1);
-    pcr.register::<()>(Port::Dmi, 0x27b8)?.set(0x23a8);
+    pcr.register::<()>(Port::Dmi, 0x27b8)?.set(pmc_dest);
 
     let original = control.get();
     control.set(original & !AcpiControl::PWRM_ENABLE::SET.value);
@@ -337,7 +377,8 @@ pub fn enable_decodes(device: &EcamDevice, pcr: &Pcr) -> Result<(), DecodeError>
     control.set(original | AcpiControl::PWRM_ENABLE::SET.value);
     pcr.register::<()>(Port::Dmi, 0x27ac)?
         .set((PWRM_BASE as u32 & 0xffff_0000) | (PWRM_BASE as u32 >> 16));
-    pcr.register::<()>(Port::Dmi, 0x27b0)?.set(0x8000_23a8);
+    pcr.register::<()>(Port::Dmi, 0x27b0)?
+        .set(0x8000_0000 | pmc_dest);
     Ok(())
 }
 

@@ -257,7 +257,7 @@ pub(crate) unsafe fn initialize(
     let unavailable = discovered.unavailable;
     let mut ports = discovered.ports;
     let count = fabric.controllers * 4;
-    fabric::clocks(config, fabric.pcr, fabric.silicon.is_kbl_h())?;
+    fabric::clocks(config, fabric.pcr, fabric.silicon)?;
     let mut enabled = 0u32;
     let mut empty = 0u32;
     let mut pg = 0u32;
@@ -295,7 +295,14 @@ pub(crate) unsafe fn initialize(
         }
     }
     if !active {
-        return Err(Error::LinkTimeout);
+        for port in ports.iter().flatten() {
+            if port.present() && !port.r.lsta.is_set(LinkSta::ACTIVE) {
+                fstart_log::warn!(
+                    "PCH PCIe: RP{} link did not become active within 1s; continuing",
+                    port.physical + 1
+                );
+            }
+        }
     }
     let mut links = [Link::Disabled; 24];
     for port in ports.iter().flatten() {
@@ -361,17 +368,23 @@ mod tests {
         assert_eq!(seen, 255);
     }
     #[test]
-    fn bifurcation_and_fia_mapping_never_authorize_aggregated_sibling_or_lp_lane() {
+    fn bifurcation_and_fia_mapping_cover_h_and_lp_bounds() {
+        use super::super::dmi::Kind;
         assert!(!fabric::standalone(3, 17));
         assert!(fabric::standalone(3, 16));
         assert!(!fabric::standalone(2, 7));
         assert!(fabric::standalone(2, 6));
-        assert_eq!(fabric::fia_lane(6), Some(12));
-        assert_eq!(fabric::fia_lane(16), Some(26));
-        assert_eq!(fabric::fia_lane(23), Some(33));
-        assert_eq!(fabric::fia_lane(24), None);
-        assert_eq!(fabric::controller_count(false), 5);
-        assert_eq!(fabric::controller_count(true), 6);
+        assert_eq!(fabric::fia_lane(Kind::H, 6), Some(12));
+        assert_eq!(fabric::fia_lane(Kind::H, 16), Some(26));
+        assert_eq!(fabric::fia_lane(Kind::H, 23), Some(33));
+        assert_eq!(fabric::fia_lane(Kind::H, 24), None);
+        assert_eq!(fabric::fia_lane(Kind::Lp, 0), Some(4));
+        assert_eq!(fabric::fia_lane(Kind::Lp, 11), Some(15));
+        assert_eq!(fabric::fia_lane(Kind::Lp, 12), None);
+        assert_eq!(fabric::controller_count(Kind::H, false), 5);
+        assert_eq!(fabric::controller_count(Kind::H, true), 6);
+        assert_eq!(fabric::controller_count(Kind::Lp, false), 3);
+        assert_eq!(fabric::controller_count(Kind::Lp, true), 3);
     }
     #[test]
     fn clock_delay_uses_real_units_and_rejects_unrepresentable_or_reserved_tpower() {

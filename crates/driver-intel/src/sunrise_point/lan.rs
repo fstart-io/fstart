@@ -145,17 +145,19 @@ register_structs! {
         (0x100c => ecc:RW<u32,Ecc::Register>), (0x1010 => @END),
     }
 }
-fn port_number(strap: u32) -> Option<u8> {
+fn port_number(kind: super::dmi::Kind, strap: u32) -> Option<u8> {
     let value = tock_registers::LocalRegisterCopy::<u32, Strap::Register>::new(strap);
     if !value.is_set(Strap::ENABLE) {
         return None;
     }
-    [4, 5, 9, 12, 13]
-        .get(value.read(Strap::PORT) as usize)
-        .copied()
+    let table: [u8; 5] = match kind {
+        super::dmi::Kind::H => [4, 5, 9, 12, 13],
+        super::dmi::Kind::Lp => [3, 4, 5, 9, 10],
+    };
+    table.get(value.read(Strap::PORT) as usize).copied()
 }
 /// # Safety
-/// Actual authenticated cold PCH-H, mapped UC PWRM/PCR/SPI and exclusive GbE
+/// Actual authenticated cold PCH-H/LP, mapped UC PWRM/PCR/SPI and exclusive GbE
 /// host config ownership, no competing AP/SMI/OS or host DMA owner. The supplied
 /// physical flash size is the board's real decode, not a substitute identity.
 /// Run after root-port mapping, before canonical PCI and static-disable locks.
@@ -167,9 +169,7 @@ pub(crate) unsafe fn prepare(
     spi_device: &EcamDevice,
 ) -> Result<Prepared, Error> {
     config.validate(clkreq)?;
-    if hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?.kind() != super::dmi::Kind::H {
-        return Err(Error::Device);
-    }
+    let kind = hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?.kind();
     if pmc.subsystem_fuse.get() == u32::MAX || pmc.function_disable.get() == u32::MAX {
         return Err(Error::Device);
     }
@@ -178,7 +178,7 @@ pub(crate) unsafe fn prepare(
     if strap == u32::MAX {
         return Err(Error::Device);
     }
-    let port = port_number(strap);
+    let port = port_number(kind, strap);
     let region = if !fused && port.is_some() {
         spi::gbe_region(spi_device, config.flash_bytes)?
     } else {
@@ -330,10 +330,14 @@ mod tests {
         assert_eq!(gate(false, true, false, true), Ok(Gate::KeepDisabled));
     }
     #[test]
-    fn pch_h_gbe_strap_mapping_does_not_reuse_lp_ports_or_accept_reserved_selector() {
-        assert_eq!(port_number(0), None);
-        assert_eq!(port_number(1 << 31), Some(4));
-        assert_eq!(port_number((1 << 31) | (4 << 28)), Some(13));
-        assert_eq!(port_number((1 << 31) | (5 << 28)), None);
+    fn gbe_strap_mapping_uses_kind_specific_ports_and_rejects_reserved_selector() {
+        use super::super::dmi::Kind;
+        assert_eq!(port_number(Kind::H, 0), None);
+        assert_eq!(port_number(Kind::H, 1 << 31), Some(4));
+        assert_eq!(port_number(Kind::H, (1 << 31) | (4 << 28)), Some(13));
+        assert_eq!(port_number(Kind::H, (1 << 31) | (5 << 28)), None);
+        assert_eq!(port_number(Kind::Lp, 1 << 31), Some(3));
+        assert_eq!(port_number(Kind::Lp, (1 << 31) | (4 << 28)), Some(10));
+        assert_eq!(port_number(Kind::Lp, (1 << 31) | (5 << 28)), None);
     }
 }

@@ -24,14 +24,46 @@ pub(super) const fn slot(rp: u8) -> u8 {
         _ => 0x1b,
     }
 }
-pub(super) const fn controller_count(kbl: bool) -> u8 {
-    if kbl { 6 } else { 5 }
+pub(super) const fn controller_count(kind: super::super::dmi::Kind, kbl: bool) -> u8 {
+    match kind {
+        super::super::dmi::Kind::Lp => 3,
+        super::super::dmi::Kind::H => {
+            if kbl {
+                6
+            } else {
+                5
+            }
+        }
+    }
 }
-pub(super) const fn fia_lane(index: u8) -> Option<u8> {
-    match index {
-        0..=7 => Some(index + 6),
-        8..=23 => Some(index + 10),
-        _ => None,
+pub(super) const fn fia_lane(kind: super::super::dmi::Kind, index: u8) -> Option<u8> {
+    match kind {
+        super::super::dmi::Kind::Lp => {
+            if index < 12 {
+                Some(index + 4)
+            } else {
+                None
+            }
+        }
+        super::super::dmi::Kind::H => match index {
+            0..=7 => Some(index + 6),
+            8..=23 => Some(index + 10),
+            _ => None,
+        },
+    }
+}
+fn shadow_base(silicon: hsio::Silicon) -> u16 {
+    match silicon.kind() {
+        super::super::dmi::Kind::Lp => 0x2b00,
+        super::super::dmi::Kind::H if silicon.is_kbl_h() => 0x3700,
+        super::super::dmi::Kind::H => 0x3300,
+    }
+}
+fn func_cfg_base(silicon: hsio::Silicon) -> u16 {
+    match silicon.kind() {
+        super::super::dmi::Kind::Lp => 0x4198,
+        super::super::dmi::Kind::H if silicon.is_kbl_h() => 0x4274,
+        super::super::dmi::Kind::H => 0x41c0,
     }
 }
 pub(super) const fn standalone(rpc: u8, index: u8) -> bool {
@@ -72,7 +104,7 @@ impl<'a> Fabric<'a> {
             pcr,
             silicon,
             sbi: unsafe { Sbi::new(p2sb) }?,
-            controllers: controller_count(silicon.is_kbl_h()),
+            controllers: controller_count(silicon.kind(), silicon.is_kbl_h()),
             rpc: [0; 6],
             reverse: [false; 6],
         };
@@ -142,21 +174,21 @@ impl<'a> Fabric<'a> {
             })
     }
     pub fn lane(&self, rp: u8, lane: u8) -> Result<hsio::Lane, Error> {
-        Ok(self
-            .silicon
-            .lane(fia_lane(self.lane_index(rp, lane)?).ok_or(Error::Topology)?)?)
+        Ok(self.silicon.lane(
+            fia_lane(self.silicon.kind(), self.lane_index(rp, lane)?).ok_or(Error::Topology)?,
+        )?)
     }
     pub fn pcie_owner(&self, rp: u8, lane: u8) -> Result<bool, Error> {
         Ok(self.silicon.lane_owner(
             self.pcr,
-            fia_lane(self.lane_index(rp, lane)?).ok_or(Error::Topology)?,
+            fia_lane(self.silicon.kind(), self.lane_index(rp, lane)?).ok_or(Error::Topology)?,
         )? == 0)
     }
     pub fn standalone(&self, rp: u8) -> bool {
         standalone(self.rpc[usize::from(rp / 4)], rp)
     }
     pub fn grants(&self) -> Result<(), Error> {
-        const DGCR: [[[u16; 2]; 4]; 6] = [
+        const DGCR_H: [[[u16; 2]; 4]; 6] = [
             [[11, 12], [14, 15], [17, 18], [20, 21]],
             [[24, 25], [27, 28], [30, 31], [33, 34]],
             [[37, 38], [40, 41], [43, 44], [46, 47]],
@@ -164,7 +196,7 @@ impl<'a> Fabric<'a> {
             [[63, 64], [66, 67], [69, 70], [72, 73]],
             [[182, 183], [185, 186], [188, 189], [191, 192]],
         ];
-        const TARGET: [[u16; 4]; 6] = [
+        const TARGET_H: [[u16; 4]; 6] = [
             [0, 1, 2, 3],
             [4, 5, 6, 7],
             [12, 13, 14, 15],
@@ -172,19 +204,29 @@ impl<'a> Fabric<'a> {
             [28, 29, 30, 31],
             [32, 33, 34, 35],
         ];
+        const DGCR_LP: [[[u16; 2]; 4]; 3] = [
+            [[5, 6], [8, 9], [11, 12], [14, 15]],
+            [[19, 20], [22, 23], [25, 26], [28, 29]],
+            [[33, 34], [36, 37], [39, 40], [42, 43]],
+        ];
+        const TARGET_LP: [[u16; 4]; 3] = [[4, 5, 6, 7], [12, 13, 14, 15], [20, 21, 22, 23]];
         const GRANTS: [[u32; 4]; 4] = [[1, 1, 1, 1], [2, 4, 1, 1], [2, 4, 2, 4], [4, 4, 4, 4]];
-        let (dgcr, tgt) = if self.silicon.is_kbl_h() {
-            (0x42d8, 0x4834)
-        } else {
-            (0x4214, 0x46dc)
+        let (dgcr, tgt, dgcr_table, target_table) = match self.silicon.kind() {
+            super::super::dmi::Kind::Lp => {
+                (0x41cc, 0x45d0, DGCR_LP.as_slice(), TARGET_LP.as_slice())
+            }
+            super::super::dmi::Kind::H if self.silicon.is_kbl_h() => {
+                (0x42d8, 0x4834, DGCR_H.as_slice(), TARGET_H.as_slice())
+            }
+            super::super::dmi::Kind::H => (0x4214, 0x46dc, DGCR_H.as_slice(), TARGET_H.as_slice()),
         };
         for ctrl in 0..usize::from(self.controllers) {
             for channel in 0..4 {
                 let grant = GRANTS[usize::from(self.rpc[ctrl])][channel];
                 for offset in [
-                    dgcr + 4 * DGCR[ctrl][channel][0],
-                    dgcr + 4 * DGCR[ctrl][channel][1],
-                    tgt + 4 * TARGET[ctrl][channel],
+                    dgcr + 4 * dgcr_table[ctrl][channel][0],
+                    dgcr + 4 * dgcr_table[ctrl][channel][1],
+                    tgt + 4 * target_table[ctrl][channel],
                 ] {
                     self.pcr
                         .register::<Grants::Register>(pcr::Port::Psf1, offset)?
@@ -205,14 +247,27 @@ impl<'a> Fabric<'a> {
                 .register::<Flow::Register>(port, 0x4018)?
                 .modify(Flow::INGRESS::SET);
         }
-        for (port, offset) in [
-            (pcr::Port::Psf1, 0x403c),
-            (pcr::Port::Psf1, 0x4040),
-            (pcr::Port::Psf2, 0x401c),
-            (pcr::Port::Psf2, 0x4020),
-            (pcr::Port::Psf2, 0x4024),
-            (pcr::Port::Psf2, 0x402c),
-        ] {
+        let egress: &[(pcr::Port, u16)] = match self.silicon.kind() {
+            super::super::dmi::Kind::H => &[
+                (pcr::Port::Psf1, 0x403c),
+                (pcr::Port::Psf1, 0x4040),
+                (pcr::Port::Psf2, 0x401c),
+                (pcr::Port::Psf2, 0x4020),
+                (pcr::Port::Psf2, 0x4024),
+                (pcr::Port::Psf2, 0x402c),
+            ],
+            super::super::dmi::Kind::Lp => &[
+                (pcr::Port::Psf1, 0x4034),
+                (pcr::Port::Psf1, 0x4038),
+                (pcr::Port::Psf1, 0x403c),
+                (pcr::Port::Psf1, 0x4040),
+                (pcr::Port::Psf2, 0x401c),
+                (pcr::Port::Psf2, 0x4020),
+                (pcr::Port::Psf2, 0x4024),
+                (pcr::Port::Psf2, 0x4030),
+            ],
+        };
+        for &(port, offset) in egress {
             self.pcr
                 .register::<Flow::Register>(port, offset)?
                 .modify(Flow::EGRESS::SET);
@@ -343,11 +398,7 @@ impl<'a> Fabric<'a> {
                 .register::<Pcd::Register>(PIDS[usize::from(ctrl)], 0)?
                 .get();
         }
-        let base = if self.silicon.is_kbl_h() {
-            0x4274
-        } else {
-            0x41c0
-        };
+        let base = func_cfg_base(self.silicon);
         for rp in 0..count {
             let function = functions[usize::from(rp)];
             let shift = 4 * (rp % 4);
@@ -357,17 +408,13 @@ impl<'a> Fabric<'a> {
                 .register::<Function::Register>(pcr::Port::Psf1, base + 4 * u16::from(rp))?
                 .modify(Function::FUNCTION.val(u32::from(function)));
         }
+        let shadow = shadow_base(self.silicon);
         for rp in 0..count {
             if enabled & (1 << rp) != 0 {
                 continue;
             }
             self.quiesce(rp, delay)?;
             values[usize::from(rp / 4)] |= 1 << (16 + rp % 4);
-            let shadow = if self.silicon.is_kbl_h() {
-                0x3700
-            } else {
-                0x3300
-            };
             let register = self.pcr.register::<Shadow::Register>(
                 pcr::Port::Psf1,
                 shadow - 0x100 * u16::from(rp) + 0x3c,
@@ -432,7 +479,8 @@ impl<'a> Fabric<'a> {
             };
             for i in 0..4 {
                 if gate & (1 << i) != 0 && owned[usize::from(i)] {
-                    let lane = fia_lane(self.lane_index(ctrl * 4, i)?).ok_or(Error::Topology)?;
+                    let lane = fia_lane(self.silicon.kind(), self.lane_index(ctrl * 4, i)?)
+                        .ok_or(Error::Topology)?;
                     if lane < 32 {
                         mask |= 1 << lane;
                     }
@@ -471,13 +519,18 @@ pub(super) fn restore_defaults(
 ) -> Result<hsio::Silicon, Error> {
     config.validate()?;
     let silicon = hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?;
-    if silicon.kind() != super::super::dmi::Kind::H {
-        return Err(Error::Device);
-    }
-    let count = controller_count(silicon.is_kbl_h()) * 4;
+    let count = controller_count(silicon.kind(), silicon.is_kbl_h()) * 4;
     if config.ports[usize::from(count)..]
         .iter()
         .any(|p| p.enabled || p.clkreq.is_some())
+    {
+        return Err(Error::Policy);
+    }
+    if silicon.kind() == super::super::dmi::Kind::Lp
+        && (config.lan_clkreq.is_some_and(|n| n >= 6)
+            || config.ports[..usize::from(count)]
+                .iter()
+                .any(|p| p.clkreq.is_some_and(|n| n >= 6)))
     {
         return Err(Error::Policy);
     }
@@ -489,6 +542,7 @@ pub(super) fn restore_defaults(
     {
         return Err(Error::Locked);
     }
+    let shadow_reg_base = shadow_base(silicon);
     for ctrl in 0..count / 4 {
         let reg = pcr.register::<Pcd::Register>(PIDS[usize::from(ctrl)], 0)?;
         if reg.is_set(Pcd::LOCK) {
@@ -499,10 +553,9 @@ pub(super) fn restore_defaults(
             if (reg.get() >> (4 * i)) & 7 != u32::from(rp % 8) {
                 return Err(Error::Topology);
             }
-            let shadow_base = if silicon.is_kbl_h() { 0x3700 } else { 0x3300 };
             let shadow = pcr.register::<Shadow::Register>(
                 pcr::Port::Psf1,
-                shadow_base - 0x100 * u16::from(rp) + 0x3c,
+                shadow_reg_base - 0x100 * u16::from(rp) + 0x3c,
             )?;
             if config.ports[usize::from(rp)].enabled
                 && (reg.read(Pcd::DISABLE) & (1 << i) != 0
@@ -515,7 +568,7 @@ pub(super) fn restore_defaults(
             }
         }
     }
-    let base = if silicon.is_kbl_h() { 0x4274 } else { 0x41c0 };
+    let base = func_cfg_base(silicon);
     for rp in 0..count {
         let r = pcr.register::<Function::Register>(pcr::Port::Psf1, base + 4 * u16::from(rp))?;
         let value =
@@ -527,11 +580,14 @@ pub(super) fn restore_defaults(
     }
     Ok(silicon)
 }
-pub(super) fn clocks(config: &Config, pcr: &Pcr, kbl: bool) -> Result<(), Error> {
-    let count = controller_count(kbl) * 4;
+pub(super) fn clocks(config: &Config, pcr: &Pcr, silicon: hsio::Silicon) -> Result<(), Error> {
+    let kind = silicon.kind();
+    let kbl = silicon.is_kbl_h();
+    let count = controller_count(kind, kbl) * 4;
     let mut maps = [0u32; 4];
     let gpio = Gpio {
         pcr,
+        kind,
         program_itss_polarity: false,
     };
     for rp in 0..count {
@@ -549,12 +605,14 @@ pub(super) fn clocks(config: &Config, pcr: &Pcr, kbl: bool) -> Result<(), Error>
     for (i, value) in maps[..if kbl { 4 } else { 3 }].iter().enumerate() {
         let register = pcr.register::<()>(pcr::Port::Fia, 0x100 + 4 * i as u16)?;
         register.set(*value);
-        let mask = if i < 2 || kbl && i == 2 {
-            u32::MAX
-        } else if i == 2 {
-            0xf000ffff
-        } else {
-            15
+        let mask = match (kind, i) {
+            (super::super::dmi::Kind::Lp, 0) => u32::MAX,
+            (super::super::dmi::Kind::Lp, 1) => 0x0000_ffff,
+            (super::super::dmi::Kind::Lp, 2) => 0xf000_0000,
+            (super::super::dmi::Kind::H, 0 | 1) => u32::MAX,
+            (super::super::dmi::Kind::H, 2) if kbl => u32::MAX,
+            (super::super::dmi::Kind::H, 2) => 0xf000_ffff,
+            _ => 15,
         };
         if (register.get() ^ *value) & mask != 0 {
             return Err(Error::Readback);

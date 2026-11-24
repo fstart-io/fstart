@@ -263,9 +263,6 @@ pub unsafe fn initialize_legacy(
     use fstart_core::pio::PioRegister;
     use tock_registers::interfaces::ReadWriteable;
     let silicon = super::hsio::Silicon::read(lpc).map_err(|_| InitError::Device)?;
-    if silicon.kind() != super::dmi::Kind::H {
-        return Err(InitError::Device);
-    }
     policy.interrupts.validate().map_err(InitError::Irq)?;
     legacy_pc::initialize_isa_dma();
     let ppi = PioRegister::<u8, PpiControl::Register>::new(0x61);
@@ -273,7 +270,8 @@ pub unsafe fn initialize_legacy(
     ppi.write(PpiControl::STATUS.val(status) + PpiControl::SERR_DISABLE::SET);
     PioRegister::<u8>::new(0x70).set(0x80); // Native NMI disable, CMOS index 0.
     unsafe { lpc.register::<u8, ClockControl::Register>(0xe0) }.modify(ClockControl::CLKRUN::SET);
-    let interface = unsafe { super::espi::initialize(lpc, pcr, delay) }.map_err(InitError::Espi)?;
+    let interface = unsafe { super::espi::initialize(lpc, pcr, silicon.kind(), delay) }
+        .map_err(InitError::Espi)?;
     let serial = unsafe { lpc.register::<u8, SerialIrqControl::Register>(0x64) };
     if policy.serial_irq == SerialIrq::Disabled {
         serial.modify(SerialIrqControl::ENABLE::CLEAR);

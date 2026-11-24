@@ -3,6 +3,7 @@
 //! bb143d1752f8b559cb9a40b738bd13c6bf37e3de441ae525b154200da96a01ce.
 //! Cold PCH-H visibility/pad policy only, not ISH firmware or sensor service.
 use super::{
+    dmi,
     gpio::{self, Gpio, Pad},
     hsio,
     pcr::{self, Pcr, Port},
@@ -37,8 +38,8 @@ impl Policy {
     pub const fn enabled(self) -> bool {
         matches!(self, Self::Pci(_))
     }
-    pub(crate) fn pads(self) -> Result<heapless::Vec<(Pad, u8), 32>, Error> {
-        const GP: [(u16, u8); 8] = [
+    pub(crate) fn pads_for(self, kind: dmi::Kind) -> Result<heapless::Vec<(Pad, u8), 32>, Error> {
+        const GP_H: [(u16, u8); 8] = [
             (18, 1),
             (19, 1),
             (20, 1),
@@ -48,23 +49,39 @@ impl Policy {
             (12, 2),
             (17, 1),
         ];
-        const I2C: [[(u16, u8); 2]; 3] = [
+        const GP_LP: [(u16, u8); 8] = [
+            (18, 1),
+            (19, 1),
+            (20, 1),
+            (21, 1),
+            (22, 1),
+            (23, 1),
+            (12, 2),
+            (17, 2),
+        ];
+        const I2C_H: [[(u16, u8); 2]; 3] = [
             [(176, 1), (177, 1)],
             [(178, 1), (179, 1)],
             [(76, 1), (95, 1)],
         ];
+        const I2C_LP: [[(u16, u8); 2]; 3] =
+            [[(77, 1), (78, 1)], [(79, 1), (80, 1)], [(130, 2), (131, 2)]];
         const UART: [[(u16, u8); 4]; 2] = [
             [(85, 1), (86, 1), (87, 1), (88, 1)],
             [(60, 2), (61, 2), (62, 2), (63, 2)],
         ];
         const SPI: [(u16, u8); 4] = [(81, 1), (82, 1), (83, 1), (84, 1)];
+        let (gp_table, i2c_table) = match kind {
+            dmi::Kind::H => (&GP_H, &I2C_H),
+            dmi::Kind::Lp => (&GP_LP, &I2C_LP),
+        };
         let mut result = heapless::Vec::new();
         if let Self::Pci(p) = self {
-            for (pins, enabled) in I2C.iter().zip(p.i2c) {
+            for (pins, enabled) in i2c_table.iter().zip(p.i2c) {
                 if enabled {
                     for (pad, function) in pins {
                         result
-                            .push((Pad::from_number(*pad)?, *function))
+                            .push((Pad::from_number_for(kind, *pad)?, *function))
                             .map_err(|_| Error::Policy)?;
                     }
                 }
@@ -73,7 +90,7 @@ impl Policy {
                 if enabled {
                     for (pad, function) in pins {
                         result
-                            .push((Pad::from_number(*pad)?, *function))
+                            .push((Pad::from_number_for(kind, *pad)?, *function))
                             .map_err(|_| Error::Policy)?;
                     }
                 }
@@ -81,14 +98,14 @@ impl Policy {
             if p.spi {
                 for (pad, function) in SPI {
                     result
-                        .push((Pad::from_number(pad)?, function))
+                        .push((Pad::from_number_for(kind, pad)?, function))
                         .map_err(|_| Error::Policy)?;
                 }
             }
-            for (index, (pad, function)) in GP.iter().enumerate() {
+            for (index, (pad, function)) in gp_table.iter().enumerate() {
                 if p.gp & (1 << index) != 0 {
                     result
-                        .push((Pad::from_number(*pad)?, *function))
+                        .push((Pad::from_number_for(kind, *pad)?, *function))
                         .map_err(|_| Error::Policy)?;
                 }
             }
@@ -137,7 +154,7 @@ register_bitfields![u32,
     Control [ BAR1_DISABLE OFFSET(7) NUMBITS(1) [] ],Power [ ENABLE OFFSET(0) NUMBITS(6) [] ]
 ];
 /// # Safety
-/// Exclusive actual cold PCH-H ISH/host config, PCR/PWRM and requested pads,
+/// Exclusive actual cold PCH-H/LP ISH/host config, PCR/PWRM and requested pads,
 /// before static-disable locks or PCI enumeration. No OS/AP/SMM or host DMA
 /// competes. CSE-owned firmware is not replaced or represented as initialized.
 pub(crate) unsafe fn prepare(
@@ -145,9 +162,7 @@ pub(crate) unsafe fn prepare(
     pcr: &Pcr,
     pmc: &PmcRegisters,
 ) -> Result<Outcome, Error> {
-    if hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?.kind() != super::dmi::Kind::H {
-        return Err(Error::Device);
-    }
+    let kind = hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?.kind();
     if pmc.subsystem_fuse.get() == u32::MAX || pmc.function_disable.get() == u32::MAX {
         return Err(Error::Device);
     }
@@ -200,10 +215,11 @@ pub(crate) unsafe fn prepare(
             Outcome::Disabled
         });
     }
-    let pads = policy.pads()?;
+    let pads = policy.pads_for(kind)?;
     // Validate each mux before changing the device's visibility.
     let gpio = Gpio {
         pcr,
+        kind,
         program_itss_polarity: false,
     };
     for (pad, function) in pads {

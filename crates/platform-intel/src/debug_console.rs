@@ -15,8 +15,9 @@
 //! [`FLASH_CONSOLE_SIZE`]: crate::facts::FLASH_CONSOLE_SIZE
 
 /// Add the debug consoles the build selects. ECAM and RCBA must be mapped;
-/// the board's console is already installed. `flash_log` requires code, data
-/// and page tables in DRAM, with no other flash readers during programming.
+/// the board's console is already installed. `flash_log` requires page tables
+/// off flash (in DRAM or CAR) and, for XIP bootblock execution, a WP-cached
+/// BIOS window so `XipImage` warming keeps instruction/rodata fetches in cache.
 #[cfg(feature = "stage")]
 #[cfg_attr(
     not(any(feature = "ehci-console", feature = "flash-console")),

@@ -95,11 +95,11 @@ register_bitfields![u32,
     ItssClock [ GATES OFFSET(0) NUMBITS(5) [] ]
 ];
 const PSFS: [Port; 4] = [Port::Psf1, Port::Psf2, Port::Psf3, Port::Psf4];
-fn eoi_offsets(kbl: bool) -> (u16, u16) {
-    if kbl {
-        (0x405c, 0x404c)
-    } else {
-        (0x4058, 0x4048)
+fn eoi_config(kind: dmi::Kind, kbl: bool) -> (u16, u16, u32) {
+    match kind {
+        dmi::Kind::Lp => (0x4060, 0x4050, 0x38a00),
+        dmi::Kind::H if kbl => (0x405c, 0x404c, 0x38b00),
+        dmi::Kind::H => (0x4058, 0x4048, 0x38b00),
     }
 }
 fn itss_gates(policy: Policy) -> u32 {
@@ -110,7 +110,7 @@ fn itss_gates(policy: Policy) -> u32 {
     }
 }
 /// # Safety
-/// Actual cold H silicon, mapped/exclusive PCR and visible P2SB, before mask
+/// Actual cold H/LP silicon, mapped/exclusive PCR and visible P2SB, before mask
 /// lock/enumeration; NB DMI topology and matching low-latency policy applied.
 /// All failures poison the chipset owner; there is no reversible power recipe.
 pub(crate) unsafe fn before_root_ports(
@@ -119,9 +119,6 @@ pub(crate) unsafe fn before_root_ports(
     silicon: hsio::Silicon,
     policy: Policy,
 ) -> Result<(), Error> {
-    if silicon.kind() != dmi::Kind::H {
-        return Err(Error::Silicon(silicon.kind()));
-    }
     let id = p2sb.read32(0);
     let bar = p2sb.memory_bar(0x10);
     let command = p2sb.read16(4);
@@ -143,7 +140,7 @@ pub(crate) unsafe fn before_root_ports(
     if e2.is_set(P2sbE2::MASK_LOCK) {
         return Err(Error::Locked);
     }
-    unsafe { dmi::post_memory::configure(pcr, policy.legacy_io_low_latency) }?;
+    unsafe { dmi::post_memory::configure(pcr, silicon.kind(), policy.legacy_io_low_latency) }?;
     e2.modify(P2sbE2::NATIVE_BIT0::SET);
     if policy.legacy_io_low_latency {
         power.modify(P2sbPower::PMC_GATING.val(0));
@@ -170,6 +167,7 @@ pub(crate) unsafe fn before_root_ports(
 }
 pub(crate) struct Prepared {
     vtd_routing: bool,
+    kind: dmi::Kind,
     kbl: bool,
     policy: Policy,
     _bsp: core::marker::PhantomData<*mut ()>,
@@ -180,7 +178,7 @@ pub struct Outcome {
     pub legacy_8254_clock_gated: bool,
 }
 /// # Safety
-/// Own actual cold H fabric after RP mapping and LAN preparation, before the
+/// Own actual cold H/LP fabric after RP mapping and LAN preparation, before the
 /// canonical scan and final P2SB endpoint masks. vtd_policy is the SAME policy
 /// as RP initialization; actual SA fuse gates it. No DMA/AP/OS competitors.
 pub(crate) unsafe fn after_root_ports(
@@ -189,9 +187,6 @@ pub(crate) unsafe fn after_root_ports(
     vtd_policy: bool,
     policy: Policy,
 ) -> Result<Prepared, Error> {
-    if silicon.kind() != dmi::Kind::H {
-        return Err(Error::Silicon(silicon.kind()));
-    }
     let sa = EcamDevice::new(0, 0, 0);
     let id = sa.read32(0);
     let capid = sa.read32(0xe4);
@@ -199,8 +194,9 @@ pub(crate) unsafe fn after_root_ports(
         return Err(Error::SaCapability { id, capid });
     }
     let vtd_routing = vtd_policy && !CapidA::VTD_DISABLED.is_set(capid);
+    let kind = silicon.kind();
     let kbl = silicon.is_kbl_h();
-    let (target, control) = eoi_offsets(kbl);
+    let (target, control, target_val) = eoi_config(kind, kbl);
     // All four rootspaces and both EOI controllers must respond BEFORE the
     // first routing update; an all-ones response cannot authorize a policy.
     for port in PSFS {
@@ -232,9 +228,9 @@ pub(crate) unsafe fn after_root_ports(
     for (port, target, control) in [(Port::Psf1, target, control), (Port::Psf3, 0x4054, 0x404c)] {
         let t = pcr.register::<EoiTarget::Register>(port, target)?;
         let c = pcr.register::<EoiControl::Register>(port, control)?;
-        t.write(EoiTarget::NATIVE_TARGET.val(0x38b00));
+        t.write(EoiTarget::NATIVE_TARGET.val(target_val));
         c.write(EoiControl::NATIVE_CONTROL.val(3));
-        if t.get() != 0x38b00 || c.get() != 3 {
+        if t.get() != target_val || c.get() != 3 {
             return Err(Error::Readback);
         }
     }
@@ -309,6 +305,7 @@ pub(crate) unsafe fn after_root_ports(
         .write(RtcUip::NATIVE_CLEAR.val(3));
     Ok(Prepared {
         vtd_routing,
+        kind,
         kbl,
         policy,
         _bsp: core::marker::PhantomData,
@@ -316,7 +313,7 @@ pub(crate) unsafe fn after_root_ports(
 }
 /// GPIO/ITSS portion follows the separately owned SMBus, SPI and LPC recipes.
 /// # Safety
-/// Exclusive actual H GPIO communities/ITSS; board pad/event routing finished.
+/// Exclusive actual H/LP GPIO communities/ITSS; board pad/event routing finished.
 pub(crate) unsafe fn housekeeping(pcr: &Pcr, policy: Policy) -> Result<(), Error> {
     for port in [Port::Gpio0, Port::Gpio1, Port::Gpio2, Port::Gpio3] {
         let r = pcr.register::<MiscConfig::Register>(port, 0x10)?;
@@ -359,9 +356,9 @@ pub(crate) unsafe fn finish(prepared: Prepared, pcr: &Pcr) -> Result<Outcome, Er
             }
         }
     }
-    let (target, control) = eoi_offsets(prepared.kbl);
+    let (target, control, target_val) = eoi_config(prepared.kind, prepared.kbl);
     for (port, target, control) in [(Port::Psf1, target, control), (Port::Psf3, 0x4054, 0x404c)] {
-        if pcr.register::<EoiTarget::Register>(port, target)?.get() != 0x38b00
+        if pcr.register::<EoiTarget::Register>(port, target)?.get() != target_val
             || pcr.register::<EoiControl::Register>(port, control)?.get() != 3
         {
             return Err(Error::Readback);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Skylake/Kaby Lake with a Sunrise Point-H PCH: the board's policy bound
-//! into the system agent and PCH configurations the Intel flow drives.
+//! Skylake/Kaby Lake with a Sunrise Point (H or LP) PCH: the board's policy
+//! bound into the system agent and PCH configurations the Intel flow drives.
 //!
 //! The CPU and its system agent are one die, so there is no CPU-package
 //! parameter; the CPU policy lives in the system agent's configuration.
@@ -9,7 +9,7 @@ use crate::{IntelPlatform, IntelPlatformConfig};
 pub use fstart_arch::x86::cpu::intel::skylake::{AcpiTimer, Policy as CpuPolicy};
 use fstart_driver_intel::{skylake::driver as nb, sunrise_point::driver as sb};
 
-/// Board policy for a Skylake/Kaby Lake system with a Sunrise Point-H PCH.
+/// Board policy for a Skylake/Kaby Lake system with a Sunrise Point (H or LP) PCH.
 #[derive(Debug, Clone, Copy)]
 pub struct SkylakeSunrisePointConfig {
     pub northbridge: &'static nb::Config,
@@ -55,19 +55,21 @@ impl SkylakeSunrisePointConfig {
     }
 }
 
-/// The Skylake/Kaby Lake + Sunrise Point-H platform.
+/// The Skylake/Kaby Lake + Sunrise Point (H/LP) platform.
 pub struct SkylakeSunrisePoint;
 
 impl IntelPlatform for SkylakeSunrisePoint {
     type Config = SkylakeSunrisePointConfig;
-    const NAME: &'static str = "skylake/sunrise-point-h";
+    const NAME: &'static str = "skylake/sunrise-point";
     /// coreboot's DCACHE_RAM_BASE/SIZE for Skylake.
     const CAR_BASE: u64 = 0xfef0_0000;
     const CAR_SIZE: u64 = 0x4_0000;
     /// The native DDR4 training's call chain runs deeper than 16 KiB.
     const BOOTBLOCK_STACK: u64 = 0x1_0000;
     const FIT: bool = true;
-    const MICROCODE_SIGNATURES: &'static [&'static str] = &["06-5e-03", "06-9e-09", "06-9e-0a"];
+    const MICROCODE_SIGNATURES: &'static [&'static str] = &[
+        "06-4e-03", "06-5e-03", "06-8e-09", "06-8e-0a", "06-9e-09", "06-9e-0a",
+    ];
 }
 
 impl IntelPlatformConfig for SkylakeSunrisePointConfig {
@@ -110,6 +112,24 @@ mod stage {
             static WORKSPACE: crate::memory_cache::TrainingWorkspace<RECORD_SIZE> =
                 crate::memory_cache::TrainingWorkspace::new();
             WORKSPACE.take()
+        }
+
+        #[cfg(all(
+            feature = "flash-console",
+            feature = "bundle-bootblock",
+            target_arch = "x86_64"
+        ))]
+        fn bootblock_car_page_tables()
+        -> Option<&'static mut fstart_arch::x86::boot::paging::EntryTables> {
+            use core::sync::atomic::{AtomicBool, Ordering};
+            use fstart_arch::x86::boot::paging::EntryTables;
+            static TAKEN: AtomicBool = AtomicBool::new(false);
+            static mut TABLES: EntryTables = EntryTables::new();
+            if TAKEN.swap(true, Ordering::AcqRel) {
+                return None;
+            }
+            // SAFETY: one-shot exclusive take in BSP CAR BSS.
+            Some(unsafe { &mut *core::ptr::addr_of_mut!(TABLES) })
         }
 
         /// The memory controller also needs the boot mode and HSIO state the

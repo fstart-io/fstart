@@ -261,6 +261,7 @@ pub static SOUTHBRIDGE: sb::Config = sb::Config {
         disable_ac_present_pulldown: false,
         wake_pin: true,
         disable_pmc_data_bar: false,
+        slp_s0_vm: false,
     },
     me: me::Policy {
         heci2: false,

@@ -5,9 +5,11 @@
 //! PMSYNC memory-throttling wiring are not offered by this owner. This PCH
 //! sensor recipe is NOT a board fan/EC policy or calibrated temperature proof.
 use super::{
+    dmi,
     gpio::{Group, PadDw0},
     hsio,
     pcr::{self, Pcr, Port},
+    pmc::{self, PmcRegisters},
 };
 use fstart_core::mmio::MmioReadWrite as RW;
 use fstart_pci::{EcamDevice, PCI_COMMAND_BITS, PciWindow, PciWindowKind};
@@ -126,20 +128,30 @@ register_structs! {
         (0xf0 => disabled: fstart_core::mmio::MmioReadOnly<u8,DeviceDisable::Register>), (0xf1 => _r17), (0x1000 => @END),
     }
 }
+fn lp_cross_throttle_levels() -> (u32, u32, u32) {
+    const MSR_TEMPERATURE_TARGET: u32 = 0x1a2;
+    let lo = unsafe { fstart_arch::x86::msr::rdmsr(MSR_TEMPERATURE_TARGET) } as u32;
+    let mut temp = (lo >> 16) & 0xff;
+    let tcc = (lo >> 24) & 0x3f;
+    if (lo & 0x7f) == 0 && temp > tcc {
+        temp -= tcc;
+    }
+    let encode = |c: u32| (c + 50) * 2;
+    (encode(temp), encode(temp + 5), encode(temp + 10))
+}
 /// # Safety
-/// Actual cold PCH-H, exclusive assigned PCI thermal BAR mapped UC, GPIO B23
-/// and DMI thermal controls. No AP/SMI/OS owner. The canonical allocator owns
-/// this exact BAR0 window; no temporary or invented mapping is accepted.
+/// Actual cold PCH-H/LP, exclusive assigned PCI thermal BAR mapped UC, GPIO B23,
+/// PWRM and DMI thermal controls. No AP/SMI/OS owner. The canonical allocator
+/// owns this exact BAR0 window; no temporary or invented mapping is accepted.
 /// Partial locks are irreversible and any failure forbids replay.
 pub(crate) unsafe fn initialize(
     config: Config,
     pcr: &Pcr,
+    pmc: &PmcRegisters,
     window: PciWindow,
 ) -> Result<Outcome, Error> {
     let trip = config.encoded()?;
-    if hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?.kind() != super::dmi::Kind::H {
-        return Err(Error::Device);
-    }
+    let kind = hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?.kind();
     let device = EcamDevice::new(0, 0x14, 2);
     if device.vendor_id() != 0x8086 || device.read16(0xa) != 0x1180 {
         return Err(Error::Device);
@@ -173,9 +185,9 @@ pub(crate) unsafe fn initialize(
     {
         return Err(Error::Locked);
     }
-    let pad = Group::B.pad(23)?;
+    let pad = Group::B.pad_for(kind, 23)?;
     let pchhot = pcr
-        .register::<PadDw0::Register>(pad.group().info().port, pad.config_offset())?
+        .register::<PadDw0::Register>(pad.info_for(kind)?.port, pad.config_offset_for(kind)?)?
         .read(PadDw0::MODE)
         == 2;
     r.catastrophic.set(0x14a);
@@ -187,18 +199,37 @@ pub(crate) unsafe fn initialize(
     if pchhot {
         r.hot.write(HotLevel::ENABLE::SET);
     }
-    // Native PCH-H internal throttle words, not invented external fan policy.
+    let (t0, t1, t2) = match kind {
+        dmi::Kind::H => (0x13c, 0x142, 0x148),
+        dmi::Kind::Lp => lp_cross_throttle_levels(),
+    };
     r.levels
-        .write(Levels::T0.val(0x13c) + Levels::T1.val(0x142) + Levels::T2.val(0x148));
+        .write(Levels::T0.val(t0) + Levels::T1.val(t1) + Levels::T2.val(t2));
     r.levels.modify(Levels::LOCK::SET + Levels::ENABLE::SET);
+    if kind == dmi::Kind::Lp {
+        r.levels2.modify(Levels2::PMC_ENABLE::SET);
+        pmc.pmsync
+            .modify(pmc::FinalLock::TT_STATE.val(1) + pmc::FinalLock::TT_EN::SET);
+        pmc.pmsync.modify(pmc::FinalLock::LOCK::SET);
+    }
     r.power
         .write(SensorPower::NATIVE_CONFIG.val(0x25) + SensorPower::TRIP.val(trip));
     r.misc0.modify(Misc0::ENABLE::SET);
     r.misc4
         .set((r.misc4.get() & !((1 << 12) | (1 << 11))) | 0x7c0);
-    r.misc8.set((r.misc8.get() & 0xffff) | 0x00100000);
-    r.misc_d0
-        .set((r.misc_d0.get() & !((1 << 25) | (1 << 23) | (1 << 22) | (1 << 21))) | (1 << 24));
+    match kind {
+        dmi::Kind::H => {
+            r.misc8.set((r.misc8.get() & 0xffff) | 0x00100000);
+            r.misc_d0.set(
+                (r.misc_d0.get() & !((1 << 25) | (1 << 23) | (1 << 22) | (1 << 21))) | (1 << 24),
+            );
+        }
+        dmi::Kind::Lp => {
+            r.misc_d0.set(
+                (r.misc_d0.get() & !((1 << 25) | (1 << 24) | (1 << 22))) | (1 << 23) | (1 << 21),
+            );
+        }
+    }
     r.misc_e4.set((r.misc_e4.get() & !0x0600070e) | 0x19000810);
     r.misc_e8.set((r.misc_e8.get() & !0xff00) | 0x8000);
     if r.calibration.get() == 0 {
@@ -206,14 +237,16 @@ pub(crate) unsafe fn initialize(
     }
     r.misc_a4.modify(MiscA4::ENABLE.val(7));
     r.enable.modify(SensorEnable::ENABLE::SET);
-    pcr.register::<DmiThermal::Register>(Port::Dmi, 0x2238)?
-        .modify(
-            DmiThermal::CLEAR.val(0)
-                + DmiThermal::CLEAR2.val(0)
-                + DmiThermal::BIT11::SET
-                + DmiThermal::BIT8::SET
-                + DmiThermal::BIT0::SET,
-        );
+    if kind == dmi::Kind::H {
+        pcr.register::<DmiThermal::Register>(Port::Dmi, 0x2238)?
+            .modify(
+                DmiThermal::CLEAR.val(0)
+                    + DmiThermal::CLEAR2.val(0)
+                    + DmiThermal::BIT11::SET
+                    + DmiThermal::BIT8::SET
+                    + DmiThermal::BIT0::SET,
+            );
+    }
     r.control
         .modify(SensorControl::LOCK::SET + SensorControl::CATASTROPHIC::SET);
     r.smi.modify(SmiControl::LOCK::SET);
@@ -230,9 +263,9 @@ pub(crate) unsafe fn initialize(
         || !r.levels.matches_all(
             Levels::LOCK::SET
                 + Levels::ENABLE::SET
-                + Levels::T0.val(0x13c)
-                + Levels::T1.val(0x142)
-                + Levels::T2.val(0x148),
+                + Levels::T0.val(t0)
+                + Levels::T1.val(t1)
+                + Levels::T2.val(t2),
         )
         || !r.power.matches_all(
             SensorPower::LOCK::SET

@@ -216,7 +216,7 @@ fn require(device: &EcamDevice) -> Result<(), Error> {
     // class. The Intel PCH register spec reports zero for BCC and SCC.
     let id = device.try_read32(0x00).ok_or(Error::Device)?;
     match id {
-        0xa124_8086 | 0xa2a4_8086 => Ok(()), // Sunrise Point-H / 200 Series
+        0x9d24_8086 | 0xa124_8086 | 0xa2a4_8086 => Ok(()), // Sunrise Point-LP/H / 200 Series
         // 332691 BC[9]: once OSFH is set, VID/DID reads return invalid data
         // and no other config register changes. Finalize lockdown and the
         // SMM write-protect handler run after the cold owner hid it.

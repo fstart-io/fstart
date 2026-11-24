@@ -405,7 +405,12 @@ impl SouthbridgeAcpi for IntelSunrisePoint {
         // PCH-specific decode geometry, not the ICH helper's GPIO/PM/TCO map.
         let mut lpc:Vec<u8>=acpi_dsl! {
             Name("_ADR",0x001f0000u32);
-            Device("HPET") {Name("_HID",EisaId("PNP0103"));Name("_CRS",ResourceTemplate {Memory32Fixed(ReadWrite,0xfed00000u32,0x400u32);});}
+            Device("HPET") {
+                Name("_HID",EisaId("PNP0103"));
+                Name("_CID",0x010CD041u32);
+                Name("_CRS",ResourceTemplate {Memory32Fixed(ReadWrite,0xfed00000u32,0x400u32);});
+                Method("_STA",0,NotSerialized) { Return(0x0Fu32); }
+            }
             Device("RTC_") {Name("_HID",EisaId("PNP0B00"));Name("_CRS",ResourceTemplate {IO(0x70u16,0x70u16,1u8,8u8);IRQ(Edge,ActiveHigh,Exclusive,8u32);});}
             Device("LDRC") {Name("_HID",EisaId("PNP0C02"));Name("_UID",2u32);Name("_CRS",ResourceTemplate {
                 IO(0xb2u16,0xb2u16,1u8,2u8);

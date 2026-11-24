@@ -69,6 +69,7 @@ enum Phase {
 pub struct NativeMe {
     policy: Policy,
     phase: Phase,
+    kind: super::dmi::Kind,
     status: Option<FirmwareStatus>,
     visible: bool,
 }
@@ -77,23 +78,26 @@ impl NativeMe {
         Self {
             policy,
             phase: Phase::New,
+            kind: super::dmi::Kind::H,
             status: None,
             visible: true,
         }
     }
     /// # Safety
-    /// Actual PCH-H PCR/HECI/PMC resources are exclusively owned and mapped UC.
+    /// Actual PCH-H/LP PCR/HECI/PMC resources are exclusively owned and mapped UC.
     /// An authenticated cold DID predecessor exists; scratch is unique DRAM,
     /// never CAR or a DMA-owned payload. Do not retry a partially failed owner.
     pub unsafe fn initialize(
         &mut self,
         pcr: &Pcr,
+        kind: super::dmi::Kind,
         scratch: &mut [u8],
         delay: &mut impl DelayNs,
     ) -> Result<(), Error> {
         if self.phase != Phase::New {
             return Err(Error::AlreadyAttempted);
         }
+        self.kind = kind;
         self.phase = Phase::Running;
         let result = self.initialize_inner(pcr, scratch, delay);
         self.phase = if result.is_ok() {
@@ -157,8 +161,9 @@ impl NativeMe {
             }
             _ => {}
         }
+        let debug_mode = status.is_debug_mode();
         for (function, enable) in enabled.into_iter().enumerate() {
-            configure_function(pcr, function as u8, enable, delay)?;
+            configure_function(pcr, self.kind, function as u8, enable, debug_mode, delay)?;
         }
         self.visible = enabled[0];
         self.status = Some(status); // actual snapshot before any function hide
@@ -198,12 +203,13 @@ impl NativeMe {
                 }
                 BiosPath::TemporaryDisable
                 | BiosPath::SecurityOverrideMei
-                | BiosPath::SecurityOverrideJumper => {
-                    configure_function(pcr, 0, false, delay)?;
+                | BiosPath::SecurityOverrideJumper
+                | BiosPath::Debug => {
+                    configure_function(pcr, self.kind, 0, false, status.is_debug_mode(), delay)?;
                     self.visible = false;
                 }
                 // Native clients normally never reach this point in update,
-                // SPS, debug or enforcement. Do not invent an EOP waiver.
+                // SPS, or enforcement. Do not invent an EOP waiver.
                 _ => return Err(Error::Policy),
             }
         }
@@ -234,15 +240,18 @@ impl NativeMe {
             return Err(Error::AlreadyAttempted);
         }
         self.phase = Phase::Running;
+        let debug_mode = self.status.is_some_and(|s| s.is_debug_mode());
         let result = (|| {
-            for function in [0, 1, 4] {
-                let device = EcamDevice::new(0, 0x16, function);
-                if device.is_present() {
-                    set_idle(&device, true, delay)?;
+            if !debug_mode {
+                for function in [0, 1, 4] {
+                    let device = EcamDevice::new(0, 0x16, function);
+                    if device.is_present() {
+                        set_idle(&device, true, delay)?;
+                    }
                 }
             }
             if !self.policy.heci1_visible_to_os && self.visible {
-                configure_function(pcr, 0, false, delay)?;
+                configure_function(pcr, self.kind, 0, false, debug_mode, delay)?;
                 self.visible = false;
             }
             Ok(())
@@ -255,13 +264,18 @@ impl NativeMe {
         result
     }
 }
-fn shadow(pcr: &Pcr, function: u8, disable: bool) -> Result<(), Error> {
-    let base = match function {
-        0 => 0x600,
-        1 => 0x400,
-        2 => 0x800,
-        3 => 0x700,
-        4 => 0x300,
+fn shadow(pcr: &Pcr, kind: super::dmi::Kind, function: u8, disable: bool) -> Result<(), Error> {
+    let base = match (kind, function) {
+        (super::dmi::Kind::H, 0) => 0x600,
+        (super::dmi::Kind::H, 1) => 0x400,
+        (super::dmi::Kind::H, 2) => 0x800,
+        (super::dmi::Kind::H, 3) => 0x700,
+        (super::dmi::Kind::H, 4) => 0x300,
+        (super::dmi::Kind::Lp, 0) => 0xa00,
+        (super::dmi::Kind::Lp, 1) => 0x800,
+        (super::dmi::Kind::Lp, 2) => 0xc00,
+        (super::dmi::Kind::Lp, 3) => 0xb00,
+        (super::dmi::Kind::Lp, 4) => 0x700,
         _ => return Err(Error::Device),
     };
     let register = pcr.register::<Shadow::Register>(Port::Psf1, base + 0x1c)?;
@@ -273,19 +287,22 @@ fn shadow(pcr: &Pcr, function: u8, disable: bool) -> Result<(), Error> {
 }
 fn configure_function(
     pcr: &Pcr,
+    kind: super::dmi::Kind,
     function: u8,
     enable: bool,
+    debug_mode: bool,
     delay: &mut impl DelayNs,
 ) -> Result<(), Error> {
     if enable {
-        shadow(pcr, function, false)?;
+        shadow(pcr, kind, function, false)?;
     }
     let device = EcamDevice::new(0, 0x16, function);
     if device.is_present() {
         if matches!(function, 0 | 1 | 4) {
             // The first HECI page is already reserved; other disabled functions
             // may have no BAR and therefore no reachable D0i3 controller.
-            if device.memory_bar(0x10).is_some_and(|b| b != 0) {
+            // In ME Debug mode (halted CSME), skip D0i3 handshake to avoid CIP timeouts.
+            if !debug_mode && device.memory_bar(0x10).is_some_and(|b| b != 0) {
                 set_idle(&device, !enable, delay)?;
             }
         } else if !enable {
@@ -296,7 +313,7 @@ fn configure_function(
         return Err(Error::Device);
     }
     if !enable {
-        shadow(pcr, function, true)?;
+        shadow(pcr, kind, function, true)?;
     }
     Ok(())
 }

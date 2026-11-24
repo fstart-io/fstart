@@ -8,8 +8,9 @@ pub(crate) use xdci::prepare;
 #[cfg(test)]
 mod tests;
 use super::{
-    hsio,
+    dmi, hsio,
     pcr::{self, Pcr, Port},
+    pmc,
 };
 use crate::{
     p2sb::{self, Message, Opcode, Sbi},
@@ -136,7 +137,11 @@ struct Maps {
     usb3_oc: [u32; 8],
 }
 impl Config {
-    fn maps(&self) -> Result<Maps, Error> {
+    fn maps_for(&self, kind: dmi::Kind) -> Result<Maps, Error> {
+        let (usb2_phys, usb2_total, usb3_total) = match kind {
+            dmi::Kind::H => (14, 16, 10),
+            dmi::Kind::Lp => (10, 12, 6),
+        };
         let mut maps = Maps {
             usb2_disable: 0,
             usb3_disable: 0,
@@ -148,11 +153,12 @@ impl Config {
                 || port.pre_bias > 7
                 || port.emphasis > 3
                 || port.overcurrent.is_some_and(|pin| pin >= 8)
+                || (index >= usb2_total && port.enabled)
             {
                 return Err(Error::Policy);
             }
             if !port.enabled {
-                if index < 14 {
+                if index < usb2_phys {
                     maps.usb2_disable |= 1 << index;
                 }
                 continue;
@@ -165,11 +171,14 @@ impl Config {
             if port.de_emphasis > 63
                 || port.downscale > 63
                 || port.overcurrent.is_some_and(|pin| pin >= 8)
+                || (index >= usb3_total && port.enabled)
             {
                 return Err(Error::Policy);
             }
             if !port.enabled {
-                maps.usb3_disable |= 1 << index;
+                if index < usb3_total {
+                    maps.usb3_disable |= 1 << index;
+                }
                 continue;
             }
             if let Some(pin) = port.overcurrent {
@@ -179,7 +188,7 @@ impl Config {
         Ok(maps)
     }
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        self.maps().map(|_| ())
+        self.maps_for(dmi::Kind::H).map(|_| ())
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,11 +238,95 @@ fn afe_modify<R: RegisterLongName>(
     sbi.execute(usb2_message(offset, Opcode::PcrWrite), &mut data, delay)?;
     Ok(data)
 }
-fn afe(config: &Config, sbi: &mut Sbi<'_>, delay: &mut impl DelayNs) -> Result<(), Error> {
+/// Write the LP PMC XRAM USB2 AFE replay table so the PMC re-applies the
+/// programmed USB2 PHY registers when exiting power-gated states.
+unsafe fn write_pmc_xram_usb2(pmc_dev: &EcamDevice, regs: &[u16], vals: &[u32]) {
+    const PMC_PM_DATA_BAR: u16 = 0x10;
+    const PMC_PM_DATA_BAR_MASK: u32 = 0xffff_c000;
+    const PMC_XRAM_BASE: u32 = 0xfe05_0000;
+    const HEADER_SIZE: usize = 32;
+    const END_MARKER: u32 = 0x0f;
+
+    let old_bar = pmc_dev.read32(PMC_PM_DATA_BAR);
+    let old_cmd = pmc_dev.read16(4);
+    let masked = old_bar & PMC_PM_DATA_BAR_MASK;
+    let temporary = masked == 0 || masked == PMC_PM_DATA_BAR_MASK;
+    let base = if temporary {
+        pmc_dev.write16(4, old_cmd & !6);
+        pmc_dev.write32(PMC_PM_DATA_BAR, PMC_XRAM_BASE);
+        pmc_dev.write16(4, (old_cmd & !6) | 2);
+        PMC_XRAM_BASE as usize
+    } else {
+        pmc_dev.write16(4, old_cmd | 2);
+        masked as usize
+    };
+
+    let mut offset = HEADER_SIZE;
+    // Delay command: 7 x 100 us (size = (4/2) - 1 = 1, opcode = 2).
+    unsafe {
+        MmioRegister::<u8>::new(base + offset).set(2 | (1 << 3));
+        MmioRegister::<u8>::new(base + offset + 1).set(2);
+        MmioRegister::<u8>::new(base + offset + 2).set(7);
+        MmioRegister::<u8>::new(base + offset + 3).set(0);
+    }
+    offset += 4;
+
+    // Posted SBI write commands (size = (12/2) - 1 = 5, opcode = 0).
+    for (&reg, &val) in regs.iter().zip(vals.iter()) {
+        unsafe {
+            MmioRegister::<u8>::new(base + offset).set(5 << 3);
+            MmioRegister::<u8>::new(base + offset + 1).set(Port::Usb2 as u8);
+            MmioRegister::<u8>::new(base + offset + 2).set(0);
+            MmioRegister::<u8>::new(base + offset + 3).set(0);
+            MmioRegister::<u8>::new(base + offset + 4).set(0x0f);
+            MmioRegister::<u8>::new(base + offset + 5).set(0);
+            MmioRegister::<u16>::new(base + offset + 6).set(reg);
+            MmioRegister::<u32>::new(base + offset + 8).set(val);
+        }
+        offset += 12;
+    }
+
+    unsafe {
+        MmioRegister::<u32>::new(base + offset).set(END_MARKER);
+        // Header word 0: USB2 group (1), row 0, 0 end markers, 0 delays => 0x0100.
+        MmioRegister::<u16>::new(base).set(0x0100);
+        // Header word 1: end of header table => 0x0f00.
+        MmioRegister::<u16>::new(base + 2).set(0x0f00);
+    }
+
+    if temporary {
+        pmc_dev.write16(4, old_cmd & !6);
+        pmc_dev.write32(PMC_PM_DATA_BAR, old_bar);
+        pmc_dev.write16(4, old_cmd);
+    }
+    unsafe { pmc_dev.register::<u32, pmc::GenPmconB::Register>(0xa4) }
+        .modify(pmc::GenPmconB::DATA_BAR_DISABLE::SET + pmc::GenPmconB::HOST_RESET::CLEAR);
+}
+
+fn afe(
+    config: &Config,
+    kind: dmi::Kind,
+    pmc_dev: &EcamDevice,
+    sbi: &mut Sbi<'_>,
+    delay: &mut impl DelayNs,
+) -> Result<(), Error> {
+    let mut xram_regs = [0u16; 64];
+    let mut xram_vals = [0u32; 64];
+    let mut xram_count = 0usize;
+    let mut record = |reg: u16, val: u32| {
+        if xram_count < xram_regs.len() {
+            xram_regs[xram_count] = reg;
+            xram_vals[xram_count] = val;
+            xram_count += 1;
+        }
+    };
+
     // These offsets are full-dword SBI addresses, including 402Bh and 7F03h.
     // They MUST NOT become unaligned/byte-addressed PCR MMIO accesses.
-    afe_modify(sbi, 0x402b, Global::VBUS::SET, delay)?;
-    afe_modify(sbi, 0x4001, Global::PORT::SET, delay)?;
+    let v = afe_modify(sbi, 0x402b, Global::VBUS::SET, delay)?;
+    record(0x402b, v);
+    let v = afe_modify(sbi, 0x4001, Global::PORT::SET, delay)?;
+    record(0x4001, v);
     for (offset, value) in [
         (0x7034, 0x50000000),
         (0x7038, 0x0a70fcf6),
@@ -241,16 +334,23 @@ fn afe(config: &Config, sbi: &mut Sbi<'_>, delay: &mut impl DelayNs) -> Result<(
     ] {
         let mut data = value;
         sbi.execute(usb2_message(offset, Opcode::PcrWrite), &mut data, delay)?;
+        record(offset, value);
     }
     let mut pll = 0;
     sbi.execute(usb2_message(0x7f03, Opcode::PcrRead), &mut pll, delay)?;
     if pll & Pll::LOCK::SET.value == 0 {
-        afe_modify(sbi, 0x7f03, Pll::FORCE::SET, delay)?;
+        let v = afe_modify(sbi, 0x7f03, Pll::FORCE::SET, delay)?;
+        record(0x7f03, v);
     }
-    afe_modify(sbi, 0x7f04, Comp::BIT9::SET + Comp::BIT10::SET, delay)?;
-    for (index, port) in config.usb2[..14].iter().enumerate() {
+    let v = afe_modify(sbi, 0x7f04, Comp::BIT9::SET + Comp::BIT10::SET, delay)?;
+    record(0x7f04, v);
+    let phys_ports = match kind {
+        dmi::Kind::H => 14,
+        dmi::Kind::Lp => 10,
+    };
+    for (index, port) in config.usb2[..phys_ports].iter().enumerate() {
         let base = 0x4000 | ((index as u16 + 1) << 8);
-        afe_modify(
+        let v = afe_modify(
             sbi,
             base,
             Afe1::TX.val(u32::from(port.tx_bias))
@@ -259,13 +359,15 @@ fn afe(config: &Config, sbi: &mut Sbi<'_>, delay: &mut impl DelayNs) -> Result<(
                 + Afe1::HIGH.val(63),
             delay,
         )?;
-        afe_modify(
+        record(base, v);
+        let v = afe_modify(
             sbi,
             base | 0x26,
             Afe2::EMP.val(u32::from(port.emphasis)),
             delay,
         )?;
-        afe_modify(
+        record(base | 0x26, v);
+        let v = afe_modify(
             sbi,
             base | 8,
             Utmi::BIT13::CLEAR
@@ -276,12 +378,21 @@ fn afe(config: &Config, sbi: &mut Sbi<'_>, delay: &mut impl DelayNs) -> Result<(
                 + Utmi::BIT7::SET,
             delay,
         )?;
+        record(base | 8, v);
     }
-    // PMC XRAM replay table is explicitly LP-only in the native source.
+    if kind == dmi::Kind::Lp && xram_count > 0 {
+        // SAFETY: PMC XRAM replay table programming is LP-only and executes
+        // exclusively before PMC lockdown.
+        unsafe { write_pmc_xram_usb2(pmc_dev, &xram_regs[..xram_count], &xram_vals[..xram_count]) };
+    }
     Ok(())
 }
 fn tune_ss(config: &Config, silicon: hsio::Silicon, pcr: &Pcr) -> Result<(), Error> {
-    for (port, policy) in config.usb3.iter().enumerate() {
+    let max_port = match silicon.kind() {
+        dmi::Kind::H => 10,
+        dmi::Kind::Lp => 6,
+    };
+    for (port, policy) in config.usb3[..max_port].iter().enumerate() {
         if !policy.enabled || policy.de_emphasis == 0 && policy.downscale == 0 {
             continue;
         }
@@ -306,14 +417,16 @@ fn tune_ss(config: &Config, silicon: hsio::Silicon, pcr: &Pcr) -> Result<(), Err
 struct HostPhase {
     device: Option<EcamDevice>,
     pcr: Pcr,
+    kind: dmi::Kind,
     command: u16,
     pll_touched: bool,
 }
 impl HostPhase {
-    fn enter(device: EcamDevice, pcr: Pcr) -> Result<Self, Error> {
+    fn enter(device: EcamDevice, pcr: Pcr, kind: dmi::Kind) -> Result<Self, Error> {
         let result = Self {
             device: Some(device),
             pcr,
+            kind,
             command: device.read16(4),
             pll_touched: false,
         };
@@ -327,9 +440,11 @@ impl HostPhase {
         Ok(result)
     }
     fn activate(&mut self) -> Result<(), Error> {
-        let pll = self.pcr.register::<Mipi::Register>(Port::Modphy0, 0x8088)?;
-        self.pll_touched = true;
-        pll.modify(Mipi::BIT3::CLEAR + Mipi::BIT5::CLEAR);
+        if self.kind == dmi::Kind::H {
+            let pll = self.pcr.register::<Mipi::Register>(Port::Modphy0, 0x8088)?;
+            self.pll_touched = true;
+            pll.modify(Mipi::BIT3::CLEAR + Mipi::BIT5::CLEAR);
+        }
         let device = self.device.ok_or(Error::Device)?;
         unsafe { device.register::<u16, PCI_COMMAND_BITS::Register>(4) }
             .modify(PCI_COMMAND_BITS::BUS_MASTER::SET);
@@ -366,11 +481,22 @@ impl Drop for HostPhase {
         }
     }
 }
-fn old_stepping(id: u16, step: u8) -> bool {
-    step < 0x30
-        && matches!(id,0xa141|0xa142|0xa143..=0xa14b|0xa14d|0xa14e|0xa150..=0xa154|0xa156|0xa2c0|0xa2d0)
+fn old_stepping(kind: dmi::Kind, id: u16, step: u8) -> bool {
+    match kind {
+        dmi::Kind::H => {
+            step < 0x30
+                && matches!(id,0xa141|0xa142|0xa143..=0xa14b|0xa14d|0xa14e|0xa150..=0xa154|0xa156|0xa2c0|0xa2d0)
+        }
+        dmi::Kind::Lp => step < 0x20 && matches!(id, 0x9d41 | 0x9d43 | 0x9d46 | 0x9d48),
+    }
 }
-fn debug_port(base: usize, size: u64, r: &Registers, count: u8) -> Result<Option<u8>, Error> {
+fn debug_port(
+    base: usize,
+    size: u64,
+    r: &Registers,
+    ss_offset: u8,
+    count: u8,
+) -> Result<Option<u8>, Error> {
     let mut offset = u64::from(r.hcc.read(Hcc::XECP)) * 4;
     for _ in 0..64 {
         if offset == 0 {
@@ -390,9 +516,8 @@ fn debug_port(base: usize, size: u64, r: &Registers, count: u8) -> Result<Option
             }
             let port = (unsafe { MmioRegister::<u32>::new(base + offset as usize + 0x24) }.get()
                 >> 24) as u8;
-            // PCH-H SS starts at logical port17 (PORTSC 580h).
-            return if port >= 17 && port < 17 + count {
-                Ok(Some(port - 17))
+            return if port >= ss_offset && port < ss_offset + count {
+                Ok(Some(port - ss_offset))
             } else {
                 Ok(None)
             };
@@ -409,26 +534,31 @@ fn debug_port(base: usize, size: u64, r: &Registers, count: u8) -> Result<Option
 }
 fn pdo(
     r: &Registers,
+    kind: dmi::Kind,
     maps: Maps,
     count: u8,
     owned: u16,
     debug: Option<u8>,
     delay: &mut impl DelayNs,
 ) -> Result<(u16, u16), Error> {
-    let disabled2 = (r.usb2_pdo.get() | maps.usb2_disable) & 0x7fff;
-    let mut disabled3 = r.usb3_pdo.get() & 0x3ff;
+    let (usb2_mask, usb3_mask, max_usb3) = match kind {
+        dmi::Kind::H => (0x7fffu32, 0x3ffu32, 10usize),
+        dmi::Kind::Lp => (0x3ffu32, 0x3fu32, 6usize),
+    };
+    let disabled2 = (r.usb2_pdo.get() | maps.usb2_disable) & usb2_mask;
+    let mut disabled3 = r.usb3_pdo.get() & usb3_mask;
     if debug.is_some_and(|port| maps.usb3_disable & (1 << port) != 0) {
         return Err(Error::DebugPortConflict);
     }
-    for port in 0..10 {
+    for port in 0..max_usb3 {
         if maps.usb3_disable & (1 << port) == 0 || disabled3 & (1 << port) != 0 {
             continue;
         }
         // Only reported, actually USB3-owned FIA lanes have a link to
         // disable. Do not demand a PLS transition from a PCIe/SATA/fused
-        // lane's inactive PORTSC. PDO still covers the complete 10-port mask.
+        // lane's inactive PORTSC. PDO still covers the full port mask.
         if port < usize::from(count) && owned & (1 << port) != 0 {
-            let status = &r.usb3[port].status;
+            let status = &r.ss_port(kind, port).status;
             status.set(portsc_value(status.get(), PORTSC::PED::SET));
             let mut disabled = false;
             for sample in 0..=100 {
@@ -452,7 +582,7 @@ fn pdo(
     }
     r.usb2_pdo.set(disabled2);
     r.usb3_pdo.set(disabled3);
-    if r.usb2_pdo.get() & 0x7fff != disabled2 || r.usb3_pdo.get() & 0x3ff != disabled3 {
+    if r.usb2_pdo.get() & usb2_mask != disabled2 || r.usb3_pdo.get() & usb3_mask != disabled3 {
         return Err(Error::PdoLockedResetRequired);
     }
     Ok((disabled2 as u16, disabled3 as u16))
@@ -470,11 +600,16 @@ fn pci_clock(device: &EcamDevice, clock: u32) {
 fn program_host(
     device: &EcamDevice,
     r: &Registers,
+    kind: dmi::Kind,
     old: bool,
+    ss_offset: u8,
     count: u8,
     delay: &mut impl DelayNs,
 ) -> Result<(), Error> {
     pci_clock(device, 0x0fce6e5f);
+    if kind == dmi::Kind::Lp {
+        r.aux_ctrl.set(r.aux_ctrl.get() & !(1 << 10));
+    }
     unsafe { device.register::<u16, Power::Register>(0x74) }
         .modify(Power::STATE.val(3) + Power::PME_STATUS::CLEAR);
     delay.delay_us(20);
@@ -493,7 +628,8 @@ fn program_host(
         let register = unsafe { device.register::<u32, ()>(offset) };
         register.set((register.get() & !clear) | set);
     }
-    r.hcs1.modify(Hcs1::PORTS.val(16 + u32::from(count)));
+    r.hcs1
+        .modify(Hcs1::PORTS.val(u32::from(ss_offset - 1) + u32::from(count)));
     r.hcs3.set((r.hcs3.get() & !0xffff00ff) | 0x0200000a);
     r.usb2_protocol.set(r.usb2_protocol.get() & !(1 << 19));
     // Literal native clock/event recipes, not measured power/analog values.
@@ -524,8 +660,12 @@ fn program_host(
     if old {
         r.misc2.set(r.misc2.get() | (1 << 5) | (1 << 2));
     }
-    r.ss_enable
-        .modify(SsEnable::PORTS.val(!r.usb3_pdo.get() & 0x3ff) + SsEnable::BIT30::SET);
+    let usb3_mask = if kind == dmi::Kind::H { 0x3ff } else { 0x3f };
+    r.ss_enable.set(
+        (r.ss_enable.get() & !usb3_mask)
+            | SsEnable::BIT30::SET.value
+            | (!r.usb3_pdo.get() & usb3_mask),
+    );
     for (register, clear, set) in [
         (&r.bw_hs, 0x00ffffff, 0xa000),
         (&r.port_link, 0, (1 << 19) | (1 << 17)),
@@ -550,10 +690,17 @@ fn program_host(
     ] {
         register.set((register.get() & !clear) | set);
     }
+    if kind == dmi::Kind::Lp {
+        // Mark both LP SSIC ports unused + programming done.
+        const SSIC_DISABLED: u32 = (1 << 31) | (1 << 30);
+        r.ssic_p1_cfg2.set(r.ssic_p1_cfg2.get() | SSIC_DISABLED);
+        r.ssic_p2_cfg2.set(r.ssic_p2_cfg2.get() | SSIC_DISABLED);
+    }
     Ok(())
 }
 fn reset_ports(
     r: &Registers,
+    kind: dmi::Kind,
     count: u8,
     debug: Option<u8>,
     delay: &mut impl DelayNs,
@@ -562,7 +709,7 @@ fn reset_ports(
         if Some(port) == debug {
             continue;
         }
-        let status = &r.usb3[usize::from(port)].status;
+        let status = &r.ss_port(kind, usize::from(port)).status;
         status.set(portsc_value(status.get(), PORTSC::WPR::SET));
     }
     r.aux1.set(r.aux1.get() & !(1 << 16));
@@ -572,7 +719,7 @@ fn reset_ports(
             if Some(port) == debug {
                 continue;
             }
-            let status = &r.usb3[usize::from(port)].status;
+            let status = &r.ss_port(kind, usize::from(port)).status;
             // Unlike a PR-only check, do not report completion while the
             // requested USB3 warm reset itself is still asserted.
             pending |= status.is_set(PORTSC::PR) || status.is_set(PORTSC::WPR);
@@ -582,7 +729,7 @@ fn reset_ports(
                 if Some(port) == debug {
                     continue;
                 }
-                let status = &r.usb3[usize::from(port)].status;
+                let status = &r.ss_port(kind, usize::from(port)).status;
                 let observed = status.get();
                 status.set(portsc_value(
                     observed,
@@ -602,27 +749,27 @@ fn reset_ports(
     Err(Error::PortResetTimeout)
 }
 /// # Safety
-/// Actual cold PCH-H, assigned complete xHCI BAR mapped UC, before final
-/// SBI/xHCI/PMC locks. Own P2SB SBI, USB2/USB3 PHY and PCI engines exclusively;
-/// controller/DMAs are quiescent and no OS/AP/SMI/other USB driver competes.
-/// Errors are fatal partial initialization, never a reset/replay permission.
+/// Actual cold PCH-H/LP, assigned complete xHCI BAR mapped UC, before final
+/// SBI/xHCI/PMC locks. Own P2SB SBI, USB2/USB3 PHY, PMC XRAM and PCI engines
+/// exclusively; controller/DMAs are quiescent and no OS/AP/SMI/other USB driver
+/// competes. Errors are fatal partial initialization, never a reset/replay
+/// permission.
 pub(crate) unsafe fn initialize(
     prepared: Prepared,
     config: &Config,
     pcr: &Pcr,
     p2sb: &EcamDevice,
+    pmc_dev: &EcamDevice,
     window: PciWindow,
     delay: &mut impl DelayNs,
 ) -> Result<Outcome, Error> {
-    let maps = config.maps()?;
     if EcamDevice::new(0, 0x14, 1).is_present() {
         return Err(Error::Device);
     }
     let lpc = EcamDevice::new(0, 0x1f, 0);
     let silicon = hsio::Silicon::read(&lpc)?;
-    if silicon.kind() != super::dmi::Kind::H {
-        return Err(Error::Device);
-    }
+    let kind = silicon.kind();
+    let maps = config.maps_for(kind)?;
     let device = EcamDevice::new(0, 0x14, 0);
     if device.vendor_id() != 0x8086 || device.read32(8) >> 8 != 0x0c0330 {
         return Err(Error::Device);
@@ -646,7 +793,7 @@ pub(crate) unsafe fn initialize(
         return Err(Error::Locked);
     }
     let mut sbi = unsafe { Sbi::new(p2sb) }?;
-    let mut phase = HostPhase::enter(device, *pcr)?;
+    let mut phase = HostPhase::enter(device, *pcr, kind)?;
     let result = (|| {
         let r = unsafe { &*(base as *const Registers) };
         if r.caplength.get() != 0x80
@@ -657,35 +804,44 @@ pub(crate) unsafe fn initialize(
         {
             return Err(Error::ActiveHost);
         }
+        let (ss_offset, max_usb3) = match kind {
+            dmi::Kind::H => (17u8, 10u8),
+            dmi::Kind::Lp => (13u8, 6u8),
+        };
         let count = r.usb3_protocol.read(SsPorts::COUNT) as u8;
-        if count == 0 || count > 10 || r.usb3_protocol.read(SsPorts::OFFSET) != 17 {
+        if count == 0
+            || count > max_usb3
+            || r.usb3_protocol.read(SsPorts::OFFSET) != u32::from(ss_offset)
+        {
             return Err(Error::Protocol);
         }
-        let debug = debug_port(base, window.size, r, count)?;
+        let debug = debug_port(base, window.size, r, ss_offset, count)?;
         if debug.is_some_and(|port| maps.usb3_disable & (1 << port) != 0) {
             return Err(Error::DebugPortConflict);
         }
-        afe(config, &mut sbi, delay)?;
+        afe(config, kind, pmc_dev, &mut sbi, delay)?;
         tune_ss(config, silicon, pcr)?;
         phase.activate()?;
         let mut owned = 0u16;
-        for port in 0..10 {
+        for port in 0..max_usb3 {
             if silicon.lane_owner(pcr, port)? == 1 {
                 owned |= 1 << port;
             }
         }
-        let (usb2_disabled, usb3_disabled) = pdo(r, maps, count, owned, debug, delay)?;
+        let (usb2_disabled, usb3_disabled) = pdo(r, kind, maps, count, owned, debug, delay)?;
         program_host(
             &device,
             r,
-            old_stepping(lpc.device_id(), lpc.read8(8)),
+            kind,
+            old_stepping(kind, lpc.device_id(), lpc.read8(8)),
+            ss_offset,
             count,
             delay,
         )?;
         // DE can change during the source host recipe. Re-observe the actual
         // debug capability before the warm-port reset pass.
-        let debug = debug_port(base, window.size, r, count)?;
-        reset_ports(r, count, debug, delay)?;
+        let debug = debug_port(base, window.size, r, ss_offset, count)?;
+        reset_ports(r, kind, count, debug, delay)?;
         for pin in 0..8u16 {
             device.write32(0xb0 + 4 * pin, maps.usb2_oc[usize::from(pin)]);
             device.write32(0xd0 + 4 * pin, maps.usb3_oc[usize::from(pin)]);

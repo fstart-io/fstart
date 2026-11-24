@@ -328,6 +328,14 @@ where
     // actual returned map and UMA identity were rechecked immediately above.
     let dram = unsafe { ValidatedDram::new(uma, map.plan().me_physical_base.unwrap_or(0), status) }
         .map_err(Error::Cse)?;
+    if cse.status().map_err(Error::Cse)?.is_debug_mode() {
+        if uma.mib() != 0 {
+            return Err(Error::Cse(cse::Error::InvalidUma));
+        }
+        dram.validate_me_segment(sa).map_err(Error::Cse)?;
+        fstart_log::warn!("DRAM: ME in Debug mode; skipping CSE DRAM Init Done");
+        return Ok(DramAction::ContinuePost);
+    }
     cse.initialize(delay).map_err(Error::Cse)?;
     let action = cse.dram_init_done(sa, dram, delay).map_err(Error::Cse)?;
     map.validate_live(sa).map_err(|e| Error::AfterDid {

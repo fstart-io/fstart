@@ -157,8 +157,11 @@ impl FirmwareStatus {
                 Error | Recovery | SecurityOverrideMei | TemporaryDisable | SecurityOverrideJumper
             )
     }
+    pub fn is_debug_mode(self) -> bool {
+        LocalRegisterCopy::<u32, Hfs1::Register>::new(self.hfs1).read(Hfs1::MODE) == 2
+    }
     fn initialization_allowed(self) -> bool {
-        self.hfs1 & Hfs1::FPT_BAD::SET.value == 0 && ((self.hfs1 >> 16) & 15) != 2
+        self.hfs1 & Hfs1::FPT_BAD::SET.value == 0 && !self.is_debug_mode()
     }
     pub fn initialized_without_uma(self) -> bool {
         let h = LocalRegisterCopy::<u32, Hfs1::Register>::new(self.hfs1);
@@ -295,7 +298,7 @@ pub unsafe fn assign_bar(device: &EcamDevice, base: u32) -> Result<(), Error> {
         return Err(Error::InvalidBar);
     }
     let status = FirmwareStatus::read(device)?;
-    if !status.initialization_allowed() {
+    if !status.initialization_allowed() && !status.is_debug_mode() {
         return Err(Error::Firmware);
     }
     let raw = device.read32(0x10);
@@ -319,12 +322,16 @@ pub unsafe fn assign_bar(device: &EcamDevice, base: u32) -> Result<(), Error> {
     Ok(())
 }
 
-/// A firmware-reported size; unavailable/debug/timeouts are errors, not UMA=0.
+/// A firmware-reported size; unavailable/timeouts are errors, not UMA=0.
+/// ME Debug mode explicitly skips UMA allocation (0 MiB).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UmaRequest {
     mib: u8,
 }
 impl UmaRequest {
+    pub const fn zero() -> Self {
+        Self { mib: 0 }
+    }
     pub fn from_shadow(raw: u32) -> Result<Option<Self>, Error> {
         if raw == u32::MAX {
             return Err(Error::Unavailable);
@@ -354,8 +361,9 @@ pub fn wait_uma(
     }
     for sample in 0..=delays_ms {
         let status = FirmwareStatus::read(device)?;
-        if ((status.hfs1 >> 16) & 15) == 2 {
-            return Err(Error::Unsupported);
+        if status.is_debug_mode() {
+            fstart_log::warn!("CSE: ME in Debug mode; skipping UMA wait (UMA=0)");
+            return Ok(UmaRequest::zero());
         }
         if let Some(request) = UmaRequest::from_shadow(device.read32(0x44))? {
             return Ok(request);
@@ -453,7 +461,7 @@ impl ValidatedDram {
             status,
         })
     }
-    fn validate_me_segment(self, sa: &EcamDevice) -> Result<(), Error> {
+    pub(crate) fn validate_me_segment(self, sa: &EcamDevice) -> Result<(), Error> {
         let base = u64::from(sa.read32(MESEG_BASE)) | (u64::from(sa.read32(MESEG_BASE + 4)) << 32);
         let mask = LocalRegisterCopy::<u64, MeSegmentMask::Register>::new(
             u64::from(sa.read32(MESEG_MASK)) | (u64::from(sa.read32(MESEG_MASK + 4)) << 32),
@@ -584,9 +592,11 @@ impl MmioCse {
         if device.read16(4) & 6 != 6 {
             return Err(Error::InvalidBar);
         }
-        FirmwareStatus::read(&device)?;
+        let status = FirmwareStatus::read(&device)?;
         let transport = unsafe { MmioTransport::at(base, budgets)? };
-        transport.geometry()?;
+        if !status.is_debug_mode() {
+            transport.geometry()?;
+        }
         Ok(Self {
             device,
             bound_base: base,
@@ -610,12 +620,21 @@ where
         }
         FirmwareStatus::read(&self.device)
     }
+    pub fn status(&self) -> Result<FirmwareStatus, Error> {
+        self.validate_binding()
+    }
     /// Non-writing DID eligibility/request preflight, before destructive training.
     /// Returns the unchanged HECI resource for the owner to check against RAM;
     /// neither reserves it nor constructs a ValidatedDram or initializes HECI.
     /// The same guards run again immediately before the actual DID message.
     pub(crate) fn preflight_did(&self, request: UmaRequest) -> Result<usize, Error> {
         let status = self.validate_binding()?;
+        if status.is_debug_mode() {
+            if request.mib != 0 {
+                return Err(Error::InvalidUma);
+            }
+            return Ok(self.bound_base);
+        }
         if status.initialized_without_uma() && request.mib != 0 {
             // Native romstage_native.c: the CSME stopped waiting for DID (a
             // warm reset dropped its UMA, or the bootblock was slow) but still

@@ -257,11 +257,11 @@ impl Silicon {
 pub struct PreMemory {
     silicon: Silicon,
     reference: Reference,
-    me_crc: u16,
+    me_crc: Option<u16>,
 }
 impl PreMemory {
     pub fn dmi_gen1_only(self) -> bool {
-        self.me_crc != self.reference.crc()
+        self.me_crc.is_some_and(|crc| crc != self.reference.crc())
     }
     pub fn kind(self) -> dmi::Kind {
         self.silicon.kind()
@@ -274,8 +274,9 @@ impl PreMemory {
     }
 }
 
-/// Execute before any IP or SA DMI initialization. CSE/query errors stop rather
-/// than being reported as an invented matching CRC. Never run on retained RAM.
+/// Execute before any IP or SA DMI initialization. When CSE firmware policy
+/// refuses the HSIO CRC query (such as ME Debug mode), apply the reference
+/// table directly as coreboot's native hsio.c does. Never run on retained RAM.
 pub fn pre_memory(
     lpc: &EcamDevice,
     pcr: &Pcr,
@@ -288,8 +289,18 @@ pub fn pre_memory(
     }
     let silicon = Silicon::read(lpc)?;
     let reference = silicon.reference()?;
-    cse.initialize(delay).map_err(Error::Cse)?;
-    let (me_crc, _, _) = cse.hsio_crc(delay).map_err(Error::Cse)?;
+    let status = cse.status().map_err(Error::Cse)?;
+    let me_crc = if status.allows(cse::Command::HsioCrc) {
+        cse.initialize(delay).map_err(Error::Cse)?;
+        let (crc, _, _) = cse.hsio_crc(delay).map_err(Error::Cse)?;
+        Some(crc)
+    } else {
+        fstart_log::warn!(
+            "HSIO: CSE path {:?} does not allow HSIO CRC; applying reference table",
+            fstart_log::DebugValue(&status.bios_path())
+        );
+        None
+    };
     let result = PreMemory {
         silicon,
         reference,
@@ -352,6 +363,14 @@ pub fn post_memory(
     delay: &mut impl DelayNs,
 ) -> Result<SyncOutcome, Error> {
     let reference = Silicon::read(lpc)?.reference()?;
+    let status = cse.status().map_err(Error::Cse)?;
+    if !status.allows(cse::Command::HsioCrc) {
+        fstart_log::warn!(
+            "HSIO post-memory: CSE path {:?} does not allow HSIO sync; skipping",
+            fstart_log::DebugValue(&status.bios_path())
+        );
+        return Ok(SyncOutcome::InSync);
+    }
     cse.initialize(delay).map_err(Error::Cse)?;
     let (me_crc, _, _) = cse.hsio_crc(delay).map_err(Error::Cse)?;
     if me_crc == reference.crc() {

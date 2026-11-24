@@ -201,6 +201,7 @@ pub struct IntelSkylake {
     pre_memory: Option<early::PreMemory>,
     scanout: Option<crate::igd::IgdAddresses>,
     display: crate::igd::IgdDisplay,
+    memory_info: Option<fstart_core::memory_info::MemoryInfo>,
     state: State,
     map: Option<ProgrammedMap>,
     failure: Option<Error>,
@@ -222,6 +223,7 @@ impl IntelSkylake {
             pre_memory: None,
             scanout: None,
             display: crate::igd::IgdDisplay::new(),
+            memory_info: None,
             state: State::New,
             map: None,
             failure: None,
@@ -328,9 +330,14 @@ impl IntelSkylake {
     fn observe(&self) -> Result<(ProgrammedMap, cse::UmaRequest), ServiceError> {
         let sa = self.sa.as_ref().ok_or(ServiceError::NotInitialized)?;
         let heci = EcamDevice::new(0, 0x16, 0);
-        let uma = cse::UmaRequest::from_shadow(heci.read32(0x44))
-            .map_err(|_| ServiceError::HardwareError)?
-            .ok_or(ServiceError::NotInitialized)?;
+        let status = cse::FirmwareStatus::read(&heci).map_err(|_| ServiceError::HardwareError)?;
+        let uma = if status.is_debug_mode() {
+            cse::UmaRequest::zero()
+        } else {
+            cse::UmaRequest::from_shadow(heci.read32(0x44))
+                .map_err(|_| ServiceError::HardwareError)?
+                .ok_or(ServiceError::NotInitialized)?
+        };
         let msr = unsafe { NativeMsr::new() };
         let prmrr = uncore_prmrr::Request::read(&msr, self.config.prmrr)
             .map_err(|_| ServiceError::HardwareError)?;
@@ -431,8 +438,19 @@ impl IntelSkylake {
         unsafe { cse::assign_bar(&heci, cse::HECI1_BASE) }.map_err(Error::Cse)?;
         let mut cse =
             unsafe { cse::MmioCse::bind(heci, heci::Budgets::SOURCE) }.map_err(Error::Cse)?;
-        cse.initialize(&mut delay).map_err(Error::Cse)?;
-        let replacement = cse::wait_cpu_replacement(&heci, 50, &mut delay).map_err(Error::Cse)?;
+        let me_status = cse::FirmwareStatus::read(&heci).map_err(Error::Cse)?;
+        let replacement = if me_status.is_debug_mode() {
+            fstart_log::warn!(
+                "DRAM: ME in Debug mode; skipping HECI init and CPU replacement wait"
+            );
+            cse::CpuReplacement {
+                replaced: false,
+                dynamic_fusing_warm_reset: false,
+            }
+        } else {
+            cse.initialize(&mut delay).map_err(Error::Cse)?;
+            cse::wait_cpu_replacement(&heci, 50, &mut delay).map_err(Error::Cse)?
+        };
         if replacement.dynamic_fusing_warm_reset {
             return Err(Error::WarmResetRequired);
         }
@@ -657,10 +675,71 @@ impl IntelSkylake {
         // owner; neither DISB nor Ready is published.
         unsafe { crate::txt::require_no_ptt() }.map_err(Error::Txt)?;
         pmc::mark_dram_initialized(&EcamDevice::new(0, 0x1f, 2)).map_err(Error::Pmc)?;
+        let active = core::array::from_fn(|ch| {
+            core::array::from_fn(|slot| policy.memory().dimms[ch][slot].is_some())
+        });
+        let configured_mts = u16::try_from(t.clock.data_rate_mts()).unwrap_or(0);
+        self.memory_info = Some(build_memory_info(
+            config.spd_addresses,
+            &cold.spd,
+            active,
+            configured_mts,
+            caps,
+            policy.memory().ecc,
+        ));
         self.map = Some(map);
         self.state = State::Ready;
         Ok(captured)
     }
+}
+
+fn build_memory_info(
+    spd_addresses: [[u8; 2]; 2],
+    spd: &SpdStorage,
+    active: [[bool; 2]; 2],
+    configured_mts: u16,
+    caps: Capabilities,
+    ecc: bool,
+) -> fstart_core::memory_info::MemoryInfo {
+    use super::capabilities::CapidA;
+    use fstart_core::memory_info::{MemoryDevice, MemoryInfo};
+
+    let a = LocalRegisterCopy::<u32, CapidA::Register>::new(caps.capid_a);
+    let max_channel_mib = match a.read(CapidA::MAX_CHANNEL_SIZE) {
+        0 => 32768u32,
+        1 => 8192,
+        2 => 4096,
+        _ => 2048,
+    };
+    let channels = if a.is_set(CapidA::SINGLE_CHANNEL) {
+        1
+    } else {
+        2
+    };
+    let mut info = MemoryInfo::new(max_channel_mib * channels);
+    if ecc {
+        info.ecc = 0x05;
+    }
+    for ch in 0..2 {
+        for slot in 0..2 {
+            if spd_addresses[ch][slot] == 0 {
+                continue;
+            }
+            let device = if active[ch][slot] {
+                fstart_driver_spd::ddr4::inventory(
+                    &spd[ch][slot],
+                    configured_mts,
+                    ch as u8,
+                    slot as u8,
+                )
+                .unwrap_or_else(|_| MemoryDevice::unknown(ch as u8, slot as u8))
+            } else {
+                MemoryDevice::empty(ch as u8, slot as u8)
+            };
+            info.push(device);
+        }
+    }
+    info
 }
 
 impl MemoryInit for IntelSkylake {
@@ -719,5 +798,62 @@ impl MemoryDetector for IntelSkylake {
     }
     fn total_ram_bytes(&self) -> Result<u64, ServiceError> {
         self.with_table(E820State::total_ram)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_ddr4_spd() -> [u8; SPD_BYTES] {
+        let mut spd = [0u8; SPD_BYTES];
+        spd[0] = 0x23; // 384 bytes used, 512 bytes total
+        spd[1] = 0x11; // rev 1.1
+        spd[2] = 0x0c; // DDR4
+        spd[3] = 0x03; // SO-DIMM
+        spd[4] = 0x85; // 8 Gb die (density code 5 -> 1024 MiB)
+        spd[12] = 0x01; // 1 rank, x8
+        spd[13] = 0x03; // 64-bit primary bus, no ECC
+        spd[17] = 0x00; // MTB 125ps, FTB 1ps
+        spd[18] = 0x07; // tCKmin = 875ps - 42ps = 833ps -> 2400 MT/s
+        spd[125] = (-42i8) as u8;
+        let crc = fstart_driver_spd::crc16(&spd[..126]).to_le_bytes();
+        spd[126] = crc[0];
+        spd[127] = crc[1];
+        spd[320] = 0x80; // bank 0 (Samsung)
+        spd[321] = 0xce;
+        spd[329..339].copy_from_slice(b"M471A1K43B");
+        spd
+    }
+
+    #[test]
+    fn build_memory_info_records_populated_and_empty_wired_slots() {
+        let mut storage: SpdStorage = [[[0; SPD_BYTES]; 2]; 2];
+        storage[0][0] = sample_ddr4_spd();
+        let caps = Capabilities {
+            capid_a: 0, // dual channel, 32 GiB/channel
+            capid_b: 1 << 3,
+            capid_c: 0,
+        };
+        let info = build_memory_info(
+            [[0x50, 0], [0x52, 0]],
+            &storage,
+            [[true, false], [false, false]],
+            2400,
+            caps,
+            false,
+        );
+        assert_eq!(info.max_capacity_mib.get(), 65536);
+        assert_eq!(info.ecc, fstart_core::memory_info::ECC_NONE);
+        let devices = info.devices();
+        assert_eq!(devices.len(), 2);
+        assert!(devices[0].is_populated());
+        assert_eq!(devices[0].size_mib.get(), 8192);
+        assert_eq!(devices[0].configured_mts.get(), 2400);
+        assert_eq!(devices[0].manufacturer(), Some("Samsung"));
+        assert_eq!(devices[0].part_number(), Some("M471A1K43B"));
+        assert_eq!((devices[0].channel, devices[0].slot), (0, 0));
+        assert!(!devices[1].is_populated());
+        assert_eq!((devices[1].channel, devices[1].slot), (1, 0));
     }
 }

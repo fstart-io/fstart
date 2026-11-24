@@ -325,8 +325,8 @@ pub fn reservations<P: IntelPlatform>(
             heap: 0,
         },
         postcar: StageReservation {
-            image: span(windows.postcar, 0x10000),
-            writable: span(windows.postcar + 0x10000, 0x10000),
+            image: span(windows.postcar, 0x20000),
+            writable: span(windows.postcar + 0x20000, 0x10000),
             stack: 0x2000,
             heap: 0,
         },

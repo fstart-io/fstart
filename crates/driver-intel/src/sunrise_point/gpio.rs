@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! PCH-H pad programming, from Skylake gpio.c and common/block/gpio/gpio.c.
+//! Sunrise Point-H/LP pad programming, from Skylake gpio.c and common/block/gpio/gpio.c.
 //!
-//! PCH-LP has a different numbering/layout and is deliberately not accepted.
 //! Pad tables belong to boards. This module does not transfer CSME/ISH pad
 //! ownership or implement the non-posted SBI configuration-lock operation.
 
-use super::pcr::{self, Pcr, Port};
+use super::{
+    dmi,
+    pcr::{self, Pcr, Port},
+};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
@@ -86,7 +88,8 @@ pub enum Group {
 }
 
 /// Exact group metadata, not a division of the pad number by 24. Group E is
-/// short, so F/G/H group registers and pad-config offsets use different strides.
+/// short on PCH-H and Group G is short on PCH-LP, so group registers and
+/// pad-config offsets use different strides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupInfo {
     pub port: Port,
@@ -97,74 +100,138 @@ pub struct GroupInfo {
     pub pmc_selector: u8,
 }
 impl Group {
-    /// PCH-H SMI/NMI banks exist only for B/C/D/E/I. Other groups' offsets
-    /// in those windows are reserved (Intel 332691-002EN, chapter 25).
-    pub const fn has_smi_nmi_registers(self) -> bool {
-        matches!(self, Self::B | Self::C | Self::D | Self::E | Self::I)
+    /// SMI/NMI banks exist only for B/C/D/E/I on PCH-H and B/C/D/E on PCH-LP.
+    /// Other groups' offsets in those windows are reserved.
+    pub const fn has_smi_nmi_registers_for(self, kind: dmi::Kind) -> bool {
+        match kind {
+            dmi::Kind::H => matches!(self, Self::B | Self::C | Self::D | Self::E | Self::I),
+            dmi::Kind::Lp => matches!(self, Self::B | Self::C | Self::D | Self::E),
+        }
     }
 
-    pub const fn info(self) -> GroupInfo {
-        let (port, first, count, community_first, index, pmc_selector) = match self {
-            Self::A => (Port::Gpio0, 0, 24, 0, 0, 0),
-            Self::B => (Port::Gpio0, 24, 24, 0, 1, 1),
-            Self::C => (Port::Gpio1, 48, 24, 48, 0, 2),
-            Self::D => (Port::Gpio1, 72, 24, 48, 1, 3),
-            Self::E => (Port::Gpio1, 96, 13, 48, 2, 4),
-            Self::F => (Port::Gpio1, 109, 24, 48, 3, 5),
-            Self::G => (Port::Gpio1, 133, 24, 48, 4, 6),
-            Self::H => (Port::Gpio1, 157, 24, 48, 5, 7),
-            Self::I => (Port::Gpio3, 181, 11, 181, 0, 8),
-            Self::Gpd => (Port::Gpio2, 192, 12, 192, 0, 9),
+    pub const fn info_for(self, kind: dmi::Kind) -> Option<GroupInfo> {
+        let (port, first, count, community_first, index, pmc_selector) = match (kind, self) {
+            (dmi::Kind::H, Self::A) => (Port::Gpio0, 0, 24, 0, 0, 0),
+            (dmi::Kind::H, Self::B) => (Port::Gpio0, 24, 24, 0, 1, 1),
+            (dmi::Kind::H, Self::C) => (Port::Gpio1, 48, 24, 48, 0, 2),
+            (dmi::Kind::H, Self::D) => (Port::Gpio1, 72, 24, 48, 1, 3),
+            (dmi::Kind::H, Self::E) => (Port::Gpio1, 96, 13, 48, 2, 4),
+            (dmi::Kind::H, Self::F) => (Port::Gpio1, 109, 24, 48, 3, 5),
+            (dmi::Kind::H, Self::G) => (Port::Gpio1, 133, 24, 48, 4, 6),
+            (dmi::Kind::H, Self::H) => (Port::Gpio1, 157, 24, 48, 5, 7),
+            (dmi::Kind::H, Self::I) => (Port::Gpio3, 181, 11, 181, 0, 8),
+            (dmi::Kind::H, Self::Gpd) => (Port::Gpio2, 192, 12, 192, 0, 9),
+            (dmi::Kind::Lp, Self::A) => (Port::Gpio0, 0, 24, 0, 0, 0),
+            (dmi::Kind::Lp, Self::B) => (Port::Gpio0, 24, 24, 0, 1, 1),
+            (dmi::Kind::Lp, Self::C) => (Port::Gpio1, 48, 24, 48, 0, 2),
+            (dmi::Kind::Lp, Self::D) => (Port::Gpio1, 72, 24, 48, 1, 3),
+            (dmi::Kind::Lp, Self::E) => (Port::Gpio1, 96, 24, 48, 2, 4),
+            (dmi::Kind::Lp, Self::F) => (Port::Gpio3, 120, 24, 120, 0, 5),
+            (dmi::Kind::Lp, Self::G) => (Port::Gpio3, 144, 8, 120, 1, 6),
+            (dmi::Kind::Lp, Self::Gpd) => (Port::Gpio2, 152, 12, 152, 0, 7),
+            (dmi::Kind::Lp, Self::H | Self::I) => return None,
         };
-        GroupInfo {
+        Some(GroupInfo {
             port,
             first,
             count,
             community_first,
             index,
             pmc_selector,
+        })
+    }
+
+    const fn max_count(self) -> u8 {
+        match self {
+            Self::A | Self::B | Self::C | Self::D | Self::E | Self::F | Self::G | Self::H => 24,
+            Self::I => 11,
+            Self::Gpd => 12,
         }
     }
+
+    /// Construct a board pad identifier. Exact PCH-H/LP bounds are validated
+    /// when programmed against a concrete silicon `dmi::Kind`.
     pub const fn pad(self, pin: u8) -> Result<Pad, Error> {
-        let info = self.info();
-        if pin >= info.count {
+        if pin >= self.max_count() {
             return Err(Error::InvalidPad);
         }
-        Ok(Pad(info.first + pin as u16))
+        Ok(Pad { group: self, pin })
+    }
+
+    pub const fn pad_for(self, kind: dmi::Kind, pin: u8) -> Result<Pad, Error> {
+        match self.info_for(kind) {
+            Some(info) if pin < info.count => Ok(Pad { group: self, pin }),
+            _ => Err(Error::InvalidPad),
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pad(u16);
+pub struct Pad {
+    group: Group,
+    pin: u8,
+}
 impl Pad {
-    pub const fn from_number(number: u16) -> Result<Self, Error> {
-        if number > 203 {
-            return Err(Error::InvalidPad);
+    pub const fn from_number_for(kind: dmi::Kind, number: u16) -> Result<Self, Error> {
+        const GROUPS: [Group; 10] = [
+            Group::A,
+            Group::B,
+            Group::C,
+            Group::D,
+            Group::E,
+            Group::F,
+            Group::G,
+            Group::H,
+            Group::I,
+            Group::Gpd,
+        ];
+        let mut i = 0;
+        while i < GROUPS.len() {
+            if let Some(info) = GROUPS[i].info_for(kind)
+                && number >= info.first
+                && number < info.first + info.count as u16
+            {
+                return Ok(Self {
+                    group: GROUPS[i],
+                    pin: (number - info.first) as u8,
+                });
+            }
+            i += 1;
         }
-        Ok(Self(number))
+        Err(Error::InvalidPad)
     }
-    pub const fn number(self) -> u16 {
-        self.0
-    }
+
     pub const fn group(self) -> Group {
-        match self.0 {
-            0..=23 => Group::A,
-            24..=47 => Group::B,
-            48..=71 => Group::C,
-            72..=95 => Group::D,
-            96..=108 => Group::E,
-            109..=132 => Group::F,
-            133..=156 => Group::G,
-            157..=180 => Group::H,
-            181..=191 => Group::I,
-            _ => Group::Gpd,
+        self.group
+    }
+
+    pub const fn pin(self) -> u8 {
+        self.pin
+    }
+
+    pub const fn number_for(self, kind: dmi::Kind) -> Result<u16, Error> {
+        match self.group.info_for(kind) {
+            Some(info) if self.pin < info.count => Ok(info.first + self.pin as u16),
+            _ => Err(Error::InvalidPad),
         }
     }
-    pub const fn config_offset(self) -> u16 {
-        0x400 + 8 * (self.0 - self.group().info().community_first)
+
+    pub const fn info_for(self, kind: dmi::Kind) -> Result<GroupInfo, Error> {
+        match self.group.info_for(kind) {
+            Some(info) if self.pin < info.count => Ok(info),
+            _ => Err(Error::InvalidPad),
+        }
     }
+
+    pub const fn config_offset_for(self, kind: dmi::Kind) -> Result<u16, Error> {
+        match self.info_for(kind) {
+            Ok(info) => Ok(0x400 + 8 * (info.first + self.pin as u16 - info.community_first)),
+            Err(error) => Err(error),
+        }
+    }
+
     pub const fn group_bit(self) -> u32 {
-        1 << (self.0 - self.group().info().first)
+        1 << self.pin
     }
 }
 
@@ -179,6 +246,8 @@ pub struct PadConfig {
 }
 
 struct Prepared {
+    info: GroupInfo,
+    offset: u16,
     dw0: u32,
     dw1: u32,
     irq: Option<u8>,
@@ -186,17 +255,19 @@ struct Prepared {
 
 pub struct Gpio<'a> {
     pub pcr: &'a Pcr,
+    pub kind: dmi::Kind,
     /// Matches source SOC_INTEL_COMMON_BLOCK_GPIO_ITSS_POL_CFG policy.
     pub program_itss_polarity: bool,
 }
 impl Gpio<'_> {
     fn prepare(&self, config: &PadConfig) -> Result<Prepared, Error> {
-        let info = config.pad.group().info();
+        let info = config.pad.info_for(self.kind)?;
+        let offset = config.pad.config_offset_for(self.kind)?;
         let dw0 = LocalRegisterCopy::<u32, PadDw0::Register>::new(config.dw0);
         // Do not write a group's reserved SMI/NMI window merely because
         // another bank in this community implements these interrupt types.
         if (dw0.is_set(PadDw0::ROUTE_SMI) || dw0.is_set(PadDw0::ROUTE_NMI))
-            && !config.pad.group().has_smi_nmi_registers()
+            && !config.pad.group().has_smi_nmi_registers_for(self.kind)
         {
             return Err(Error::UnsupportedInterruptRoute);
         }
@@ -213,7 +284,6 @@ impl Gpio<'_> {
         if locked & config.pad.group_bit() != 0 {
             return Err(Error::PadLocked);
         }
-        let offset = config.pad.config_offset();
         let old0 = self
             .pcr
             .register::<PadDw0::Register>(info.port, offset)?
@@ -233,11 +303,52 @@ impl Gpio<'_> {
         };
         let mut mapped = dw0;
         mapped.modify(PadDw0::RESET.val(reset));
+        let mut dw1 = (old1 & !DW1_WRITABLE) | (config.dw1 & DW1_WRITABLE);
+        // Sunrise Point-LP erratum/datasheet: GPP_F4..GPP_F11 have no 1.8V
+        // tolerance control bit; keep PADTOL clear (coreboot skylake/gpio.c).
+        if self.kind == dmi::Kind::Lp
+            && config.pad.group() == Group::F
+            && (4..=11).contains(&config.pad.pin())
+        {
+            dw1 &= !PadDw1::TOLERANT_1V8::SET.value;
+        }
         Ok(Prepared {
+            info,
+            offset,
             dw0: (old0 & !DW0_WRITABLE) | (mapped.get() & DW0_WRITABLE),
-            dw1: (old1 & !DW1_WRITABLE) | (config.dw1 & DW1_WRITABLE),
+            dw1,
             irq,
         })
+    }
+
+    /// Read the current input level (`RX_STATE`) of a GPIO pad.
+    pub fn read_rx_state(&self, pad: Pad) -> Result<bool, Error> {
+        let info = pad.info_for(self.kind)?;
+        let offset = pad.config_offset_for(self.kind)?;
+        Ok(self
+            .pcr
+            .register::<PadDw0::Register>(info.port, offset)?
+            .is_set(PadDw0::RX_STATE))
+    }
+
+    /// Update the driven output level (`TX_STATE`) of an unlocked GPIO pad.
+    pub fn write_tx_state(&self, pad: Pad, high: bool) -> Result<(), Error> {
+        let info = pad.info_for(self.kind)?;
+        let offset = pad.config_offset_for(self.kind)?;
+        let lock_offset = 0x90 + 8 * u16::from(info.index);
+        let locked = self.pcr.register::<()>(info.port, lock_offset)?.get()
+            | self.pcr.register::<()>(info.port, lock_offset + 4)?.get();
+        if locked & pad.group_bit() != 0 {
+            return Err(Error::PadLocked);
+        }
+        let register = self.pcr.register::<PadDw0::Register>(info.port, offset)?;
+        let mut value = register.extract();
+        value.modify(PadDw0::TX_STATE.val(u32::from(high)));
+        register.set(value.get());
+        if register.is_set(PadDw0::TX_STATE) != high {
+            return Err(Error::Pcr(pcr::Error::Readback));
+        }
+        Ok(())
     }
 
     /// Native peripheral mux update preserving DW1, ownership and pending
@@ -254,13 +365,12 @@ impl Gpio<'_> {
         if function == 0 || function > 7 {
             return Err(Error::InvalidFunction);
         }
-        let info = pad.group().info();
+        let info = pad.info_for(self.kind)?;
         if info.port == Port::Gpio2 {
             return Err(Error::InvalidPad);
         }
-        let register = self
-            .pcr
-            .register::<PadDw0::Register>(info.port, pad.config_offset())?;
+        let offset = pad.config_offset_for(self.kind)?;
+        let register = self.pcr.register::<PadDw0::Register>(info.port, offset)?;
         let mut value = register.extract();
         value.modify(PadDw0::MODE.val(u32::from(function)));
         if deep {
@@ -276,7 +386,7 @@ impl Gpio<'_> {
         }
         let dw1 = self
             .pcr
-            .register::<PadDw1::Register>(info.port, pad.config_offset() + 4)?
+            .register::<PadDw1::Register>(info.port, offset + 4)?
             .get();
         let prepared = self.prepare(&PadConfig {
             pad,
@@ -300,8 +410,8 @@ impl Gpio<'_> {
         }
         for config in configs {
             let prepared = self.prepare(config)?;
-            let info = config.pad.group().info();
-            let offset = config.pad.config_offset();
+            let info = prepared.info;
+            let offset = prepared.offset;
             self.pcr
                 .register::<PadDw0::Register>(info.port, offset)?
                 .set(prepared.dw0);
@@ -329,7 +439,7 @@ impl Gpio<'_> {
                         0
                     },
             );
-            // The supplied SPT descriptors omit the GPE offsets. The PCH-H
+            // The supplied SPT descriptors omit the GPE offsets. The PCH
             // register map explicitly defines STS=0x140, EN=0x160, group*4
             // (Intel 332691-002EN, 25.1–25.4), not offset zero.
             for (route, status, enable) in [
@@ -356,21 +466,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pch_h_pad_groups_do_not_confuse_short_e_group_with_register_stride() {
-        let f = Group::F.pad(0).unwrap();
-        assert_eq!(f.number(), 109);
-        assert_eq!(f.config_offset(), 0x5e8);
-        assert_eq!(f.group_bit(), 1);
-        assert_eq!(f.group().info().index, 3);
-        assert_eq!(Group::H.pad(23).unwrap().config_offset(), 0x820);
-        assert_eq!(Group::I.pad(10).unwrap().config_offset(), 0x450);
-        assert_eq!(Group::Gpd.pad(11).unwrap().config_offset(), 0x458);
-        assert_eq!(Group::E.pad(13), Err(Error::InvalidPad));
-        assert_eq!(Group::I.pad(11), Err(Error::InvalidPad));
-        assert_eq!(Pad::from_number(204), Err(Error::InvalidPad));
+    fn pch_h_and_lp_pad_groups_match_silicon_layouts() {
+        let f_h = Group::F.pad_for(dmi::Kind::H, 0).unwrap();
+        assert_eq!(f_h.number_for(dmi::Kind::H), Ok(109));
+        assert_eq!(f_h.config_offset_for(dmi::Kind::H), Ok(0x5e8));
+        assert_eq!(f_h.group_bit(), 1);
+        assert_eq!(f_h.info_for(dmi::Kind::H).unwrap().index, 3);
+        assert_eq!(
+            Group::H
+                .pad_for(dmi::Kind::H, 23)
+                .unwrap()
+                .config_offset_for(dmi::Kind::H),
+            Ok(0x820)
+        );
+        assert_eq!(
+            Group::I
+                .pad_for(dmi::Kind::H, 10)
+                .unwrap()
+                .config_offset_for(dmi::Kind::H),
+            Ok(0x450)
+        );
+        assert_eq!(
+            Group::Gpd
+                .pad_for(dmi::Kind::H, 11)
+                .unwrap()
+                .config_offset_for(dmi::Kind::H),
+            Ok(0x458)
+        );
+        assert_eq!(Group::E.pad_for(dmi::Kind::H, 13), Err(Error::InvalidPad));
+        assert_eq!(Group::I.pad_for(dmi::Kind::H, 11), Err(Error::InvalidPad));
+        assert_eq!(
+            Pad::from_number_for(dmi::Kind::H, 204),
+            Err(Error::InvalidPad)
+        );
         for n in 0..204 {
-            let pad = Pad::from_number(n).unwrap();
-            let info = pad.group().info();
+            let pad = Pad::from_number_for(dmi::Kind::H, n).unwrap();
+            let info = pad.info_for(dmi::Kind::H).unwrap();
+            assert!(n >= info.first && n < info.first + u16::from(info.count));
+        }
+
+        // Sunrise Point-LP: E has 24 pins, F lives in Community 3 at 120, G has 8 pins,
+        // GPD lives in Community 2 at 152, and H/I do not exist.
+        assert_eq!(
+            Group::E
+                .pad_for(dmi::Kind::Lp, 23)
+                .unwrap()
+                .config_offset_for(dmi::Kind::Lp),
+            Ok(0x638)
+        );
+        let f_lp = Group::F.pad_for(dmi::Kind::Lp, 0).unwrap();
+        assert_eq!(f_lp.number_for(dmi::Kind::Lp), Ok(120));
+        assert_eq!(f_lp.info_for(dmi::Kind::Lp).unwrap().port, Port::Gpio3);
+        assert_eq!(f_lp.config_offset_for(dmi::Kind::Lp), Ok(0x400));
+        let g_lp = Group::G.pad_for(dmi::Kind::Lp, 7).unwrap();
+        assert_eq!(g_lp.number_for(dmi::Kind::Lp), Ok(151));
+        assert_eq!(g_lp.config_offset_for(dmi::Kind::Lp), Ok(0x4f8));
+        assert_eq!(Group::G.pad_for(dmi::Kind::Lp, 8), Err(Error::InvalidPad));
+        assert_eq!(Group::H.pad_for(dmi::Kind::Lp, 0), Err(Error::InvalidPad));
+        assert_eq!(Group::I.pad_for(dmi::Kind::Lp, 0), Err(Error::InvalidPad));
+        assert_eq!(
+            Group::Gpd
+                .pad_for(dmi::Kind::Lp, 11)
+                .unwrap()
+                .number_for(dmi::Kind::Lp),
+            Ok(163)
+        );
+        assert_eq!(
+            Pad::from_number_for(dmi::Kind::Lp, 164),
+            Err(Error::InvalidPad)
+        );
+        for n in 0..164 {
+            let pad = Pad::from_number_for(dmi::Kind::Lp, n).unwrap();
+            let info = pad.info_for(dmi::Kind::Lp).unwrap();
             assert!(n >= info.first && n < info.first + u16::from(info.count));
         }
     }

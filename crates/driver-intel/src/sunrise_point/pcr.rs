@@ -13,14 +13,16 @@ use tock_registers::{RegisterLongName, UIntLike, register_bitfields};
 pub const DEFAULT_BASE: u32 = 0xfd00_0000;
 pub const WINDOW_SIZE: usize = 0x100_0000;
 
-/// Source `soc/pcr_ids.h` ports used by PCH-H bring-up.
+/// Source `soc/pcr_ids.h` ports used by Sunrise Point-H/LP bring-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Port {
     Psth = 0x89,
     CsmePsf = 0x8f,
+    CamChc = 0xa1,
     Modphy3 = 0xa8,
     Modphy2 = 0xa9,
+    CamFls = 0xaa,
     Gpio3 = 0xac,
     Gpio2 = 0xad,
     Gpio1 = 0xae,

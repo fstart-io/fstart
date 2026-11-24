@@ -378,6 +378,10 @@ impl IntelNorthbridgeDriver for IntelSkylake {
         self.display.framebuffer_info()
     }
 
+    fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
+        self.memory_info
+    }
+
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {
         if self.state != State::Observed || self.sa_phase != SaPhase::PostMemory {
             return Err(ServiceError::NotSupported);

@@ -24,9 +24,10 @@ use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
 };
 
-// Only these PCH-H groups implement SMI banks. Never touch the reserved
-// A/F/G/H/GPD offsets as though they were generic group register windows.
-const SMI_GROUPS: [Group; 5] = [Group::B, Group::C, Group::D, Group::E, Group::I];
+// Only these groups implement SMI banks (H: B/C/D/E/I; LP: B/C/D/E). Never
+// touch the reserved A/F/G/H/GPD offsets as though they were generic windows.
+const SMI_GROUPS_H: &[Group] = &[Group::B, Group::C, Group::D, Group::E, Group::I];
+const SMI_GROUPS_LP: &[Group] = &[Group::B, Group::C, Group::D, Group::E];
 const CONFIG_VERSION: u32 = 1;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -38,7 +39,8 @@ pub struct Config {
     tco_base: u16,
     s5_delay_ms: u16,
     after_power_loss: u8,
-    reserved: [u8; 11],
+    pch_kind: u8,
+    reserved: [u8; 10],
 }
 const _: () = assert!(size_of::<Config>() == 32);
 
@@ -52,6 +54,7 @@ pub struct EnableState {
 
 pub struct Controller {
     config: Config,
+    kind: super::dmi::Kind,
     pm: AcpiIo,
     tco: TcoIo,
     pcr: Pcr,
@@ -69,10 +72,11 @@ fn gen_pmcon_a() -> LocalRegisterCopy<u32, GenPmconA::Register> {
 }
 impl Controller {
     /// # Safety
-    /// Own actual UC PCH-H PCR/ECAM and decoded ACPI/TCO ports. The platform
+    /// Own actual UC PCH-H/LP PCR/ECAM and decoded ACPI/TCO ports. The platform
     /// owns SMM installation and all GPIO/PM/PCI accesses, with AP/SMI/OS
     /// competitors excluded. TCOBASE must be the live SMBus function's decode.
     pub unsafe fn bind(
+        kind: super::dmi::Kind,
         ecam: EcamConfig,
         tco_base: u16,
         after: AfterPowerLoss,
@@ -88,7 +92,11 @@ impl Controller {
             tco_base,
             s5_delay_ms,
             after_power_loss: after as u8,
-            reserved: [0; 11],
+            pch_kind: match kind {
+                super::dmi::Kind::H => 0,
+                super::dmi::Kind::Lp => 1,
+            },
+            reserved: [0; 10],
         };
         let controller = unsafe { Self::from_config(config) }?;
         if gen_pmcon_a().is_set(GenPmconA::SMI_LOCK) {
@@ -96,9 +104,20 @@ impl Controller {
         }
         Ok(controller)
     }
+    fn smi_groups(&self) -> &'static [Group] {
+        match self.kind {
+            super::dmi::Kind::H => SMI_GROUPS_H,
+            super::dmi::Kind::Lp => SMI_GROUPS_LP,
+        }
+    }
     unsafe fn from_config(config: Config) -> Result<Self, ServiceError> {
+        let kind = match config.pch_kind {
+            0 => super::dmi::Kind::H,
+            1 => super::dmi::Kind::Lp,
+            _ => return Err(ServiceError::InvalidParam),
+        };
         if config.version != CONFIG_VERSION
-            || config.reserved != [0; 11]
+            || config.reserved != [0; 10]
             || config.pm_base != pmc::ACPI_BASE
             || config.tco_base == 0
             || config.tco_base & 0x1f != 0
@@ -114,8 +133,12 @@ impl Controller {
         if config.tco_base != super::tco::BASE {
             return Err(ServiceError::HardwareError);
         }
-        for group in SMI_GROUPS {
-            let info = group.info();
+        let groups = match kind {
+            super::dmi::Kind::H => SMI_GROUPS_H,
+            super::dmi::Kind::Lp => SMI_GROUPS_LP,
+        };
+        for &group in groups {
+            let info = group.info_for(kind).ok_or(ServiceError::HardwareError)?;
             pcr.register::<()>(info.port, gpio::SMI_STATUS + 4 * u16::from(info.index))
                 .map_err(|_| ServiceError::HardwareError)?;
             pcr.register::<()>(info.port, gpio::SMI_ENABLE + 4 * u16::from(info.index))
@@ -123,24 +146,32 @@ impl Controller {
         }
         Ok(Self {
             config,
+            kind,
             pm: AcpiIo::new(config.pm_base),
             tco: TcoIo::new(config.tco_base),
             pcr,
         })
     }
     fn gpio_enables(&self) -> [u32; 5] {
-        SMI_GROUPS.map(|group| {
-            let info = group.info();
-            self.pcr
+        let mut out = [0u32; 5];
+        for (slot, &group) in out.iter_mut().zip(self.smi_groups().iter()) {
+            let info = group
+                .info_for(self.kind)
+                .unwrap_or_else(|| fstart_arch::x86::boot::halt());
+            *slot = self
+                .pcr
                 .register::<()>(info.port, gpio::SMI_ENABLE + 4 * u16::from(info.index))
                 .unwrap_or_else(|_| fstart_arch::x86::boot::halt())
                 .get()
-                & ((1u32 << info.count) - 1)
-        })
+                & ((1u32 << info.count) - 1);
+        }
+        out
     }
     fn set_gpio_enables(&self, values: [u32; 5]) {
-        for (group, value) in SMI_GROUPS.into_iter().zip(values) {
-            let info = group.info();
+        for (&group, value) in self.smi_groups().iter().zip(values) {
+            let info = group
+                .info_for(self.kind)
+                .unwrap_or_else(|| fstart_arch::x86::boot::halt());
             self.pcr
                 .register::<()>(info.port, gpio::SMI_ENABLE + 4 * u16::from(info.index))
                 .unwrap_or_else(|_| fstart_arch::x86::boot::halt())
@@ -148,8 +179,10 @@ impl Controller {
         }
     }
     fn clear_gpio_status(&self) {
-        for group in SMI_GROUPS {
-            let info = group.info();
+        for &group in self.smi_groups() {
+            let info = group
+                .info_for(self.kind)
+                .unwrap_or_else(|| fstart_arch::x86::boot::halt());
             let status = self
                 .pcr
                 .register::<()>(info.port, gpio::SMI_STATUS + 4 * u16::from(info.index))

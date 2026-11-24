@@ -105,6 +105,7 @@ register_bitfields![u32,
         VALUE OFFSET(0) NUMBITS(5) [],
         TOP OFFSET(8) NUMBITS(4) []
     ],
+    IoBufferControl [ OSEL OFFSET(8) NUMBITS(2) [] ],
     PowerTiming [ WIDTH OFFSET(4) NUMBITS(3) [] ],
     TrafficClass [ HCDT OFFSET(1) NUMBITS(1) [] ],
     Shadow [ DISABLE OFFSET(8) NUMBITS(1) [] ],
@@ -206,6 +207,7 @@ struct NativeHda<'a> {
     regs: &'a Registers,
     codec: HdaController,
     pcr: &'a Pcr,
+    kind: super::dmi::Kind,
 }
 impl NativeHda<'_> {
     fn configure(&self, dsp: Dsp, vc1: bool) -> Result<(), Error> {
@@ -239,7 +241,12 @@ impl NativeHda<'_> {
         self.pcr
             .register::<Apll2::Register>(Port::Dsp, 0x618)?
             .modify(Apll2::TOP.val(1) + Apll2::VALUE.val(0x1d));
-        // PCH-H deliberately has NO LP I/O-buffer ownership-select write.
+        // The I/O buffer ownership select (0x61c) is LP-only (0 = HD-Audio link).
+        if self.kind == super::dmi::Kind::Lp {
+            self.pcr
+                .register::<IoBufferControl::Register>(Port::Dsp, 0x61c)?
+                .modify(IoBufferControl::OSEL.val(0));
+        }
         self.pcr
             .register::<PowerTiming::Register>(Port::Dsp, 0x628)?
             .modify(PowerTiming::WIDTH.val(6));
@@ -353,6 +360,7 @@ impl NativeHda<'_> {
 /// writes are fatal partial initialization, not a retry/rollback token.
 pub(crate) unsafe fn initialize(
     pcr: &Pcr,
+    kind: super::dmi::Kind,
     policy: Policy,
     window: Option<PciWindow>,
     audio: Option<(&Graphics<'_>, bool, bool)>,
@@ -389,6 +397,7 @@ pub(crate) unsafe fn initialize(
         regs: unsafe { &*(base as *const Registers) },
         codec: HdaController::new(base),
         pcr,
+        kind,
     };
     native.configure(dsp, vc1)?;
     // Source-order GPU display power-up belongs HERE, before codec discovery,

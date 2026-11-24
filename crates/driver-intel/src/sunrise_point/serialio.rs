@@ -4,6 +4,7 @@
 //! Cold PCH-H Disabled/SkipInit/PCI modes. ACPI/hidden/legacy-UART modes and
 //! PCH-LP controllers are not offered. No transfer engine or DMA ring starts.
 use super::{
+    dmi,
     gpio::{self, Gpio, Pad, PadConfig, PadDw0, PadDw1},
     hsio,
     pcr::{self, Pcr, Port},
@@ -49,10 +50,14 @@ impl Config {
     pub const DISABLED: Self = Self {
         controllers: [ControllerPolicy::DISABLED; 11],
     };
-    pub(crate) fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate_for(&self, kind: dmi::Kind) -> Result<(), Error> {
+        let max_1v8 = match kind {
+            dmi::Kind::H => 4,
+            dmi::Kind::Lp => 2,
+        };
         for (index, p) in self.controllers.iter().enumerate() {
-            if !supported(index) && p.mode != Mode::Disabled
-                || p.i2c_1v8 && index >= 4
+            if !supported(kind, index) && p.mode != Mode::Disabled
+                || p.i2c_1v8 && index >= max_1v8
                 || p.spi_active_high && !(6..8).contains(&index)
                 || p.uart_flow && index < 8
                 || p.mode != Mode::Pci && (p.i2c_1v8 || p.spi_active_high || p.uart_flow)
@@ -62,11 +67,18 @@ impl Config {
         }
         Ok(())
     }
-    pub(crate) fn pads(&self) -> Result<heapless::Vec<Pad, 36>, Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.validate_for(dmi::Kind::H).is_ok() || self.validate_for(dmi::Kind::Lp).is_ok() {
+            Ok(())
+        } else {
+            Err(Error::Policy)
+        }
+    }
+    pub(crate) fn pads_for(&self, kind: dmi::Kind) -> Result<heapless::Vec<Pad, 36>, Error> {
         let mut result = heapless::Vec::new();
         for (index, p) in self.controllers.iter().enumerate() {
             if p.mode == Mode::Pci {
-                for config in pad_configs(index, *p)? {
+                for config in pad_configs(kind, index, *p)? {
                     result.push(config.pad).map_err(|_| Error::Policy)?;
                 }
             }
@@ -80,7 +92,7 @@ impl Config {
         self.controllers
             .iter()
             .enumerate()
-            .filter(|(i, p)| supported(*i) && p.mode != Mode::Disabled)
+            .filter(|(_, p)| p.mode != Mode::Disabled)
             .map(|(i, _)| DESCRIPTORS[i].devfn)
     }
 }
@@ -124,85 +136,115 @@ impl From<temporary_bar::Error> for Error {
 struct Descriptor {
     devfn: u8,
     control: u16,
-    psf: u16,
+    psf_h: u16,
+    psf_lp: u16,
     disable: u32,
+}
+impl Descriptor {
+    const fn psf(&self, kind: dmi::Kind) -> u16 {
+        match kind {
+            dmi::Kind::H => self.psf_h,
+            dmi::Kind::Lp => self.psf_lp,
+        }
+    }
 }
 const DESCRIPTORS: [Descriptor; 11] = [
     Descriptor {
         devfn: 0xa8,
         control: 0x200,
-        psf: 0x1100,
+        psf_h: 0x1100,
+        psf_lp: 0x1300,
         disable: 1,
     },
     Descriptor {
         devfn: 0xa9,
         control: 0x204,
-        psf: 0x1000,
+        psf_h: 0x1000,
+        psf_lp: 0x1200,
         disable: 2,
     },
     Descriptor {
         devfn: 0xaa,
         control: 0x208,
-        psf: 0x0f00,
+        psf_h: 0x0f00,
+        psf_lp: 0x1100,
         disable: 4,
     },
     Descriptor {
         devfn: 0xab,
         control: 0x20c,
-        psf: 0xe00,
+        psf_h: 0x0e00,
+        psf_lp: 0x1000,
         disable: 8,
     },
     Descriptor {
         devfn: 0xca,
         control: 0x210,
-        psf: 0,
+        psf_h: 0,
+        psf_lp: 0x0900,
         disable: 16,
     },
     Descriptor {
         devfn: 0xc9,
         control: 0x214,
-        psf: 0,
+        psf_h: 0,
+        psf_lp: 0x0e00,
         disable: 32,
     },
     Descriptor {
         devfn: 0xf2,
         control: 0x224,
-        psf: 0xa00,
+        psf_h: 0x0a00,
+        psf_lp: 0x0b00,
         disable: 1 << 9,
     },
     Descriptor {
         devfn: 0xf3,
         control: 0x228,
-        psf: 0x900,
+        psf_h: 0x0900,
+        psf_lp: 0x0a00,
         disable: 1 << 10,
     },
     Descriptor {
         devfn: 0xf0,
         control: 0x218,
-        psf: 0xc00,
+        psf_h: 0x0c00,
+        psf_lp: 0x0d00,
         disable: 1 << 6,
     },
     Descriptor {
         devfn: 0xf1,
         control: 0x21c,
-        psf: 0xb00,
+        psf_h: 0x0b00,
+        psf_lp: 0x0c00,
         disable: 1 << 7,
     },
     Descriptor {
         devfn: 0xc8,
         control: 0x220,
-        psf: 0xd00,
+        psf_h: 0x0d00,
+        psf_lp: 0x0f00,
         disable: 1 << 8,
     },
 ];
-const H_MASK: u32 = 0x7cf; // I2C4/5 bits4/5 are NOT implemented on PCH-H.
-const fn supported(index: usize) -> bool {
-    index < 11 && index != 4 && index != 5
+const H_MASK: u32 = 0x7cf; // I2C4/5 bits 4/5 are NOT implemented on PCH-H.
+const LP_MASK: u32 = 0x7ff;
+const fn kind_mask(kind: dmi::Kind) -> u32 {
+    match kind {
+        dmi::Kind::H => H_MASK,
+        dmi::Kind::Lp => LP_MASK,
+    }
 }
-fn desired_mask(old: u32, config: &Config) -> u32 {
+const fn supported(kind: dmi::Kind, index: usize) -> bool {
+    match kind {
+        dmi::Kind::H => index < 11 && index != 4 && index != 5,
+        dmi::Kind::Lp => index < 11,
+    }
+}
+fn desired_mask(kind: dmi::Kind, old: u32, config: &Config) -> u32 {
     let mut value = old;
     for (i, p) in config.controllers.iter().enumerate() {
-        if supported(i) {
+        if supported(kind, i) {
             match p.mode {
                 Mode::Disabled => value |= DESCRIPTORS[i].disable,
                 Mode::Pci => value &= !DESCRIPTORS[i].disable,
@@ -220,6 +262,7 @@ pub struct Outcome {
     pub absent: u16,
 }
 pub(crate) struct Prepared {
+    kind: dmi::Kind,
     config: Config,
     outcome: Outcome,
     fixed: PciFixedBars,
@@ -287,12 +330,24 @@ register_structs! {
         (0x204 => resets:RW<u32,Resets::Register>), (0x208 => _r3), (0x224 => cs:RW<u32,ChipSelect::Register>), (0x228 => @END),
     }
 }
-fn pad_configs(index: usize, p: ControllerPolicy) -> Result<heapless::Vec<PadConfig, 4>, Error> {
-    const I2C: [[(u16, u32); 2]; 4] = [
+fn pad_configs(
+    kind: dmi::Kind,
+    index: usize,
+    p: ControllerPolicy,
+) -> Result<heapless::Vec<PadConfig, 4>, Error> {
+    const I2C_H: [[(u16, u32); 2]; 4] = [
         [(64, 1), (65, 1)],
         [(66, 1), (67, 1)],
         [(85, 3), (86, 3)],
         [(76, 2), (95, 2)],
+    ];
+    const I2C_LP: [[(u16, u32); 2]; 6] = [
+        [(64, 1), (65, 1)],
+        [(66, 1), (67, 1)],
+        [(124, 1), (125, 1)],
+        [(126, 1), (127, 1)],
+        [(128, 1), (129, 1)],
+        [(130, 1), (131, 1)],
     ];
     const SPI: [[(u16, u32); 4]; 2] = [
         [(39, 1), (40, 1), (41, 1), (42, 1)],
@@ -303,17 +358,18 @@ fn pad_configs(index: usize, p: ControllerPolicy) -> Result<heapless::Vec<PadCon
         [(60, 1), (61, 1), (62, 1), (63, 1)],
         [(68, 1), (69, 1), (70, 1), (71, 1)],
     ];
-    let pins: &[(u16, u32)] = match index {
-        0..=3 => &I2C[index],
-        6..=7 => &SPI[index - 6],
-        8..=10 => &UART[index - 8][..if p.uart_flow { 4 } else { 2 }],
+    let pins: &[(u16, u32)] = match (kind, index) {
+        (dmi::Kind::H, 0..=3) => &I2C_H[index],
+        (dmi::Kind::Lp, 0..=5) => &I2C_LP[index],
+        (_, 6..=7) => &SPI[index - 6],
+        (_, 8..=10) => &UART[index - 8][..if p.uart_flow { 4 } else { 2 }],
         _ => return Err(Error::Policy),
     };
     let mut result = heapless::Vec::new();
     for &(pin, function) in pins {
         result
             .push(PadConfig {
-                pad: Pad::from_number(pin)?,
+                pad: Pad::from_number_for(kind, pin)?,
                 dw0: (PadDw0::RESET.val(1) + PadDw0::MODE.val(function)).value,
                 dw1: PadDw1::TOLERANT_1V8.val(u32::from(p.i2c_1v8)).value,
             })
@@ -382,7 +438,7 @@ fn preserve(
     Ok(())
 }
 /// # Safety
-/// Exclusive actual cold PCH-H PCR/PMC/PCI/GPIO plus reserved UC native LPSS
+/// Exclusive actual cold PCH-H/LP PCR/PMC/PCI/GPIO plus reserved UC native LPSS
 /// temporary windows FE020000..FE036000, before enumeration/AP/SMM/OS. PCI
 /// mode controllers have no existing decode/DMA owner. SkipInit is inherited
 /// ownership: no writes, and ALL its live BARs must stay reserved/unprobed.
@@ -391,19 +447,19 @@ pub(crate) unsafe fn prepare(
     pcr: &Pcr,
     pmc: &PmcRegisters,
 ) -> Result<Prepared, Error> {
-    config.validate()?;
-    if hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?.kind() != super::dmi::Kind::H {
-        return Err(Error::Device);
-    }
+    let kind = hsio::Silicon::read(&EcamDevice::new(0, 0x1f, 0))?.kind();
+    config.validate_for(kind)?;
+    let mask = kind_mask(kind);
     let old = pmc.serial_disable.get();
     if old == u32::MAX {
         return Err(Error::Device);
     }
-    let next = desired_mask(old, &config);
-    if (old ^ next) & H_MASK != 0 && pmc.function_disable.is_set(pmc::FunctionDisable::LOCK) {
+    let next = desired_mask(kind, old, &config);
+    if (old ^ next) & mask != 0 && pmc.function_disable.is_set(pmc::FunctionDisable::LOCK) {
         return Err(Error::Locked);
     }
     let mut result = Prepared {
+        kind,
         config,
         outcome: Outcome {
             pci: 0,
@@ -415,9 +471,33 @@ pub(crate) unsafe fn prepare(
         excluded: PciExcludedFunctions::new(),
         _bsp: core::marker::PhantomData,
     };
+    // On PCH-LP (0x7ff), setting every SerialIO static power-gate bit powers
+    // down the entire PID_SERIALIO sideband endpoint so its PCR registers read
+    // all-ones. Handle an already-gated block before reading Port::SerialIo.
+    if old & mask == mask {
+        if old & !next & mask != 0 {
+            pmc.serial_disable.set(next);
+            if (pmc.serial_disable.get() ^ next) & mask != 0 {
+                return Err(Error::Readback);
+            }
+            return Err(Error::GlobalResetRequired);
+        }
+        for (i, p) in config.controllers.iter().enumerate() {
+            if supported(kind, i) {
+                if p.mode == Mode::Disabled {
+                    result
+                        .excluded
+                        .push(address(i))
+                        .map_err(|_| Error::Resource)?;
+                }
+                result.outcome.absent |= 1 << i;
+            }
+        }
+        return Ok(result);
+    }
     // Validate ownership for the entire policy before any controller changes.
     for (i, p) in config.controllers.iter().enumerate() {
-        if supported(i) {
+        if supported(kind, i) {
             if p.mode == Mode::Disabled {
                 // Also teach canonical discovery about a disabled function0:
                 // independent PCI-mode siblings must remain discoverable.
@@ -429,9 +509,14 @@ pub(crate) unsafe fn prepare(
             let device = EcamDevice::new_address(address(i));
             if !device.is_present() {
                 let d = &DESCRIPTORS[i];
+                if old & d.disable != 0 && p.mode == Mode::Disabled {
+                    result.outcome.absent |= 1 << i;
+                    continue;
+                }
+                let psf = d.psf(kind);
                 let control = pcr.register::<ConfigControl::Register>(Port::SerialIo, d.control)?;
-                let shadow = pcr.register::<Shadow::Register>(Port::Psf3, d.psf + 0x1c)?;
-                let visibility = pcr.register::<Visibility::Register>(Port::Psf3, d.psf + 0x38)?;
+                let shadow = pcr.register::<Shadow::Register>(Port::Psf3, psf + 0x1c)?;
+                let visibility = pcr.register::<Visibility::Register>(Port::Psf3, psf + 0x38)?;
                 if control.get() == u32::MAX
                     || shadow.get() == u32::MAX
                     || visibility.get() == u32::MAX
@@ -473,9 +558,9 @@ pub(crate) unsafe fn prepare(
     if result.fixed.len() + 4 > fstart_pci::MAX_PCI_FIXED_BARS {
         return Err(Error::Resource);
     }
-    if old & !next & H_MASK != 0 {
+    if old & !next & mask != 0 {
         pmc.serial_disable.set(next);
-        if (pmc.serial_disable.get() ^ next) & H_MASK != 0 {
+        if (pmc.serial_disable.get() ^ next) & mask != 0 {
             return Err(Error::Readback);
         }
         return Err(Error::GlobalResetRequired);
@@ -495,7 +580,7 @@ pub(crate) unsafe fn prepare(
         return Err(Error::Readback);
     }
     for (i, p) in config.controllers.iter().enumerate() {
-        if supported(i) {
+        if supported(kind, i) {
             if p.mode == Mode::SkipInit {
                 result.outcome.skipped |= 1 << i;
                 continue;
@@ -504,6 +589,7 @@ pub(crate) unsafe fn prepare(
                 continue;
             }
             let d = &DESCRIPTORS[i];
+            let psf = d.psf(kind);
             let device = EcamDevice::new_address(address(i));
             let power_gate = unsafe { device.register::<u32, DevicePower::Register>(0xa0) };
             if power_gate.get() == u32::MAX {
@@ -522,7 +608,7 @@ pub(crate) unsafe fn prepare(
                 if power.read(PowerState::STATE) != 3 {
                     return Err(Error::Readback);
                 }
-                let shadow = pcr.register::<Shadow::Register>(Port::Psf3, d.psf + 0x1c)?;
+                let shadow = pcr.register::<Shadow::Register>(Port::Psf3, psf + 0x1c)?;
                 shadow.modify(Shadow::DISABLE::SET);
                 if !shadow.is_set(Shadow::DISABLE) || device.is_present() {
                     return Err(Error::Readback);
@@ -530,11 +616,11 @@ pub(crate) unsafe fn prepare(
                 result.outcome.disabled |= 1 << i;
                 continue;
             }
-            let shadow = pcr.register::<Shadow::Register>(Port::Psf3, d.psf + 0x1c)?;
+            let shadow = pcr.register::<Shadow::Register>(Port::Psf3, psf + 0x1c)?;
             if shadow.is_set(Shadow::DISABLE) {
                 return Err(Error::Locked);
             }
-            pcr.register::<Visibility::Register>(Port::Psf3, d.psf + 0x38)?
+            pcr.register::<Visibility::Register>(Port::Psf3, psf + 0x38)?
                 .modify(Visibility::HIDE::CLEAR);
             let control = pcr.register::<ConfigControl::Register>(Port::SerialIo, d.control)?;
             control.modify(
@@ -549,7 +635,7 @@ pub(crate) unsafe fn prepare(
                     + ConfigControl::BAR1_DISABLE::SET,
             ) || shadow.read(Shadow::BAR23_DISABLE) != 3
                 || pcr
-                    .register::<Visibility::Register>(Port::Psf3, d.psf + 0x38)?
+                    .register::<Visibility::Register>(Port::Psf3, psf + 0x38)?
                     .is_set(Visibility::HIDE)
             {
                 return Err(Error::Readback);
@@ -587,7 +673,7 @@ pub(crate) unsafe fn prepare(
                     {
                         return Err(Error::Readback);
                     }
-                } else if i < 4 {
+                } else if i < 6 {
                     // Native OR, not an invented exact hold-time calibration.
                     let fields = SdaHold::TX.val(r.sda_hold.read(SdaHold::TX) | 0x2c)
                         + SdaHold::RX.val(r.sda_hold.read(SdaHold::RX) | 0x2c);
@@ -609,9 +695,10 @@ pub(crate) unsafe fn prepare(
                         return Err(Error::Readback);
                     }
                 }
-                let pads = pad_configs(i, *p)?;
+                let pads = pad_configs(kind, i, *p)?;
                 Gpio {
                     pcr,
+                    kind,
                     program_itss_polarity: false,
                 }
                 .configure_pads(pads.as_slice())?;
@@ -629,14 +716,14 @@ pub(crate) unsafe fn prepare(
         }
     }
     pmc.serial_disable.set(next);
-    if (pmc.serial_disable.get() ^ next) & H_MASK != 0 {
+    if (pmc.serial_disable.get() ^ next) & mask != 0 {
         return Err(Error::Readback);
     }
     Ok(result)
 }
 pub(crate) fn finish(prepared: &Prepared, pci: &PciEcam) -> Result<(), Error> {
     for (i, p) in prepared.config.controllers.iter().enumerate() {
-        if !supported(i) {
+        if !supported(prepared.kind, i) {
             continue;
         }
         if p.mode == Mode::SkipInit {
@@ -679,16 +766,23 @@ mod tests {
     fn skip_init_preserves_static_state_and_h_policy_never_changes_lp_only_bits() {
         let mut config = Config::DISABLED;
         config.controllers[10].mode = Mode::SkipInit;
-        assert_eq!(desired_mask(0, &config), 0x6cf);
-        assert_eq!(desired_mask(0x130, &config), 0x7ff);
+        assert_eq!(desired_mask(dmi::Kind::H, 0, &config), 0x6cf);
+        assert_eq!(desired_mask(dmi::Kind::H, 0x130, &config), 0x7ff);
         config.controllers[0].mode = Mode::Pci;
-        assert_eq!(desired_mask(0x130, &config), 0x7fe);
+        assert_eq!(desired_mask(dmi::Kind::H, 0x130, &config), 0x7fe);
+        assert_eq!(desired_mask(dmi::Kind::Lp, 0, &config), 0x6fe);
     }
     #[test]
     fn unsupported_h_i2c_and_cross_kind_pad_settings_reject_before_hardware() {
         let mut config = Config::DISABLED;
         config.controllers[4].mode = Mode::Pci;
-        assert_eq!(config.validate(), Err(Error::Policy));
+        assert_eq!(config.validate_for(dmi::Kind::H), Err(Error::Policy));
+        assert_eq!(config.validate_for(dmi::Kind::Lp), Ok(()));
+        config = Config::DISABLED;
+        config.controllers[2].mode = Mode::Pci;
+        config.controllers[2].i2c_1v8 = true;
+        assert_eq!(config.validate_for(dmi::Kind::H), Ok(()));
+        assert_eq!(config.validate_for(dmi::Kind::Lp), Err(Error::Policy));
         config = Config::DISABLED;
         config.controllers[8].i2c_1v8 = true;
         assert_eq!(config.validate(), Err(Error::Policy));
