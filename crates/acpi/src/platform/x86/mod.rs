@@ -229,7 +229,7 @@ fn build_madt(config: &X86Config) -> Vec<u8> {
     let mut madt = Sdt::new(
         *b"APIC",
         44,
-        4, // MADT revision 4 (ACPI 6.0+)
+        6, // MADT revision 6 (ACPI 6.5, matching FADT 6.5)
         crate::OEM_ID,
         crate::OEM_TABLE_ID,
         crate::OEM_REVISION,
@@ -241,6 +241,8 @@ fn build_madt(config: &X86Config) -> Vec<u8> {
     let flags: u32 = if config.legacy_devices { 1 } else { 0 };
     madt.write_u32(40, flags);
 
+    // MADT revision >= 5 interprets flag bit 1 as Online Capable for disabled
+    // entries; this builder only emits enabled processors (bit 0 set).
     const LAPIC_ENABLED: u32 = 1;
     let mut x2apic = false;
     for (uid, &apic_id) in config.apic_ids.iter().enumerate() {
@@ -443,8 +445,9 @@ mod tests {
         let config = test_config();
         let madt_bytes = build_madt(&config);
 
-        // Verify signature
+        // Verify signature and ACPI 6.5 revision
         assert_eq!(&madt_bytes[0..4], b"APIC");
+        assert_eq!(madt_bytes[8], 6);
 
         // Verify checksum
         let sum = madt_bytes.iter().fold(0u8, |a, &x| a.wrapping_add(x));

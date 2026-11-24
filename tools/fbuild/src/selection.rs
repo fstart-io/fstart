@@ -18,6 +18,10 @@ pub(crate) struct Selection {
     pub manifest: PathBuf,
     /// RUSTFLAGS for every crate in the unit, core and dependencies included.
     pub flags: Vec<String>,
+    /// Additional `--remap-path-prefix` flags applied only to firmware builds
+    /// (not `cargo check` / IDE flycheck, which need real host paths for
+    /// diagnostics).
+    build_remap_flags: Vec<String>,
     pub args: Vec<String>,
     producer_environment: BTreeMap<String, String>,
     removed_environment: Vec<String>,
@@ -78,6 +82,8 @@ impl Selection {
         )
         .map_err(|e| e.to_string())?;
         let flags = unit.rustflags.clone();
+        let mut build_remap_flags = Vec::new();
+        append_remap_flags(&mut build_remap_flags, root);
         // The linker script only concerns this workspace's crates. Passing it
         // as a profile rustflag rather than RUSTFLAGS keeps core, alloc and
         // registry dependencies identical between units, so every unit shares
@@ -92,6 +98,7 @@ impl Selection {
             directory.join("rustflags.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "rustflags": flags,
+                "build_remap_rustflags": build_remap_flags,
                 "member_rustflags": member_flags,
             }))
             .map_err(|e| e.to_string())?,
@@ -166,6 +173,7 @@ impl Selection {
             directory,
             manifest,
             flags,
+            build_remap_flags,
             args,
             producer_environment: environment,
             removed_environment,
@@ -178,12 +186,24 @@ impl Selection {
     }
 
     pub fn environment(&self) -> BTreeMap<String, String> {
+        self.environment_with_flags(&self.flags)
+    }
+
+    /// Environment for firmware builds, adding `--remap-path-prefix` so
+    /// compiled stages do not embed checkout or toolchain paths.
+    pub fn build_environment(&self) -> BTreeMap<String, String> {
+        let mut all = self.flags.clone();
+        all.extend(self.build_remap_flags.iter().cloned());
+        self.environment_with_flags(&all)
+    }
+
+    fn environment_with_flags(&self, flags: &[String]) -> BTreeMap<String, String> {
         // Encoded flags also preserve workspace paths containing whitespace.
         self.producer_environment
             .clone()
             .into_iter()
             .chain([
-                ("CARGO_ENCODED_RUSTFLAGS".into(), self.flags.join("\u{1f}")),
+                ("CARGO_ENCODED_RUSTFLAGS".into(), flags.join("\u{1f}")),
                 ("RUSTFLAGS".into(), String::new()),
             ])
             .collect()
@@ -225,9 +245,88 @@ impl Selection {
             .arg(if build { "build" } else { "check" })
             .arg("--message-format=json-render-diagnostics")
             .args(&self.args);
-        self.apply_environment(&mut command);
+        for key in &self.removed_environment {
+            command.env_remove(key);
+        }
+        if build {
+            command.envs(self.build_environment());
+        } else {
+            command.envs(self.environment());
+        }
         command
     }
+}
+
+/// Remap host-specific workspace, Cargo, Rustup, and sysroot prefixes so
+/// firmware builds do not embed checkout paths, home directories, or host
+/// triples in panic locations or debuginfo.
+///
+/// When several prefixes match a path, rustc applies the one given last, and
+/// these nest: with rustup the sysroot lies inside `RUSTUP_HOME`, and
+/// `CARGO_HOME` can lie inside the workspace. The flags are therefore ordered
+/// from the shortest prefix to the longest, so the most specific one wins.
+fn append_remap_flags(flags: &mut Vec<String>, root: &Path) {
+    let mut prefixes: Vec<(String, &str)> = Vec::new();
+    let mut push_path = |path: &Path, to: &'static str| {
+        let canonical = path.canonicalize().ok();
+        for path in [Some(path), canonical.as_deref()].into_iter().flatten() {
+            if let Some(from) = path.to_str()
+                && !prefixes.iter().any(|(known, _)| known == from)
+            {
+                prefixes.push((from.to_string(), to));
+            }
+        }
+    };
+    let resolve_env_path = |var: &str, home_sub: &str| -> Option<PathBuf> {
+        let raw = std::env::var_os(var)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .filter(|v| !v.is_empty())
+                    .map(|h| PathBuf::from(h).join(home_sub))
+            })?;
+        if raw.is_relative() {
+            std::env::current_dir().ok().map(|cwd| cwd.join(&raw))
+        } else {
+            Some(raw)
+        }
+    };
+
+    push_path(root, "/fstart");
+    if let Some(path) = resolve_env_path("CARGO_HOME", ".cargo") {
+        push_path(&path, "/cargo");
+    }
+    if let Some(path) = resolve_env_path("RUSTUP_HOME", ".rustup") {
+        push_path(&path, "/rustup");
+    }
+    if let Some(sysroot) = rustc_sysroot() {
+        // The stdlib sources get their own prefix, so the host triple in
+        // `toolchains/<channel>-<host>/lib/rustlib/src/rust` is stripped too.
+        push_path(&sysroot, "/rustc-sysroot");
+        push_path(&sysroot.join("lib/rustlib/src/rust"), "/rustc");
+    }
+    // Stable: equal lengths keep the order above.
+    prefixes.sort_by_key(|(from, _)| from.len());
+    for (from, to) in prefixes {
+        flags.push(format!("--remap-path-prefix={from}={to}"));
+    }
+}
+
+fn rustc_sysroot() -> Option<PathBuf> {
+    let rustc = std::env::var_os("RUSTC")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "rustc".into());
+    let output = Command::new(rustc)
+        .args(["--print", "sysroot"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let trimmed = String::from_utf8(output.stdout).ok()?;
+    let trimmed = trimmed.trim();
+    (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
 }
 
 /// One Cargo target directory for all firmware units of all boards. Cargo
