@@ -8,16 +8,46 @@
 // with the source's argument lists.
 #![allow(dead_code, clippy::needless_range_loop, clippy::too_many_arguments)]
 
+pub mod activation;
+pub mod additional_steps;
+pub mod address_decode;
+pub mod ber_margin;
 pub mod capabilities;
+pub mod cold_controller;
+pub mod cold_handoff;
+pub mod cold_training;
+pub mod command_si;
+pub mod command_training;
 pub mod cpu;
+pub mod cpu_memory_test;
 pub mod cse;
 pub mod dmi_registers;
+pub mod dq_comp;
+pub mod dq_si;
 pub mod early_sa;
+pub mod energy_perf_gain;
+pub mod frequency;
+pub mod io_test;
+pub mod jedec;
+pub mod mc_timing;
+pub mod memory_check;
 pub mod memory_map;
+pub mod odt_power;
+pub mod opt_param;
+pub mod opt_tradeoff;
+pub mod overrides;
 pub mod package_power;
+pub mod phy;
 pub mod phy_registers;
+pub mod post_services;
+pub mod post_training;
+pub mod power_model;
+pub mod read_centering;
+pub mod read_training;
 pub mod registers;
+pub mod reut;
 pub mod reut_registers;
+pub mod rtl_training;
 pub mod sa_dmi;
 pub mod sa_graphics;
 pub mod sa_graphics_pm;
@@ -25,10 +55,20 @@ pub mod sa_peg;
 pub mod sa_post_mem;
 pub mod sa_pre_mem;
 pub(crate) mod sa_registers;
+pub mod sense_amp;
 pub mod smram;
 pub mod spd;
 pub mod timings;
+pub mod training;
+pub mod training_cache;
+pub mod training_state;
+pub mod turnaround_training;
+pub mod tx_vref_range;
 pub mod uncore_prmrr;
+pub mod vref_training;
+pub mod write_centering;
+pub mod write_leveling;
+pub mod write_training;
 
 /// Identifies the failed analog calibration, not a pipeline completion state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

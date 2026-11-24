@@ -213,7 +213,7 @@ fn require_no_dpr(sa: &EcamDevice) -> Result<u32, Error> {
     Ok(dpr.get())
 }
 
-fn compute(
+pub(super) fn compute(
     total: u32,
     me: u32,
     stolen: u32,
