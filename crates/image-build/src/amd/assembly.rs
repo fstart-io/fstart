@@ -187,8 +187,16 @@ pub struct PspOptions {
 
 /// The PSP's compressed image: a 256-byte header with the compressed size at
 /// 0x14, then the zlib stream.
+///
+/// HARDWARE REQUIREMENT — DO NOT RAISE THE COMPRESSION LEVEL TO 9:
+/// `miniz_oxide` at level 9 (`78 da`) intermittently emits valid zlib streams
+/// that AMD Zeppelin's PSP decompressor hangs on before releasing x86 (verified
+/// on Gigabyte MJ11-EC1: the exact same 2.3 MiB reset image hung before UART
+/// when compressed at level 9, and booted immediately when re-compressed at
+/// level 6). Standard zlib default level 6 (`78 9c`) matches coreboot's
+/// `util/cbfstool/amdcompress.c` (`compress()`).
 fn amd_compress(data: &[u8]) -> Vec<u8> {
-    let stream = miniz_oxide::deflate::compress_to_vec_zlib(data, 9);
+    let stream = miniz_oxide::deflate::compress_to_vec_zlib(data, 6);
     let mut out = vec![0; 256];
     out[0x14..0x18].copy_from_slice(&(stream.len() as u32).to_le_bytes());
     out.extend(stream);
