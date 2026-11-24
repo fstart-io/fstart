@@ -54,6 +54,13 @@ pub fn dsdt_aml_with_brightness<N: PcNamespace>(
     brightness_hooks: &[u8],
 ) -> Vec<u8> {
     let mut lpc = ec_device_aml::<N>(cfg);
+    if cfg.has_radio_switch {
+        lpc.extend_from_slice(&acpi_dsl! {
+            Scope("EC__.HKEY") {
+                Method("WLSW", 0, NotSerialized) { Return(GSTS); }
+            }
+        });
+    }
     if cfg.bat_charge_behaviour {
         lpc.extend(hkey_charge_behaviour_aml());
     }
@@ -502,7 +509,6 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
                         Local0 = BTN_;
                         If (Local0 != 0u32) {
                             BTN_ = 0u32;
-                            Local0 = Local0 + 0x1000u32;
                             Return(Local0);
                         }
                         Local0 = BTAB;
@@ -517,6 +523,13 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
                     Method("RHK_", 1, NotSerialized) {
                         Local0 = 1u32 << (Arg0 - 1u32);
                         If (EMSK & Local0) {
+                            BTN_ = 0x1000u32 + Arg0;
+                            Notify(HKEY, 0x80u32);
+                        }
+                    }
+
+                    Method("RHKX", 1, NotSerialized) {
+                        If (EN__) {
                             BTN_ = Arg0;
                             Notify(HKEY, 0x80u32);
                         }
@@ -560,7 +573,6 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
                     Method("MHKG", 0, NotSerialized) { Return(TBSW << 3u32); }
                     Method("SSMS", 1, NotSerialized) { ALMT = Arg0; }
                     Method("MHKV", 0, NotSerialized) { Return(0x0100u32); }
-                    Method("WLSW", 0, NotSerialized) { Return(GSTS); }
                     Method("MMTS", 1, NotSerialized) {
                         If (Arg0) {
                             TLED(0x8Eu32);
@@ -661,13 +673,7 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
                 Method("_Q64", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x05u32); }
                 Method("_Q65", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x06u32); }
                 Method("_Q17", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x08u32); }
-                Method("_Q66", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Au32); }
                 Method("_Q6A", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x1Bu32); }
-                Method("_Q1A", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Bu32); }
-                Method("_Q1B", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Cu32); }
-                Method("_Q62", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Du32); }
-                Method("_Q60", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Eu32); }
-                Method("_Q61", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Fu32); }
                 Method("_Q1F", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x12u32); }
                 Method("_Q67", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x13u32); }
                 Method("_Q63", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x14u32); }
@@ -842,6 +848,27 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
             }
     }
     .into();
+    if cfg.extended_fn_layout {
+        aml.extend_from_slice(&acpi_dsl! {
+            Scope("EC__") {
+                Method("_Q66", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x09u32); }
+                Method("_Q60", 0, NotSerialized) { #{const "^HKEY.RHKX"}(0x1314u32); }
+                Method("_Q61", 0, NotSerialized) { #{const "^HKEY.RHKX"}(0x1315u32); }
+                Method("_Q62", 0, NotSerialized) { #{const "^HKEY.RHKX"}(0x1311u32); }
+            }
+        });
+    } else {
+        aml.extend_from_slice(&acpi_dsl! {
+            Scope("EC__") {
+                Method("_Q66", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Au32); }
+                Method("_Q1A", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Bu32); }
+                Method("_Q1B", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Cu32); }
+                Method("_Q62", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Du32); }
+                Method("_Q60", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Eu32); }
+                Method("_Q61", 0, NotSerialized) { #{const "^HKEY.RHK_"}(0x0Fu32); }
+            }
+        });
+    }
     if cfg.bat_info_extended {
         aml.extend_from_slice(&acpi_dsl! {
             Scope("EC__.BAT0") {
@@ -942,30 +969,60 @@ fn thermal_zone_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
 }
 
 /// `\_SI._SST` system status indicator (coreboot `systemstatus.asl`).
-fn si_status_aml<N: PcNamespace>(_cfg: &H8Config) -> Vec<u8> {
-    acpi_dsl! {
-        Scope("\\_SI") {
-            Method("_SST", 1, NotSerialized) {
-                If (Arg0 == 0u32) {
-                    #{const path 5 ec::<N>().child("TLED")}(0x00u32);
-                    #{const path 5 ec::<N>().child("TLED")}(0x07u32);
-                }
-                If (Arg0 == 1u32) {
-                    #{const path 5 ec::<N>().child("TLED")}(0x80u32);
-                    #{const path 5 ec::<N>().child("TLED")}(0x07u32);
-                }
-                If (Arg0 == 2u32) {
-                    #{const path 5 ec::<N>().child("TLED")}(0x80u32);
-                    #{const path 5 ec::<N>().child("TLED")}(0xC7u32);
-                }
-                If (Arg0 == 3u32) {
-                    #{const path 5 ec::<N>().child("TLED")}(0xA0u32);
-                    #{const path 5 ec::<N>().child("TLED")}(0x87u32);
+fn si_status_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
+    if cfg.has_led_logo {
+        acpi_dsl! {
+            Scope("\\_SI") {
+                Method("_SST", 1, NotSerialized) {
+                    If (Arg0 == 0u32) {
+                        #{const path 5 ec::<N>().child("TLED")}(0x00u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x07u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x0Au32);
+                    }
+                    If (Arg0 == 1u32) {
+                        #{const path 5 ec::<N>().child("TLED")}(0x80u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x07u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x8Au32);
+                    }
+                    If (Arg0 == 2u32) {
+                        #{const path 5 ec::<N>().child("TLED")}(0x80u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0xC7u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x8Au32);
+                    }
+                    If (Arg0 == 3u32) {
+                        #{const path 5 ec::<N>().child("TLED")}(0xA0u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x87u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0xAAu32);
+                    }
                 }
             }
         }
+        .into()
+    } else {
+        acpi_dsl! {
+            Scope("\\_SI") {
+                Method("_SST", 1, NotSerialized) {
+                    If (Arg0 == 0u32) {
+                        #{const path 5 ec::<N>().child("TLED")}(0x00u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x07u32);
+                    }
+                    If (Arg0 == 1u32) {
+                        #{const path 5 ec::<N>().child("TLED")}(0x80u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x07u32);
+                    }
+                    If (Arg0 == 2u32) {
+                        #{const path 5 ec::<N>().child("TLED")}(0x80u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0xC7u32);
+                    }
+                    If (Arg0 == 3u32) {
+                        #{const path 5 ec::<N>().child("TLED")}(0xA0u32);
+                        #{const path 5 ec::<N>().child("TLED")}(0x87u32);
+                    }
+                }
+            }
+        }
+        .into()
     }
-    .into()
 }
 
 /// HKEY charge-behaviour extension (coreboot
@@ -1526,6 +1583,70 @@ mod tests {
     }
 
     #[test]
+    fn extended_fn_layout_reports_rhkx_codes() {
+        use crate::{ec::EcPorts, h8::H8Resources};
+        let cfg = H8Config {
+            extended_fn_layout: true,
+            has_led_logo: true,
+            ..H8Config::new(
+                H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+                22,
+                "LEN0268",
+            )
+        };
+        let mut aml: Vec<u8> = acpi_dsl! {
+            Scope("\\_SB_") { Device("PCI0") { Device("LPCB") { } } }
+        }
+        .into();
+        aml.extend(dsdt_aml::<TestNamespace>(&cfg));
+        let check: Vec<u8> = acpi_dsl! {
+            Scope("\\_SB_.PCI0.LPCB.EC__") {
+                Method("TEST", 0, Serialized) {
+                    // RHKX must be suppressed while HKEY is disabled.
+                    _Q60();
+                    If (^HKEY.MHKP() != 0u32) { Return(1u32); }
+                    #{const "^HKEY.MHKC"}(1u32);
+                    Store(0xFFFFFFFFu32, #{const "^HKEY.EMSK"});
+                    _Q66();
+                    If (^HKEY.MHKP() != 0x1009u32) { Return(2u32); }
+                    _Q60();
+                    If (^HKEY.MHKP() != 0x1314u32) { Return(3u32); }
+                    _Q61();
+                    If (^HKEY.MHKP() != 0x1315u32) { Return(4u32); }
+                    _Q62();
+                    If (^HKEY.MHKP() != 0x1311u32) { Return(5u32); }
+                    Return(0u32);
+                }
+            }
+        }
+        .into();
+        aml.extend(check);
+        let dir =
+            env::temp_dir().join(std::format!("fstart-h8-extended-fn-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("dsdt.aml"),
+            fstart_acpi::platform::build_dsdt(&aml),
+        )
+        .unwrap();
+        let Some(result) = acpiexec(&dir, "execute \\_SB.PCI0.LPCB.EC.TEST") else {
+            fs::remove_dir_all(dir).unwrap();
+            return;
+        };
+        let text = std::format!(
+            "{}{}",
+            std::string::String::from_utf8_lossy(&result.stdout),
+            std::string::String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            result.status.success() && !text.contains("AE_") && !text.contains("ACPI Error"),
+            "{text}"
+        );
+        assert!(text.contains("[Integer] = 0000000000000000"), "{text}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn dsdt_assembles_and_contains_key_objects() {
         use crate::{ec::EcPorts, h8::H8Resources};
         let cfg = H8Config {
@@ -1593,5 +1714,25 @@ mod tests {
             table.extend_from_slice(&aml);
             fs::write("/tmp/h8_full_table.aml", &table).unwrap();
         }
+    }
+
+    #[test]
+    fn radio_switch_controls_wlsw_method() {
+        use crate::{ec::EcPorts, h8::H8Resources};
+        let with_switch = H8Config::new(
+            H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+            22,
+            "LEN0268",
+        );
+        assert!(with_switch.has_radio_switch);
+        let aml_with = dsdt_aml::<TestNamespace>(&with_switch);
+        assert!(aml_with.windows(4).any(|w| w == b"WLSW"));
+
+        let without_switch = H8Config {
+            has_radio_switch: false,
+            ..with_switch
+        };
+        let aml_without = dsdt_aml::<TestNamespace>(&without_switch);
+        assert!(!aml_without.windows(4).any(|w| w == b"WLSW"));
     }
 }

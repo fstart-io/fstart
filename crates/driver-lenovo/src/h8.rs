@@ -39,6 +39,11 @@ register_bitfields![u8,
         DOCK_LATCH OFFSET(2) NUMBITS(1) [],
         STICKY_FNLOCK_LED OFFSET(4) NUMBITS(1) []
     ],
+    // Stock BIOS uses bits 2-3 in 0x09 for F1-F12 primary mode.
+    pub CONFIG9 [
+        F1_TO_F12_PRIMARY OFFSET(2) NUMBITS(1) [],
+        F1_TO_F12_MEDIA OFFSET(3) NUMBITS(1) []
+    ],
     pub LED_CONTROL [
         SELECTOR OFFSET(0) NUMBITS(4) [
             Power = 0,
@@ -96,6 +101,7 @@ register_bitfields![u8,
     pub SOUND_COMMAND [TONE OFFSET(0) NUMBITS(8) [Silence = 0]],
     pub SOUND_REPEAT [COUNT OFFSET(0) NUMBITS(8) []],
     pub EVENT_ATTENTION [COMMAND OFFSET(0) NUMBITS(8) [DiscardAndEnable = 1]],
+    pub KB_BACKLIGHT_STATUS [SUPPORTED OFFSET(6) NUMBITS(1) []],
     pub RADIO_CONTROL [
         AUDIO_MUTE OFFSET(0) NUMBITS(1) [],
         BLUETOOTH_ENABLE OFFSET(4) NUMBITS(1) [],
@@ -152,12 +158,14 @@ ec_registers! {
     SOUND_ENABLE1 => 0x05,
     SOUND_COMMAND => 0x06,
     SOUND_REPEAT => 0x07,
+    CONFIG9 => 0x09,
     TRACKPOINT_CONTROL => 0x0b,
     LED_CONTROL => 0x0c,
     ALWAYS_ON_CONTROL => 0x0d,
     FAN_CONTROL => 0x2f,
     VOLUME_CONTROL => 0x30,
     UWB_CONTROL => 0x31,
+    KB_BACKLIGHT_STATUS => 0x34,
     RADIO_CONTROL => 0x3a,
     USB_CONTROL => 0x3b,
     STATUS1 => 0x47,
@@ -375,6 +383,54 @@ impl H8 {
         acknowledged
     }
 
+    /// coreboot `h8_enable()` for modern (MEC1653 / Skylake+) ThinkPads:
+    /// explicit CONFIG0..3, board beep masks (without legacy power-management
+    /// beep overrides), optional lid-logo LED, runtime keyboard-backlight
+    /// probing, Fn-lock LED, and F1-F12 primary mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn init_modern_thinkpad(
+        &self,
+        cfg: &H8Config,
+        config0: u8,
+        controls: [u8; 3],
+        beep_masks: [u8; 2],
+        events: &[u8; 16],
+        options: &crate::options::Options,
+    ) -> (bool, bool) {
+        self.clear_out_queue();
+        let kb_backlight = cfg.has_keyboard_backlight && self.keyboard_backlight_present();
+        let illumination = match (cfg.has_thinklight, kb_backlight) {
+            (true, true) => Some(H8Illumination::Both),
+            (true, false) => Some(H8Illumination::Thinklight),
+            (false, true) => Some(H8Illumination::Keyboard),
+            (false, false) => {
+                (cfg.has_thinklight || cfg.has_keyboard_backlight).then_some(H8Illumination::None)
+            }
+        };
+        let acknowledged = [
+            self.init_config0(config0),
+            self.init_controls(controls, illumination, beep_masks),
+            !cfg.has_led_logo || self.set_led(H8Led::Logo, H8LedMode::On),
+            self.program_event_masks(events),
+            self.usb_always_on(options.usb_always_on),
+            self.wlan_enable(options.wlan),
+            self.trackpoint_enable(options.trackpoint),
+            self.usb_power_enable(true),
+            self.bluetooth_enable(cfg.has_bluetooth && options.bluetooth),
+            self.wwan_enable(cfg.has_wwan && options.wwan),
+            !cfg.has_uwb || self.uwb_enable(options.uwb),
+            self.fn_ctrl_swap(options.fn_ctrl_swap),
+            self.sticky_fn_with_led(options.sticky_fn, cfg.has_fnlock_led),
+            !cfg.has_primary_fn_keys || self.f1_to_f12_as_primary(options.f1_to_f12_as_primary),
+            self.charge_primary_first(options.first_battery != 0),
+            self.audio_mute(false),
+        ]
+        .into_iter()
+        .all(core::convert::identity);
+        fstart_driver_superio::quiesce_i8042_for_os();
+        (kb_backlight, acknowledged)
+    }
+
     pub fn enable_hotkey(&self, on: bool) -> bool {
         self.channel
             .modify_register(CONFIG0::HOTKEY_ENABLE.val(on.into()))
@@ -432,8 +488,39 @@ impl H8 {
 
     /// Sticky Fn without a Fn-lock LED (older ThinkPads, including X61).
     pub fn sticky_fn(&self, on: bool) -> bool {
+        self.sticky_fn_with_led(on, false)
+    }
+
+    /// Sticky Fn with optional Fn-lock LED (`CONFIG3::STICKY_FNLOCK_LED`,
+    /// coreboot `H8_HAS_FNLOCK_LED`).
+    pub fn sticky_fn_with_led(&self, on: bool, has_fnlock_led: bool) -> bool {
+        let ok = self
+            .channel
+            .modify_register(CONFIG0::STICKY_FN.val(on.into()));
+        if has_fnlock_led {
+            ok && self
+                .channel
+                .modify_register(CONFIG3::STICKY_FNLOCK_LED.val(on.into()))
+        } else {
+            ok
+        }
+    }
+
+    /// Select F1-F12 as primary function keys (vs. multimedia keys) in
+    /// `CONFIG9` bits 2-3 (coreboot `h8_f1_to_f12_as_primary`).
+    pub fn f1_to_f12_as_primary(&self, primary: bool) -> bool {
+        self.channel.modify_register(
+            CONFIG9::F1_TO_F12_PRIMARY.val(primary.into())
+                + CONFIG9::F1_TO_F12_MEDIA.val((!primary).into()),
+        )
+    }
+
+    /// Query EC RAM 0x34 bit 6 for physical keyboard backlight support
+    /// (coreboot `h8_kb_backlight_supported`).
+    pub fn keyboard_backlight_present(&self) -> bool {
         self.channel
-            .modify_register(CONFIG0::STICKY_FN.val(on.into()))
+            .read_register::<KB_BACKLIGHT_STATUS::Register>()
+            .is_some_and(|reg| reg.is_set(KB_BACKLIGHT_STATUS::SUPPORTED))
     }
 
     pub fn charge_primary_first(&self, primary: bool) -> bool {
@@ -677,10 +764,17 @@ pub struct H8Config {
     pub has_bluetooth: bool,
     pub has_wwan: bool,
     pub has_uwb: bool,
+    /// Physical hardware wireless kill switch wired to EC `GSTS` (`HKEY.WLSW`).
+    /// Legacy ThinkPads have a slider switch; modern models like T480 do not.
+    pub has_radio_switch: bool,
     pub has_thinklight: bool,
     pub has_keyboard_backlight: bool,
     /// Red "i-dot" logo LED on the display lid.
     pub has_led_logo: bool,
+    /// Fn-lock indicator LED controlled alongside sticky Fn (`H8_HAS_FNLOCK_LED`).
+    pub has_fnlock_led: bool,
+    /// F1-F12 primary function mode in EC CONFIG9 (`H8_HAS_PRIMARY_FN_KEYS`).
+    pub has_primary_fn_keys: bool,
     /// Second thermal zone (TMP1), e.g. X61 with discrete dGPU-less models
     /// still select it via `H8_HAS_2ND_THERMAL_ZONE`.
     pub second_thermal_zone: bool,
@@ -693,6 +787,8 @@ pub struct H8Config {
     pub bat_threshold_backend: H8BatteryThresholdBackend,
     /// Alternative Fn-F2/Fn-F3 hotkey layout.
     pub alt_fn_f2f3_layout: bool,
+    /// Extended Fn-F9..F12 hotkey layout (`EC_LENOVO_H8_EXTENDED_FN_LAYOUT`).
+    pub extended_fn_layout: bool,
     /// Hotkey hub EISAID ("IBM0068" on all models up to *61; "LEN0068" later).
     pub hkey_eisaid: &'static str,
     /// Critical temperature in degrees Celsius reported by `\TCRT`
@@ -713,15 +809,19 @@ impl H8Config {
             has_bluetooth: false,
             has_wwan: false,
             has_uwb: false,
+            has_radio_switch: true,
             has_thinklight: false,
             has_keyboard_backlight: false,
             has_led_logo: false,
+            has_fnlock_led: false,
+            has_primary_fn_keys: false,
             second_thermal_zone: false,
             bat_info_extended: false,
             bat_charge_behaviour: false,
             bat_thresholds: false,
             bat_threshold_backend: H8BatteryThresholdBackend::RegistersB0,
             alt_fn_f2f3_layout: false,
+            extended_fn_layout: false,
             hkey_eisaid,
             critical_temp_celsius: 0,
             passive_temp_celsius: 0,
