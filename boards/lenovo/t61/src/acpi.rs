@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (C) 2026 Alexis Calin
 //! T61 tables and NVIDIA G8x panel brightness policy.
 extern crate alloc;
