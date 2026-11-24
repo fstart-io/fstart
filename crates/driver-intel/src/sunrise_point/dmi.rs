@@ -11,6 +11,7 @@ pub enum Kind {
     H,
     Lp,
 }
+pub(crate) mod post_memory;
 register_bitfields![u32,
     pub LinkCap [
         SPEED OFFSET(0) NUMBITS(4) [],
