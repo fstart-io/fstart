@@ -1033,6 +1033,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-lenovo-t480"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-lenovo",
+ "fstart-driver-tpm",
+ "fstart-log",
+ "fstart-options",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-lenovo-t60"
 version = "0.1.0"
 dependencies = [
