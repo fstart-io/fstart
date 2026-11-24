@@ -27,6 +27,7 @@ pub mod lynxpoint;
 pub mod p2sb;
 pub mod pineview;
 pub use fstart_arch::x86::cpu::intel::microcode;
+pub mod skylake;
 pub mod southbridge;
 pub mod sunrise_point;
 pub mod txt;

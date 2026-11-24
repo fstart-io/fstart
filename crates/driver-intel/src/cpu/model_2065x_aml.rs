@@ -21,6 +21,8 @@ const PSS_MAX_ENTRIES: u32 = 16;
 /// coreboot hard-codes the CPU TDP to 25 W for the P-state power.
 const POWER_MAX_MW: u32 = 25_000;
 
+pub(crate) use super::ratio_aml::calculate_power;
+
 /// coreboot `generate_P_state_entries()`'s `_PSS`.
 #[must_use]
 pub fn pstates(limits: &RatioLimits) -> Vec<PerformanceState> {
