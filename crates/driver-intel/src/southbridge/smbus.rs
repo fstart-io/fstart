@@ -27,6 +27,7 @@ register_bitfields![u8,
         INUSE_STS OFFSET(6) NUMBITS(1) [],
         BYTE_DONE OFFSET(7) NUMBITS(1) []
     ],
+    RECEIVE_ADDRESS [ ADDRESS OFFSET(1) NUMBITS(7) [] ],
     HSTCTL [
         INTREN OFFSET(0) NUMBITS(1) [],
         KILL OFFSET(1) NUMBITS(1) [],
@@ -55,7 +56,7 @@ pio_register_structs! {
         (0x05 => data0: PioRegister<u8>),
         (0x06 => data1: PioRegister<u8>),
         (0x07 => block_data: PioRegister<u8>),
-        (0x09 => receive_slave_address: PioRegister<u8>),
+        (0x09 => receive_address: PioRegister<u8, RECEIVE_ADDRESS::Register>),
     }
 }
 
@@ -65,6 +66,17 @@ const STATUS_ERROR: u8 =
 const STATUS_NON_COMPLETION: u8 = HSTSTAT::BYTE_DONE::SET.value
     | HSTSTAT::INUSE_STS::SET.value
     | HSTSTAT::SMBALERT_STS::SET.value;
+
+fn idle_status(status: u8) -> bool {
+    // HSTSTAT reads themselves acquire INUSE_STS. It is a software
+    // semaphore, not host activity, and firmware already owns this host.
+    status != u8::MAX && !HSTSTAT::HOST_BUSY.is_set(status)
+}
+
+fn idle_control(control: u8) -> bool {
+    // START is a write-only strobe. HOST_BUSY is the activity indicator.
+    control != u8::MAX && control & (HSTCTL::KILL::SET.value | HSTCTL::INTREN::SET.value) == 0
+}
 
 // ---------------------------------------------------------------------------
 // Timeout (spin-loop iterations)
@@ -127,6 +139,82 @@ impl I801SmBus {
         Self { base, bdf: None }
     }
 
+    pub const fn base(&self) -> u16 {
+        self.base
+    }
+
+    /// Require an idle host without KILL, reset, status clearing or polling a
+    /// foreign transaction to completion. The caller already owns this host;
+    /// this is not a software semaphore acquisition or ownership check.
+    pub fn ensure_idle(&self) -> Result<(), ServiceError> {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            let regs = self.regs();
+            let status = regs.status().get();
+            if !idle_status(status) {
+                fstart_log::error!(
+                    "i801-smbus: host not idle or not decoded (status {:#04x})",
+                    status
+                );
+                return Err(ServiceError::HardwareError);
+            }
+            // The datasheet forbids reading HSTCTL while HOST_BUSY is set.
+            let control = regs.control().get();
+            if !idle_control(control) {
+                fstart_log::error!(
+                    "i801-smbus: unexpected host control {:#04x} (status {:#04x})",
+                    control,
+                    status
+                );
+                return Err(ServiceError::HardwareError);
+            }
+            Ok(())
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            Err(ServiceError::NotSupported)
+        }
+    }
+    /// Acknowledge only an observed SMBALERT; preserve all other events.
+    /// A persistent external alert may reassert, so no clear-line claim.
+    pub fn acknowledge_alert(&self) -> Result<(), ServiceError> {
+        self.ensure_idle()?;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            let status = self.regs().status();
+            if status.is_set(HSTSTAT::SMBALERT_STS) {
+                status.write(HSTSTAT::SMBALERT_STS::SET);
+            }
+            Ok(())
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            Err(ServiceError::NotSupported)
+        }
+    }
+    /// Native common SMBus receiver programming, using the wire-format even
+    /// address (PCH default 44h). This does not enable host-notify interrupts,
+    /// issue a bus transaction, or alter DIMM SPD page selection.
+    pub fn set_native_receive_address(&self, address: u8) -> Result<(), ServiceError> {
+        if address & 1 != 0 || !(0x10..=0xee).contains(&address) {
+            return Err(ServiceError::InvalidParam);
+        }
+        self.ensure_idle()?;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            let r = self.regs().receive_address();
+            r.write(RECEIVE_ADDRESS::ADDRESS.val(address >> 1));
+            if r.get() != address {
+                return Err(ServiceError::HardwareError);
+            }
+            Ok(())
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            Err(ServiceError::NotSupported)
+        }
+    }
+
     #[inline(always)]
     fn regs(&self) -> I801Regs {
         I801Regs::new(self.base)
@@ -172,7 +260,7 @@ impl I801SmBus {
     /// Program the address the controller answers as a slave (coreboot
     /// `smbus_set_slave_addr()`).
     pub fn set_slave_address(&self, address: u8) {
-        self.regs().receive_slave_address().set(address);
+        self.regs().receive_address().set(address);
     }
 
     /// Reset the SMBus host controller to its normal idle programming.

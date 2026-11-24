@@ -1,5 +1,5 @@
-//! Allocation-free rflasher adapter for firmware ICH7/ICH8/ICH9/PCH/Bay Trail
-//! SPI access.
+//! Allocation-free rflasher adapter for firmware ICH7/ICH8/ICH9, 5/8 Series,
+//! Bay Trail, and Sunrise Point SPI access.
 //!
 //! The controller is not a general firmware flasher: all accesses are bounded
 //! to a caller-supplied, linked mutable extent. Construct/use it only from RAM;
@@ -17,18 +17,14 @@ use rflasher_internal::{
 };
 use tock_registers::interfaces::{ReadWriteable, Readable};
 
-/// Where the southbridge places SPIBAR.
+/// Where SPIBAR lives: RCBA+0x3020 on ICH7/ICH8, RCBA+0x3800 on ICH9 and the
+/// 5/8 Series PCH, LPC SBASE (0x54) on Silvermont/Bay Trail, and BAR0 of the
+/// D31:F5 SPI function on Sunrise Point.
 #[derive(Clone, Copy)]
-enum SpiWindow {
-    /// RCBA+0x3020 on ICH7/ICH8 and RCBA+0x3800 on ICH9, 5 Series and 8 Series PCH.
-    Rcba(u64),
-    /// Silvermont / Bay Trail: LPC SBASE (0x54, bits 31:9, bit 1 enable).
+enum FirmwareHost {
+    Rcba { spi_offset: u64 },
     SilvermontSbase,
-}
-
-#[derive(Clone, Copy)]
-struct FirmwareHost {
-    window: SpiWindow,
+    Pci(EcamDevice),
 }
 
 impl FirmwareHost {
@@ -118,22 +114,20 @@ fn silvermont_sbase_addr(raw: u32) -> Option<u64> {
 impl HostAccess for FirmwareHost {
     type MmioRegion = SpiRegisters;
     unsafe fn map_mmio(&self, address: u64, size: usize) -> Result<SpiRegisters, InternalError> {
-        let expected = match self.window {
-            SpiWindow::Rcba(spi_offset) => {
+        let expected = match self {
+            Self::Rcba { spi_offset } => {
                 // SAFETY: inherited from map_mmio's enabled ECAM/RCBA contract.
                 let rcba = unsafe { lpc::flash_config() }.rcba.extract();
-                if !rcba.is_set(ROOT_COMPLEX_BASE::ENABLE) {
-                    return Err(InternalError::Io("invalid ICH SPI window"));
-                }
-                (u64::from(rcba.read(ROOT_COMPLEX_BASE::BASE)) << 14) + spi_offset
+                rcba.is_set(ROOT_COMPLEX_BASE::ENABLE)
+                    .then(|| (u64::from(rcba.read(ROOT_COMPLEX_BASE::BASE)) << 14) + spi_offset)
             }
-            SpiWindow::SilvermontSbase => {
+            Self::SilvermontSbase => {
                 let raw = crate::baytrail::lpc::device().read32(crate::baytrail::lpc::SBASE);
                 silvermont_sbase_addr(raw)
-                    .ok_or(InternalError::Io("invalid Silvermont SPI window"))?
             }
+            Self::Pci(spi) => spi.memory_bar(0x10),
         };
-        if address != expected || size != SPI_WINDOW_SIZE as usize {
+        if expected != Some(address) || size != SPI_WINDOW_SIZE as usize {
             return Err(InternalError::Io("invalid ICH SPI window"));
         }
         // SAFETY: `address` is the verified southbridge SPIBAR window.
@@ -178,10 +172,14 @@ impl FlashExtent {
 /// They do not establish or lock the platform's global flash policy: Ibex Peak
 /// explicitly opens that policy for development cache/log and payload writes
 /// through `LpcFlashConfig::prepare_firmware_writes` before this driver runs.
-/// Writes require positively identified page-program NOR geometry; unsupported
-/// chips remain read-only rather than guessing opcodes.
+/// Software sequencing requires positively identified page-program NOR
+/// geometry; unsupported chips remain read-only rather than guessing opcodes.
+/// Sunrise Point only has hardware sequencing, which programs and erases with
+/// the descriptor-selected opcodes and the controller's own erase block.
 pub struct CacheSpi {
     controller: IchSpiController<FirmwareHost>,
+    /// The function whose 0xdc holds BIOS_CNTL: LPC, or the PCH100 SPI.
+    bios: EcamDevice,
     extent: FlashExtent,
     /// Block protection of the identified part; `None` keeps it read-only.
     writable: Option<Protection>,
@@ -195,13 +193,7 @@ impl CacheSpi {
     /// data. The caller and all reachable code/data must execute from RAM, not
     /// flash.
     pub unsafe fn new(extent: FlashExtent) -> Result<Self, ServiceError> {
-        extent.address(0, extent.size as usize)?;
-        if extent.chip_size > 0x1000000
-            || !extent.offset.is_multiple_of(0x10000)
-            || !extent.size.is_multiple_of(0x10000)
-        {
-            return Err(ServiceError::InvalidParam);
-        }
+        Self::check_extent(&extent)?;
         // SAFETY: new's caller guarantees live ECAM and ICH register mappings.
         let lpc = unsafe { lpc::flash_config() };
         let entry = rflasher_internal::find_chipset(
@@ -210,25 +202,24 @@ impl CacheSpi {
             Some(lpc.revision_id.get()),
         )
         .ok_or(ServiceError::NotSupported)?;
-        let window = match entry.chipset {
-            IchChipset::Ich7 | IchChipset::Ich8 => SpiWindow::Rcba(0x3020),
+        let host = match entry.chipset {
+            IchChipset::Ich7 | IchChipset::Ich8 => FirmwareHost::Rcba { spi_offset: 0x3020 },
             // The 5 and 8 Series PCHs keep ICH9's SPI block and offset.
             IchChipset::Ich9
             | IchChipset::Series5IbexPeak
             | IchChipset::Series8LynxPoint
-            | IchChipset::Series8LynxPointLp => SpiWindow::Rcba(0x3800),
-            IchChipset::BayTrail => SpiWindow::SilvermontSbase,
+            | IchChipset::Series8LynxPointLp => FirmwareHost::Rcba { spi_offset: 0x3800 },
+            IchChipset::BayTrail => FirmwareHost::SilvermontSbase,
             _ => return Err(ServiceError::NotSupported),
         };
-        let silvermont_sbase = match window {
-            SpiWindow::SilvermontSbase => {
+        let silvermont_sbase = match host {
+            FirmwareHost::SilvermontSbase => {
                 let raw = crate::baytrail::lpc::device().read32(crate::baytrail::lpc::SBASE);
                 let base = silvermont_sbase_addr(raw).ok_or(ServiceError::HardwareError)?;
                 Some(base as usize)
             }
-            SpiWindow::Rcba(_) => None,
+            FirmwareHost::Rcba { .. } | FirmwareHost::Pci(_) => None,
         };
-        let host = FirmwareHost { window };
         let chipset = DetectedChipset {
             enable: entry,
             domain: 0,
@@ -283,10 +274,84 @@ impl CacheSpi {
             });
         Ok(Self {
             controller,
+            bios: lpc::device(),
             extent,
             writable,
             silvermont_sbase,
         })
+    }
+
+    /// The SPI controller of a 100 Series or later PCH: its own PCI function
+    /// (D31:F5), hardware sequencing only. The controller issues the
+    /// descriptor-selected opcodes itself and only takes addresses.
+    ///
+    /// # Safety
+    /// As [`Self::new`].
+    pub unsafe fn new_pch(extent: FlashExtent) -> Result<Self, ServiceError> {
+        Self::check_extent(&extent)?;
+        // SAFETY: new_pch's caller guarantees live ECAM.
+        let lpc = unsafe { lpc::flash_config() };
+        let entry = rflasher_internal::find_chipset(
+            lpc.vendor_id.get(),
+            lpc.device_id.get(),
+            Some(lpc.revision_id.get()),
+        )
+        .filter(|entry| entry.chipset == IchChipset::Series100SunrisePoint)
+        .ok_or(ServiceError::NotSupported)?;
+        let spi = EcamDevice::new(0, lpc::LPC_DEV, 5);
+        let chipset = DetectedChipset {
+            enable: entry,
+            domain: 0,
+            bus: 0,
+            device: lpc::LPC_DEV,
+            function: lpc::LPC_FUNC,
+            revision_id: lpc.revision_id.get(),
+        };
+        let controller = IchSpiController::new_with_host(
+            FirmwareHost::Pci(spi),
+            &chipset,
+            SpiMode::HardwareSequencing,
+        )
+        .map_err(|_| ServiceError::HardwareError)?;
+        let (base, limit) = controller
+            .get_bios_region()
+            .ok_or(ServiceError::HardwareError)?;
+        if extent.offset < base || extent.offset + extent.size - 1 > limit {
+            return Err(ServiceError::InvalidParam);
+        }
+        let block = controller
+            .hwseq_erase_geometry(extent.chip_size)
+            .map_err(|_| ServiceError::NotSupported)?;
+        // SAFETY: BIOS_CNTL is a byte at 0xdc of the live SPI function.
+        let control = unsafe { spi.register::<u8, BIOS_CONTROL::Register>(0xdc) };
+        fstart_log::info!(
+            "spi-cache: hwseq, erase block {:#x}, BIOS_CNTL={:#x}",
+            block,
+            control.get()
+        );
+        // `erase` works in whole 64-KiB units; they must be whole blocks.
+        if block == 0 || 0x10000 % block != 0 {
+            return Err(ServiceError::NotSupported);
+        }
+        Ok(Self {
+            controller,
+            bios: spi,
+            extent,
+            // The controller owns the opcodes; nothing to unlock.
+            writable: Some(Protection::None),
+            silvermont_sbase: None,
+        })
+    }
+
+    fn check_extent(extent: &FlashExtent) -> Result<(), ServiceError> {
+        extent.address(0, extent.size as usize)?;
+        if extent.chip_size > 0x1000000
+            || !extent.offset.is_multiple_of(0x10000)
+            || !extent.size.is_multiple_of(0x10000)
+        {
+            return Err(ServiceError::InvalidParam);
+        }
+        Ok(())
     }
 
     /// Whether the chip was identified as a part this controller programs.
@@ -383,8 +448,8 @@ impl CacheSpi {
             }
             return result;
         }
-        // SAFETY: construction established the live mapping; operations run from RAM.
-        let control = &unsafe { lpc::flash_config() }.bios_control;
+        // SAFETY: construction established the live function; code runs from RAM.
+        let control = unsafe { self.bios.register::<u8, BIOS_CONTROL::Register>(0xdc) };
         let before = control.extract();
         if before.is_set(BIOS_CONTROL::LOCK_ENABLE)
             || before.is_set(BIOS_CONTROL::SMM_WRITE_PROTECT)
@@ -441,6 +506,12 @@ impl FlashRegion for CacheSpi {
             return Err(ServiceError::InvalidParam);
         }
         self.with_write(|this| {
+            if this.controller.mode() == SpiMode::HardwareSequencing {
+                return this
+                    .controller
+                    .controller_erase(address, length)
+                    .map_err(|_| ServiceError::HardwareError);
+            }
             this.controller
                 .swseq_erase_blocks(opcodes::SE_20, SECTOR, address, length)
                 .map_err(|_| ServiceError::HardwareError)

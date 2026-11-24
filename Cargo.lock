@@ -1405,6 +1405,7 @@ dependencies = [
  "fstart-driver-lenovo",
  "fstart-driver-rtc",
  "fstart-driver-spd",
+ "fstart-driver-tpm",
  "fstart-driver-usbdebug",
  "fstart-log",
  "fstart-options",
