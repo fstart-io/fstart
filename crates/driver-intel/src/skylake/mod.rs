@@ -6,7 +6,7 @@
 //! `romstage_native.c` in coreboot_KabyLakeNative.
 // Ported from per-channel/rank/lane C loops over hardware register arrays,
 // with the source's argument lists.
-#![allow(dead_code, clippy::needless_range_loop, clippy::too_many_arguments)]
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
 pub mod activation;
 pub mod additional_steps;
@@ -24,6 +24,7 @@ pub mod cse;
 pub mod dmi_registers;
 pub mod dq_comp;
 pub mod dq_si;
+pub mod driver;
 pub mod early_sa;
 pub mod energy_perf_gain;
 pub mod frequency;
