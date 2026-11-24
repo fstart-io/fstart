@@ -199,3 +199,45 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn verify_smrr_range_matches_exact_tseg_address_range() {
+        let base: u64 = kani::any();
+        let size: u32 = kani::any();
+        let addr: u32 = kani::any();
+
+        let size_128 = u128::from(size);
+        let base_128 = u128::from(base);
+        let expected_valid = size >= 0x1000
+            && size.is_power_of_two()
+            && base % u64::from(size) == 0
+            && base_128 + size_128 <= (1u128 << 32);
+
+        match SmrrRange::new(base, size) {
+            Ok(range) => {
+                assert!(expected_valid);
+                // SMRR is marked valid with WB memory type (6).
+                assert_ne!(range.mask() & SMRR_MASK::VALID::SET.value, 0);
+                assert_eq!(range.base() & 0xff, 6);
+
+                // Intel SDM hardware SMRR match equation over 32-bit addresses:
+                // (addr & phys_mask) == (phys_base & phys_mask)
+                // iff addr in [base, base + size).
+                let phys_base = range.base() & !0xfff;
+                let phys_mask = range.mask() & !0xfff;
+                let addr_64 = u64::from(addr);
+                let hw_matches = (addr_64 & phys_mask) == (phys_base & phys_mask);
+                let in_range = addr_64 >= base && u128::from(addr_64) < base_128 + size_128;
+                assert_eq!(hw_matches, in_range);
+            }
+            Err(SmrrError::InvalidRange) => {
+                assert!(!expected_valid);
+            }
+            Err(SmrrError::VerificationFailed) => unreachable!(),
+        }
+    }
+}

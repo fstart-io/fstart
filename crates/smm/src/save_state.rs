@@ -273,11 +273,13 @@ mod tests {
     #[test]
     fn legacy_requires_smbase_relocation() {
         let mut memory = [0u8; 0x200];
+        put_u32(&mut memory, 0x200 - 0x104, 0x0001_0000);
         let top = unsafe { memory.as_mut_ptr().add(0x200) };
         let state = unsafe { X86SaveState::from_top(top, X86SaveStateFormat::IntelLegacy) };
-        put_u32(&mut memory, 0x200 - 0x104, 0x0001_0000);
         assert!(state.write_smbase(0x1000).is_err());
         put_u32(&mut memory, 0x200 - 0x104, 0x0003_0007);
+        let top = unsafe { memory.as_mut_ptr().add(0x200) };
+        let state = unsafe { X86SaveState::from_top(top, X86SaveStateFormat::IntelLegacy) };
         state.write_smbase(0x1000).unwrap();
         assert_eq!(
             &memory[0x200 - 0x108..0x200 - 0x104],

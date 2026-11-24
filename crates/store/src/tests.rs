@@ -53,12 +53,12 @@ fn reopening_validates_the_list() {
     // Corrupt entry chain: data size runs past the used size.
     mem.0[HEADER_SIZE + 4] = 0xff;
     assert_eq!(
-        unsafe { Store::open(base, 0x4000) }.err(),
+        unsafe { Store::open(ptr(&mut mem, 0), 0x4000) }.err(),
         Some(Error::Invalid)
     );
     mem.0[0] ^= 1;
     assert_eq!(
-        unsafe { Store::open(base, 0x4000) }.err(),
+        unsafe { Store::open(ptr(&mut mem, 0), 0x4000) }.err(),
         Some(Error::Invalid)
     );
 }

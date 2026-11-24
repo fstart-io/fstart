@@ -148,11 +148,21 @@ impl SmmImageHeader {
         if index >= self.fixup_count {
             return Err(HeaderError::RangeOutOfBounds);
         }
-        let off = self.fixups_offset as usize + index as usize * 4;
-        let bytes = image
-            .get(off..off + 4)
+        let off = index
+            .checked_mul(4)
+            .and_then(|o| self.fixups_offset.checked_add(o))
             .ok_or(HeaderError::RangeOutOfBounds)?;
-        let offset = u32::from_le_bytes(bytes.try_into().expect("four bytes"));
+        let end = off.checked_add(4).ok_or(HeaderError::RangeOutOfBounds)?;
+        if end > self.image_size {
+            return Err(HeaderError::RangeOutOfBounds);
+        }
+        let bytes = image
+            .get(off as usize..end as usize)
+            .ok_or(HeaderError::RangeOutOfBounds)?;
+        let [b0, b1, b2, b3] = *bytes else {
+            return Err(HeaderError::RangeOutOfBounds);
+        };
+        let offset = u32::from_le_bytes([b0, b1, b2, b3]);
         if offset
             .checked_add(4)
             .is_none_or(|end| end > self.handler_load_size)
@@ -343,5 +353,92 @@ mod tests {
         assert_eq!(SmmImageHeader::parse(&image).unwrap(), h);
         image[0..4].copy_from_slice(b"FSM1");
         assert_eq!(SmmImageHeader::parse(&image), Err(HeaderError::BadMagic));
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn verify_header_parse_enforces_file_and_memory_bounds() {
+        let bytes: [u8; 112] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= bytes.len());
+        let image = &bytes[..len];
+
+        let Ok(h) = SmmImageHeader::parse(image) else {
+            return;
+        };
+
+        assert_eq!(h.magic, SMM_IMAGE_MAGIC);
+        assert_eq!(
+            usize::from(h.header_size),
+            core::mem::size_of::<SmmImageHeader>()
+        );
+        assert_eq!(
+            usize::from(h.entry_desc_size),
+            core::mem::size_of::<EntryDescriptor>()
+        );
+        assert!(usize::try_from(h.image_size).unwrap() <= image.len());
+
+        // File ranges must stay within [header_size, image_size] without wrap.
+        let hs = u128::from(h.header_size);
+        let img = u128::from(h.image_size);
+        assert!(u128::from(h.entries_offset) >= hs);
+        assert!(
+            u128::from(h.entries_offset)
+                + u128::from(h.entry_count) * u128::from(h.entry_desc_size)
+                <= img
+        );
+        assert!(u128::from(h.handler_offset) >= hs);
+        assert!(u128::from(h.handler_offset) + u128::from(h.handler_load_size) <= img);
+        if h.fixup_count != 0 {
+            assert!(u128::from(h.fixups_offset) >= hs);
+            assert!(u128::from(h.fixups_offset) + u128::from(h.fixup_count) * 4 <= img);
+        }
+
+        // Memory ranges must stay within [handler_load_size, handler_mem_size].
+        let load = u128::from(h.handler_load_size);
+        let mem = u128::from(h.handler_mem_size);
+        assert!(load <= mem);
+        assert!(u128::from(h.handler_entry_offset) < load);
+        assert!(h.runtime_size > 0);
+        assert!(u128::from(h.runtime_offset) >= load);
+        assert!(u128::from(h.runtime_offset) + u128::from(h.runtime_size) <= mem);
+        assert!(h.handler_config_capacity > 0);
+        assert!(u128::from(h.handler_config_offset) >= load);
+        assert!(u128::from(h.handler_config_offset) + u128::from(h.handler_config_capacity) <= mem);
+        if h.module_args_offset != 0 || h.module_args_size != 0 {
+            assert!(h.module_args_size > 0);
+            assert!(u128::from(h.module_args_offset) >= load);
+            assert!(u128::from(h.module_args_offset) + u128::from(h.module_args_size) <= mem);
+        }
+    }
+
+    #[kani::proof]
+    fn verify_header_entry_and_fixup_never_panic_and_bound_results() {
+        let bytes: [u8; 128] = kani::any();
+        let entry_idx: u16 = kani::any();
+        let fixup_idx: u32 = kani::any();
+
+        let Ok(h) = SmmImageHeader::parse(&bytes) else {
+            return;
+        };
+
+        if let Ok(_desc) = h.entry(&bytes, entry_idx) {
+            kani::cover!(true, "entry descriptor lookup succeeded");
+            assert!(entry_idx < h.entry_count);
+            let off = u128::from(h.entries_offset)
+                + u128::from(entry_idx) * u128::from(h.entry_desc_size);
+            assert!(
+                off + u128::from(size_of::<EntryDescriptor>() as u32) <= u128::from(h.image_size)
+            );
+        }
+        if let Ok(fixup_off) = h.fixup(&bytes, fixup_idx) {
+            kani::cover!(true, "fixup lookup succeeded");
+            assert!(fixup_idx < h.fixup_count);
+            assert!(u128::from(fixup_off) + 4 <= u128::from(h.handler_load_size));
+        }
     }
 }

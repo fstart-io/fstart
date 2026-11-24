@@ -36,7 +36,12 @@
         system:
         let
           pkgs = mkPkgs system;
-          rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          toolchain = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain;
+          # Extend the pinned toolchain with Miri so `ci/miri.sh` works inside
+          # `nix develop` without forcing non-Miri CI jobs to download it.
+          rust = (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
+            extensions = toolchain.components ++ [ "miri" ];
+          };
         in
         {
           default = pkgs.mkShell {

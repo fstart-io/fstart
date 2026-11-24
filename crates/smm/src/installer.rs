@@ -8,8 +8,8 @@ use crate::header::{
 };
 use crate::layout::{
     CpuSmmLayout, LayoutError, SMM_ENTRY_OFFSET, SMM_IDENTITY_TABLE_SIZE,
-    SMM_RELOCATION_TABLE_OFFSET, SmramLayout, build_identity_tables, compute_common_base,
-    compute_cpu_layout, compute_page_table_base,
+    SMM_RELOCATION_TABLE_OFFSET, SmramLayout, compute_common_base, compute_cpu_layout,
+    compute_page_table_base,
 };
 use crate::runtime::{
     CorebootModuleArgs, HANDLER_CONFIG_ALIGNMENT, HANDLER_CONFIG_CAPACITY, SmmEntryParams,
@@ -103,6 +103,51 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
     config: InstallConfig<'_, T>,
     cpu_layouts: &'a mut [CpuSmmLayout],
 ) -> Result<InstalledSmmImage<'a>, InstallError> {
+    if config.smram_size == 0 {
+        return Err(InstallError::Layout(LayoutError::BadSize));
+    }
+    if config.smram_base == 0 {
+        return Err(InstallError::Overflow);
+    }
+    let smram_len = usize::try_from(config.smram_size).map_err(|_| InstallError::Overflow)?;
+    if smram_len > isize::MAX as usize {
+        return Err(InstallError::Overflow);
+    }
+    // Validate address range before constructing the mutable SMRAM slice so
+    // an out-of-range base or overflowing size never produces an invalid slice.
+    check_low_range(config.smram_base, config.smram_size)?;
+    // Also ensure the exclusive end fits in `usize` so pointer arithmetic in
+    // `from_raw_parts_mut` cannot wrap on 32-bit targets (e.g. end == 4 GiB).
+    let smram_base_ptr = usize::try_from(config.smram_base).map_err(|_| InstallError::Overflow)?;
+    smram_base_ptr
+        .checked_add(smram_len)
+        .ok_or(InstallError::Overflow)?;
+    // SAFETY: caller guarantees `smram_base..smram_base + smram_size` is
+    // writable and exclusively owned, `smram_base != 0`, `smram_len <= isize::MAX`,
+    // `smram_base + smram_len` does not wrap `usize`, and `MaybeUninit<u8>`
+    // requires no prior initialization of SMRAM bytes.
+    let smram = unsafe {
+        core::slice::from_raw_parts_mut(
+            smram_base_ptr as *mut core::mem::MaybeUninit<u8>,
+            smram_len,
+        )
+    };
+    install_pic_image_in_slice(image, config, smram, cpu_layouts)
+}
+
+/// Pure slice-backed core of [`install_pic_image`]: performs every placement
+/// check against `config.smram_base` (the architectural `< 4 GiB` physical base)
+/// and writes all initialized bytes into `smram` instead of raw integer
+/// addresses, allowing full Miri verification without platform `mmap` calls.
+fn install_pic_image_in_slice<'a, T: Copy>(
+    image: &[u8],
+    config: InstallConfig<'_, T>,
+    smram: &mut [core::mem::MaybeUninit<u8>],
+    cpu_layouts: &'a mut [CpuSmmLayout],
+) -> Result<InstalledSmmImage<'a>, InstallError> {
+    if smram.len() as u64 != config.smram_size {
+        return Err(InstallError::Overflow);
+    }
     let header = SmmImageHeader::parse(image)?;
     check_mode(&header)?;
     if header.entry_count < config.num_cpus || config.num_cpus as usize > cpu_layouts.len() {
@@ -202,73 +247,133 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
         check_low_range(cpu.stack_bottom, header.stack_size as u64)?;
     }
 
+    let smram_len = smram.len();
+    let smram_off = |addr: u64, len: usize| -> Result<usize, InstallError> {
+        let off = addr
+            .checked_sub(config.smram_base)
+            .ok_or(InstallError::Overflow)?;
+        let off = usize::try_from(off).map_err(|_| InstallError::Overflow)?;
+        let end = off.checked_add(len).ok_or(InstallError::Overflow)?;
+        if end > smram_len {
+            return Err(InstallError::Overflow);
+        }
+        Ok(off)
+    };
+
     // Start from a deterministic image: initialized bytes are copied and every
     // alignment gap, BSS byte, and loader-owned block is zeroed first.
+    let handler_mem_len = header.handler_mem_size as usize;
+    let common_off = smram_off(common_base, handler_mem_len)?;
+    let common_uninit = &mut smram[common_off..common_off + handler_mem_len];
+    common_uninit.fill(core::mem::MaybeUninit::new(0));
+    // SAFETY: every byte in `common_uninit` was just initialized to 0 above.
+    let common_bytes = unsafe {
+        core::slice::from_raw_parts_mut(common_uninit.as_mut_ptr().cast::<u8>(), handler_mem_len)
+    };
+    let load_src = header.handler_offset as usize;
+    let load_len = header.handler_load_size as usize;
+    common_bytes[..load_len].copy_from_slice(&image[load_src..load_src + load_len]);
+
+    // A protected-mode handler is linked at 0: rebase its absolute addresses.
+    // The offsets were validated above.
+    for i in 0..header.fixup_count {
+        let at = header.fixup(image, i)? as usize;
+        let end = at.checked_add(4).ok_or(InstallError::Overflow)?;
+        let dst = common_bytes
+            .get_mut(at..end)
+            .ok_or(InstallError::Overflow)?;
+        let current = u32::from_le_bytes([dst[0], dst[1], dst[2], dst[3]]);
+        dst.copy_from_slice(&current.wrapping_add(common_base as u32).to_le_bytes());
+    }
+
+    let runtime_off = smram_off(runtime_addr, size_of::<SmmRuntime>())?;
+    // SAFETY: `runtime_off..runtime_off + size_of::<SmmRuntime>()` is in-bounds
+    // and exclusively borrowed from `smram`.
     unsafe {
-        ptr::write_bytes(common_base as *mut u8, 0, header.handler_mem_size as usize);
-        ptr::copy_nonoverlapping(
-            image.as_ptr().add(header.handler_offset as usize),
-            common_base as *mut u8,
-            header.handler_load_size as usize,
+        ptr::write_unaligned(
+            smram.as_mut_ptr().add(runtime_off).cast::<SmmRuntime>(),
+            runtime,
         );
-        // A protected-mode handler is linked at 0: rebase its absolute
-        // addresses. The offsets were validated above.
-        for i in 0..header.fixup_count {
-            let at = (common_base + u64::from(header.fixup(image, i)?)) as *mut u32;
-            ptr::write_unaligned(at, ptr::read_unaligned(at).wrapping_add(common_base as u32));
-        }
-        ptr::write(runtime_addr as *mut SmmRuntime, runtime);
-        // Alignment was checked against HANDLER_CONFIG_ALIGNMENT above.
-        ptr::write(config_addr as *mut T, *config.handler_config);
+    }
+
+    let config_off = smram_off(config_addr, size_of::<T>())?;
+    // SAFETY: `config_off..config_off + size_of::<T>()` is in-bounds and
+    // exclusively borrowed from `smram`.
+    unsafe {
+        ptr::write_unaligned(
+            smram.as_mut_ptr().add(config_off).cast::<T>(),
+            *config.handler_config,
+        );
     }
 
     // Permanent tables are built inside the same SMRAM allocation and remain
     // inaccessible to the OS after chipset lock.
-    let cr3 = unsafe { build_identity_tables(page_table_base) };
+    let pt_off = smram_off(page_table_base, SMM_IDENTITY_TABLE_SIZE as usize)?;
+    let cr3 = crate::layout::build_identity_tables_in_slice(
+        &mut smram[pt_off..pt_off + SMM_IDENTITY_TABLE_SIZE as usize],
+        page_table_base,
+    );
 
     for (i, cpu) in cpus.iter().enumerate() {
         let entry = header.entry(image, i as u16)?;
-        unsafe {
-            ptr::copy_nonoverlapping(
-                image.as_ptr().add(entry.stub_offset as usize),
-                cpu.entry_addr as *mut u8,
-                entry.stub_size as usize,
-            );
+        let entry_off = smram_off(cpu.entry_addr, entry.stub_size as usize)?;
+        let stub_src = entry.stub_offset as usize;
+        let stub_len = entry.stub_size as usize;
+        for (dst, &src) in smram[entry_off..entry_off + stub_len]
+            .iter_mut()
+            .zip(&image[stub_src..stub_src + stub_len])
+        {
+            dst.write(src);
         }
 
         let coreboot_module_args = if let Some(base) = module_args_base {
             let addr = base
                 .checked_add((i * size_of::<CorebootModuleArgs>()) as u64)
                 .ok_or(InstallError::Overflow)?;
+            let mod_off = smram_off(addr, size_of::<CorebootModuleArgs>())?;
+            let stack_off = smram_off(cpu.stack_bottom, size_of::<u64>())?;
+            // SAFETY: both offsets were bounds-checked against `smram`.
             unsafe {
                 ptr::write_unaligned(
-                    addr as *mut CorebootModuleArgs,
+                    smram.as_mut_ptr().add(mod_off).cast::<CorebootModuleArgs>(),
                     CorebootModuleArgs {
                         cpu: i as u64,
                         canary: cpu.stack_bottom,
                     },
                 );
-                ptr::write_unaligned(cpu.stack_bottom as *mut u64, cpu.stack_bottom);
+            }
+            for (dst, &src) in smram[stack_off..stack_off + 8]
+                .iter_mut()
+                .zip(&cpu.stack_bottom.to_le_bytes())
+            {
+                dst.write(src);
             }
             addr
         } else {
             0
         };
 
-        patch_entry_params(
-            cpu.entry_addr,
-            &entry,
-            SmmEntryParams {
-                cpu: i as u32,
-                stack_size: header.stack_size,
-                stack_top: cpu.stack_top,
-                common_entry,
-                runtime: runtime_addr,
-                coreboot_module_args,
-                cr3,
-                entry_base: cpu.entry_addr,
-            },
-        )?;
+        let params_addr = cpu
+            .entry_addr
+            .checked_add(u64::from(entry.params_offset))
+            .ok_or(InstallError::Overflow)?;
+        let params_off = smram_off(params_addr, size_of::<SmmEntryParams>())?;
+        // SAFETY: `params_off..params_off + size_of::<SmmEntryParams>()` is in-bounds.
+        unsafe {
+            ptr::write_unaligned(
+                smram.as_mut_ptr().add(params_off).cast::<SmmEntryParams>(),
+                SmmEntryParams {
+                    cpu: i as u32,
+                    stack_size: header.stack_size,
+                    stack_top: cpu.stack_top,
+                    common_entry,
+                    runtime: runtime_addr,
+                    coreboot_module_args,
+                    cr3,
+                    entry_base: cpu.entry_addr,
+                },
+            );
+        }
     }
 
     Ok(InstalledSmmImage {
@@ -492,64 +597,52 @@ mod tests {
         gpe0: 0x20,
     };
 
+    /// Architectural physical base used by slice-backed SMRAM tests.
+    const TEST_SMRAM_BASE: u64 = 0x7f00_0000;
+
     struct TestSmram {
-        mapping: *mut core::ffi::c_void,
-        mapping_size: usize,
         base: u64,
-        size: usize,
+        data: Vec<u8>,
     }
 
     impl TestSmram {
         fn new(size: usize, fill: u8) -> Self {
-            const PROT_READ: i32 = 1;
-            const PROT_WRITE: i32 = 2;
-            const MAP_PRIVATE: i32 = 2;
-            const MAP_ANONYMOUS: i32 = 0x20;
-            const MAP_32BIT: i32 = 0x40;
-            unsafe extern "C" {
-                fn mmap(
-                    address: *mut core::ffi::c_void,
-                    length: usize,
-                    protection: i32,
-                    flags: i32,
-                    fd: i32,
-                    offset: isize,
-                ) -> *mut core::ffi::c_void;
-            }
-            let mapping_size = size + 0x1000;
-            let mapping = unsafe {
-                mmap(
-                    core::ptr::null_mut(),
-                    mapping_size,
-                    PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT,
-                    -1,
-                    0,
-                )
-            };
-            assert_ne!(mapping as usize, usize::MAX);
-            let base = ((mapping as usize + 0xfff) & !0xfff) as u64;
-            assert!(base + size as u64 <= mapping as u64 + mapping_size as u64);
-            unsafe { core::ptr::write_bytes(base as *mut u8, fill, size) };
             Self {
-                mapping,
-                mapping_size,
-                base,
-                size,
+                base: TEST_SMRAM_BASE,
+                data: vec![fill; size],
             }
         }
 
         fn bytes(&self) -> &[u8] {
-            unsafe { core::slice::from_raw_parts(self.base as *const u8, self.size) }
+            &self.data
         }
-    }
 
-    impl Drop for TestSmram {
-        fn drop(&mut self) {
-            unsafe extern "C" {
-                fn munmap(address: *mut core::ffi::c_void, length: usize) -> i32;
+        fn as_uninit_mut(&mut self) -> &mut [core::mem::MaybeUninit<u8>] {
+            // SAFETY: `MaybeUninit<u8>` has the same layout as `u8`, and
+            // `install_pic_image_in_slice` only writes initialized bytes.
+            unsafe {
+                core::slice::from_raw_parts_mut(
+                    self.data.as_mut_ptr().cast::<core::mem::MaybeUninit<u8>>(),
+                    self.data.len(),
+                )
             }
-            assert_eq!(unsafe { munmap(self.mapping, self.mapping_size) }, 0);
+        }
+
+        fn read_u8(&self, phys_addr: u64) -> u8 {
+            let off = usize::try_from(phys_addr.checked_sub(self.base).unwrap()).unwrap();
+            self.data[off]
+        }
+
+        /// # Safety
+        ///
+        /// The bytes at `phys_addr..phys_addr + size_of::<T>()` must represent
+        /// a valid bit pattern for `T`.
+        unsafe fn read_unaligned<T: Copy>(&self, phys_addr: u64) -> T {
+            let off = usize::try_from(phys_addr.checked_sub(self.base).unwrap()).unwrap();
+            assert!(off + size_of::<T>() <= self.data.len());
+            // SAFETY: caller guarantees the bytes are a valid `T`, and `off..off + size_of::<T>()`
+            // is within `self.data`.
+            unsafe { ptr::read_unaligned(self.data.as_ptr().add(off).cast::<T>()) }
         }
     }
 
@@ -613,10 +706,10 @@ mod tests {
         test_image_with_entries(1)
     }
 
-    fn install_for_test(
+    fn install_for_test_in_slice(
         image: &[u8],
         smram_base: u64,
-        smram_size: u64,
+        smram: &mut [core::mem::MaybeUninit<u8>],
     ) -> Result<(), InstallError> {
         let header = SmmImageHeader::parse(image)?;
         let zero = CpuSmmLayout {
@@ -628,27 +721,35 @@ mod tests {
             stack_top: 0,
         };
         let mut cpus = vec![zero; header.entry_count as usize];
-        unsafe {
-            install_pic_image(
-                image,
-                InstallConfig {
-                    smram_base,
-                    smram_size,
-                    num_cpus: header.entry_count,
-                    save_state_size: 0x400,
-                    handler_config: &TEST_CONFIG,
-                },
-                &mut cpus,
-            )
-            .map(|_| ())
-        }
+        install_pic_image_in_slice(
+            image,
+            InstallConfig {
+                smram_base,
+                smram_size: smram.len() as u64,
+                num_cpus: header.entry_count,
+                save_state_size: 0x400,
+                handler_config: &TEST_CONFIG,
+            },
+            smram,
+            &mut cpus,
+        )
+        .map(|_| ())
+    }
+
+    fn install_for_test(
+        image: &[u8],
+        smram_base: u64,
+        smram_size: u64,
+    ) -> Result<(), InstallError> {
+        let mut storage = vec![core::mem::MaybeUninit::new(0x5au8); smram_size as usize];
+        install_for_test_in_slice(image, smram_base, &mut storage)
     }
 
     #[test]
     fn installs_initialized_data_zeros_bss_and_uses_smram_cr3() {
         let (image, header) = test_image();
         let smram_size = 0x8_0000usize;
-        let smram = TestSmram::new(smram_size, 0x5a);
+        let mut smram = TestSmram::new(smram_size, 0x5a);
         let smram_base = smram.base;
         let mut cpus = [CpuSmmLayout {
             smbase: 0,
@@ -658,51 +759,55 @@ mod tests {
             stack_bottom: 0,
             stack_top: 0,
         }];
-        let installed = unsafe {
-            install_pic_image(
-                &image,
-                InstallConfig {
-                    smram_base,
-                    smram_size: smram_size as u64,
-                    num_cpus: 1,
-                    save_state_size: 0x400,
-                    handler_config: &TEST_CONFIG,
-                },
-                &mut cpus,
-            )
-        }
+        let installed = install_pic_image_in_slice(
+            &image,
+            InstallConfig {
+                smram_base,
+                smram_size: smram_size as u64,
+                num_cpus: 1,
+                save_state_size: 0x400,
+                handler_config: &TEST_CONFIG,
+            },
+            smram.as_uninit_mut(),
+            &mut cpus,
+        )
         .unwrap();
-        assert_eq!(unsafe { *(installed.common_base as *const u8) }, 0xaa);
-        assert_eq!(unsafe { *((installed.common_base + 0x30) as *const u8) }, 0);
+        assert_eq!(smram.read_u8(installed.common_base), 0xaa);
+        assert_eq!(smram.read_u8(installed.common_base + 0x30), 0);
         assert!(installed.cr3 >= smram_base);
         assert!(installed.cr3 < smram_base + smram_size as u64);
         assert_eq!(installed.cr3 % 4096, 0);
-        let params = unsafe {
-            ptr::read_unaligned((installed.cpus[0].entry_addr + 0x20) as *const SmmEntryParams)
-        };
+        // SAFETY: `SmmEntryParams` was just written at `entry_addr + 0x20`.
+        let params: SmmEntryParams =
+            unsafe { smram.read_unaligned(installed.cpus[0].entry_addr + 0x20) };
         assert_eq!(params.cr3, installed.cr3);
         assert_eq!(params.runtime, installed.runtime_addr);
-        let runtime = unsafe { ptr::read(installed.runtime_addr as *const SmmRuntime) };
+        let runtime_off = usize::try_from(installed.runtime_addr - smram_base).unwrap();
+        // SAFETY: `SmmRuntime` is `#[repr(C)]` and initialized at `runtime_off`.
+        let runtime = unsafe {
+            ptr::read_unaligned(smram.data.as_ptr().add(runtime_off).cast::<SmmRuntime>())
+        };
         assert_eq!(runtime.num_cpus, 1);
         assert_eq!(runtime.handler_config_size, size_of::<TestConfig>() as u32);
-        let config = unsafe {
-            ptr::read(
-                (installed.common_base + u64::from(header.handler_config_offset))
-                    as *const TestConfig,
-            )
+        // SAFETY: `TestConfig` was just written at `common_base + handler_config_offset`.
+        let config: TestConfig = unsafe {
+            smram.read_unaligned(installed.common_base + u64::from(header.handler_config_offset))
         };
         assert_eq!(config, TEST_CONFIG);
     }
 
     fn assert_early_failure(image: &[u8], expected: InstallError) {
-        let smram_size = 0x8_0000usize;
-        let storage = TestSmram::new(smram_size, 0x5a);
+        let smram_size = 0x2_0000usize;
+        let mut storage = TestSmram::new(smram_size, 0x5a);
         let base = storage.base;
         assert_eq!(
-            install_for_test(image, base, smram_size as u64),
+            install_for_test_in_slice(image, base, storage.as_uninit_mut()),
             Err(expected)
         );
-        assert!(storage.bytes().iter().all(|&byte| byte == 0x5a));
+        let fill = [0x5au8; 8];
+        let (chunks, remainder) = storage.bytes().as_chunks::<8>();
+        assert!(remainder.is_empty());
+        assert!(chunks.iter().all(|chunk| *chunk == fill));
     }
 
     #[test]

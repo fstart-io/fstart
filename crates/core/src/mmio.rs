@@ -90,12 +90,18 @@ compile_error!("MMIO barriers need ARMv5TE or later: earlier cores may have no C
 
 #[inline(always)]
 fn iomb() {
-    #[cfg(any(
-        all(
-            target_arch = "arm",
-            any(target_feature = "v7", target_feature = "v6m")
-        ),
-        target_arch = "aarch64"
+    #[cfg(any(miri, kani))]
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+    #[cfg(all(
+        not(any(miri, kani)),
+        any(
+            all(
+                target_arch = "arm",
+                any(target_feature = "v7", target_feature = "v6m")
+            ),
+            target_arch = "aarch64"
+        )
     ))]
     // SAFETY: `dmb sy` is a full-system data memory barrier, no side effects.
     unsafe {
@@ -103,6 +109,7 @@ fn iomb() {
     }
 
     #[cfg(all(
+        not(any(miri, kani)),
         target_arch = "arm",
         target_feature = "v5te",
         not(any(target_feature = "v7", target_feature = "v6m"))
@@ -117,13 +124,16 @@ fn iomb() {
         );
     }
 
-    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+    #[cfg(all(
+        not(any(miri, kani)),
+        any(target_arch = "riscv32", target_arch = "riscv64")
+    ))]
     // SAFETY: `fence iorw, iorw` is a full device+memory barrier.
     unsafe {
         core::arch::asm!("fence iorw, iorw", options(nostack, preserves_flags));
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(not(any(miri, kani)), any(target_arch = "x86", target_arch = "x86_64")))]
     // SAFETY: `mfence` is a full serializing fence for loads and stores.
     // On x86 MMIO (mapped as UC/WC), this ensures all prior writes are
     // visible to the device before subsequent reads/writes.
@@ -226,16 +236,28 @@ pub unsafe fn write32(addr: *mut u32, val: u32) {
 ///
 /// # Safety
 /// `addr` must name two mapped bytes of a device register supporting this access.
+/// Under `cfg(any(miri, kani))`, the fallback models normal allocated RAM
+/// rather than volatile device MMIO, so `addr` must point to two readable bytes
+/// of a live Rust allocation.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub unsafe fn read16_unaligned(addr: *const u8) -> u16 {
-    let value: u16;
+    #[cfg(any(miri, kani))]
     unsafe {
-        core::arch::asm!("mov {value:x}, word ptr [{addr}]", addr = in(reg) addr,
-            value = out(reg) value, options(nostack, preserves_flags));
+        let value = ptr::read_unaligned(addr.cast::<u16>());
         iomb();
+        value
     }
-    value
+    #[cfg(not(any(miri, kani)))]
+    {
+        let value: u16;
+        unsafe {
+            core::arch::asm!("mov {value:x}, word ptr [{addr}]", addr = in(reg) addr,
+                value = out(reg) value, options(nostack, preserves_flags));
+            iomb();
+        }
+        value
+    }
 }
 
 /// Store a possibly unaligned MMIO word with one volatile x86 instruction
@@ -244,11 +266,17 @@ pub unsafe fn read16_unaligned(addr: *const u8) -> u16 {
 ///
 /// # Safety
 /// `addr` must name two mapped bytes of a device register supporting this access.
+/// Under `cfg(any(miri, kani))`, the fallback models normal allocated RAM
+/// rather than volatile device MMIO, so `addr` must point to two readable bytes
+/// of a live Rust allocation.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub unsafe fn write16_unaligned(addr: *mut u8, value: u16) {
     unsafe {
         iomb();
+        #[cfg(any(miri, kani))]
+        ptr::write_unaligned(addr.cast::<u16>(), value);
+        #[cfg(not(any(miri, kani)))]
         core::arch::asm!("mov word ptr [{addr}], {value:x}", addr = in(reg) addr,
             value = in(reg) value, options(nostack, preserves_flags));
         iomb();
@@ -261,16 +289,28 @@ pub unsafe fn write16_unaligned(addr: *mut u8, value: u16) {
 ///
 /// # Safety
 /// `addr` must name four mapped bytes of a device register supporting this access.
+/// Under `cfg(any(miri, kani))`, the fallback models normal allocated RAM
+/// rather than volatile device MMIO, so `addr` must point to four readable or
+/// writable bytes of a live Rust allocation.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub unsafe fn read32_unaligned(addr: *const u8) -> u32 {
-    let value: u32;
+    #[cfg(any(miri, kani))]
     unsafe {
-        core::arch::asm!("mov {value:e}, dword ptr [{addr}]", addr = in(reg) addr,
-            value = out(reg) value, options(nostack, preserves_flags));
+        let value = ptr::read_unaligned(addr.cast::<u32>());
         iomb();
+        value
     }
-    value
+    #[cfg(not(any(miri, kani)))]
+    {
+        let value: u32;
+        unsafe {
+            core::arch::asm!("mov {value:e}, dword ptr [{addr}]", addr = in(reg) addr,
+                value = out(reg) value, options(nostack, preserves_flags));
+            iomb();
+        }
+        value
+    }
 }
 
 /// Store a possibly unaligned MMIO dword with one volatile x86 instruction
@@ -279,11 +319,17 @@ pub unsafe fn read32_unaligned(addr: *const u8) -> u32 {
 ///
 /// # Safety
 /// `addr` must name four mapped bytes of a device register supporting this access.
+/// Under `cfg(any(miri, kani))`, the fallback models normal allocated RAM
+/// rather than volatile device MMIO, so `addr` must point to four readable or
+/// writable bytes of a live Rust allocation.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline(always)]
 pub unsafe fn write32_unaligned(addr: *mut u8, value: u32) {
     unsafe {
         iomb();
+        #[cfg(any(miri, kani))]
+        ptr::write_unaligned(addr.cast::<u32>(), value);
+        #[cfg(not(any(miri, kani)))]
         core::arch::asm!("mov dword ptr [{addr}], {value:e}", addr = in(reg) addr,
             value = in(reg) value, options(nostack, preserves_flags));
         iomb();

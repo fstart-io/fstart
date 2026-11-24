@@ -366,10 +366,56 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Miri undefined-behavior checks on SMM and SMM-adjacent crates.
+  miri:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Install Miri component
+        run: rustup component add miri
+      - name: Run Miri
+        run: ./ci/miri.sh
+
+  # Kani formal verification proofs for SMM isolation, layout, header,
+  # rendezvous, and hardware TSEG/SMRR register math.
+  kani:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: kani-cache
+        with:
+          path: |
+            ~/.kani
+            ~/.cargo/bin/cargo-kani
+            ~/.cargo/bin/kani
+          key: kani-0.68.0-${{ runner.os }}-${{ runner.arch }}
+      - name: Install Kani
+        if: steps.kani-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: Install Kani rustc toolchain
+        if: steps.kani-cache.outputs.cache-hit == 'true'
+        run: |
+          tc="$(cat ~/.kani/kani-0.68.0/rust-toolchain-version)"
+          rustup toolchain install --profile minimal "$tc"
+          ln -sfn "$(rustc +"$tc" --print sysroot)" ~/.kani/kani-0.68.0/toolchain
+      - name: Run Kani proofs
+        run: ./ci/kani.sh
+
   # The one status check that says whether the run passed.
   check:
     if: always()
-    needs: [web, boards, lint, test, boot-assets, firmware, stage-sizes]
+    needs: [web, boards, lint, test, miri, kani, boot-assets, firmware, stage-sizes]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:

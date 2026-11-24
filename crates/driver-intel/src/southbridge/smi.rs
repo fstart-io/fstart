@@ -471,7 +471,7 @@ impl PendingSmi {
                         pmcon3 | 1
                     };
                     fstart_pci::cf8::write8(0, 0x1f, 0, 0xa4, pmcon3);
-                    busmaster_disable_on_bus(0);
+                    busmaster_disable_all();
                 }
             }
             _ => {}
@@ -506,24 +506,36 @@ const fn acpi_sleep_state(pm1_cnt: u32) -> u8 {
 
 /// coreboot `busmaster_disable_on_bus()`: no DMA while powering off.
 ///
+/// Iterative over a 256-bit pending-bus bitmap rather than recursive so a deep
+/// OS-programmed PCI bridge chain cannot overflow the bounded SMM stack. Since
+/// only bridges with `secondary > bus` are followed, a single ascending pass
+/// over `0..=255` visits every reachable bus at most once in O(1) stack space.
+///
 /// # Safety
 /// The caller owns PCI configuration access (the SMM rendezvous).
 #[inline(always)]
-unsafe fn busmaster_disable_on_bus(bus: u8) {
-    for slot in 0..32u8 {
-        for func in 0..8u8 {
-            let id = unsafe { fstart_pci::cf8::read32(bus, slot, func, 0) };
-            if matches!(id, 0xffff_ffff | 0 | 0x0000_ffff | 0xffff_0000) {
-                continue;
-            }
-            let command = unsafe { fstart_pci::cf8::read16(bus, slot, func, 0x04) };
-            unsafe { fstart_pci::cf8::write16(bus, slot, func, 0x04, command & !(1 << 2)) };
-            let header = unsafe { fstart_pci::cf8::read8(bus, slot, func, 0x0e) } & 0x7f;
-            if header == 1 || header == 2 {
-                let buses = unsafe { fstart_pci::cf8::read32(bus, slot, func, 0x18) };
-                let secondary = ((buses >> 8) & 0xff) as u8;
-                if secondary > bus {
-                    unsafe { busmaster_disable_on_bus(secondary) };
+unsafe fn busmaster_disable_all() {
+    let mut pending = [0u64; 4];
+    pending[0] = 1; // Start from root bus 0.
+    for bus in 0..=255u8 {
+        if pending[usize::from(bus >> 6)] & (1u64 << (bus & 63)) == 0 {
+            continue;
+        }
+        for slot in 0..32u8 {
+            for func in 0..8u8 {
+                let id = unsafe { fstart_pci::cf8::read32(bus, slot, func, 0) };
+                if matches!(id, 0xffff_ffff | 0 | 0x0000_ffff | 0xffff_0000) {
+                    continue;
+                }
+                let command = unsafe { fstart_pci::cf8::read16(bus, slot, func, 0x04) };
+                unsafe { fstart_pci::cf8::write16(bus, slot, func, 0x04, command & !(1 << 2)) };
+                let header = unsafe { fstart_pci::cf8::read8(bus, slot, func, 0x0e) } & 0x7f;
+                if header == 1 || header == 2 {
+                    let buses = unsafe { fstart_pci::cf8::read32(bus, slot, func, 0x18) };
+                    let secondary = ((buses >> 8) & 0xff) as u8;
+                    if secondary > bus {
+                        pending[usize::from(secondary >> 6)] |= 1u64 << (secondary & 63);
+                    }
                 }
             }
         }
