@@ -49,17 +49,26 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         micron: raw.micron,
         soft_fuse: Some(raw.soft_fuse),
         two_level: false,
+        ish: false,
+        image_origin: 0,
+        bios_origin: 0,
+        psp_id: None,
         generation_mask: None,
         espi: None,
+        efs_byte_59: None,
         psp: vec![FileBlob {
             key: raw.psp[0].key,
             path: "explicit/psp.bin".into(),
             level: Default::default(),
+            slot: None,
+            writable: false,
         }],
         bios: vec![FileBlob {
             key: raw.bios[0].key,
             path: "explicit/apcb.bin".into(),
             level: Default::default(),
+            slot: None,
+            writable: false,
         }],
         fixed: vec![],
         apob_nv: raw.apob_nv,
@@ -67,6 +76,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         apcb: None,
         assets: vec![],
         psp_app: false,
+        cxl_regions: Vec::new(),
     };
     let operation = AmdAssembly {
         firmware: Firmware::Packed {
@@ -452,18 +462,27 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
         micron: false,
         soft_fuse: Some(0x3000_0000),
         two_level: false,
+        ish: false,
+        image_origin: 0,
+        bios_origin: 0,
+        psp_id: None,
         generation_mask: None,
         espi: None,
+        efs_byte_59: None,
         psp: vec![FileBlob {
             key: Key::new(1, 0, 0),
             path: "psp.bin".into(),
             level: Default::default(),
+            slot: None,
+            writable: false,
         }],
         // The microcode goes into the FFS, not the BIOS directory.
         bios: vec![FileBlob {
             key: Key::new(bios::MICROCODE, 0, 0),
             path: "ucode.bin".into(),
             level: Default::default(),
+            slot: None,
+            writable: false,
         }],
         fixed: vec![],
         apob_nv: None,
@@ -477,6 +496,7 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
         }),
         assets: vec![],
         psp_app: false,
+        cxl_regions: Vec::new(),
     };
     let (ffs, stage) = ffs_and_stage(reset_size as usize);
     let operation = AmdAssembly {
@@ -625,9 +645,11 @@ fn native_settings_seed_changes_only_the_reserved_extent() {
 fn offset_addressed(flash_size: u32, slot: BiosDirectorySlot) -> AmdAssembly {
     use super::{Key, levels::Level};
     let file = |kind, level, path: &str| assembly::FileBlob {
+        slot: None,
         key: Key::new(kind, 0, 0),
         path: path.into(),
         level,
+        writable: false,
     };
     AmdAssembly {
         firmware: Firmware::Packed {
@@ -640,14 +662,21 @@ fn offset_addressed(flash_size: u32, slot: BiosDirectorySlot) -> AmdAssembly {
                 micron: false,
                 soft_fuse: None,
                 two_level: true,
+                ish: false,
+                image_origin: 0,
+                bios_origin: 0,
+                psp_id: None,
                 generation_mask: Some(1),
                 espi: Some([0x0e, 0xff, 0xff, 0xff]),
+                efs_byte_59: None,
                 psp: vec![file(0, Level::One, "key"), file(1, Level::Both, "boot")],
                 bios: vec![file(bios::APCB_BACKUP, Level::Both, "apcb")],
                 fixed: vec![assembly::FixedEntry {
                     psp: false,
                     key: Key::new(0x63, 0, 0),
                     level: Level::Two,
+                    slot: None,
+                    writable: false,
                     content: assembly::Fixed::Erased(0xb_0000),
                 }],
                 apob_nv: None,
@@ -655,6 +684,7 @@ fn offset_addressed(flash_size: u32, slot: BiosDirectorySlot) -> AmdAssembly {
                 apcb: None,
                 assets: vec![],
                 psp_app: false,
+                cxl_regions: Vec::new(),
             },
             reset_offset: Some(0xa0_0000),
         },
@@ -699,4 +729,103 @@ fn offset_addressed_images_span_large_parts_with_the_socs_generation_word() {
             .is_err()
     );
     assert!(offset_addressed(0x200_0000, SLOT).validate().is_err());
+}
+
+/// A minimal APCB v3 with the DF CXL region array (type 0xCC) of the
+/// MD25-CG0's apcb-60-0.
+fn apcb_with_cxl_array() -> Vec<u8> {
+    let mut apcb = b"APCB".to_vec();
+    apcb.extend_from_slice(&0x80u16.to_le_bytes());
+    apcb.extend_from_slice(&0x30u16.to_le_bytes());
+    apcb.resize(0x80, 0);
+    apcb.extend_from_slice(b"DFG ");
+    apcb.extend_from_slice(&0x1703u16.to_le_bytes());
+    apcb.extend_from_slice(&16u16.to_le_bytes());
+    apcb.extend_from_slice(&1u16.to_le_bytes());
+    apcb.extend_from_slice(&0u16.to_le_bytes());
+    apcb.extend_from_slice(&(16u32 + 16 + 0x540).to_le_bytes());
+    apcb.extend_from_slice(&0x1703u16.to_le_bytes());
+    apcb.extend_from_slice(&0xccu16.to_le_bytes());
+    apcb.extend_from_slice(&(16u16 + 0x540).to_le_bytes());
+    apcb.resize(0x90 + 16 + 0x540, 0);
+    let size = apcb.len() as u32;
+    apcb[8..12].copy_from_slice(&size.to_le_bytes());
+    fstart_amdfw_format::apcb::fix_checksum(&mut apcb).unwrap();
+    apcb
+}
+
+/// An APCB v3 whose DF group has another type than the CXL regions.
+fn apcb_without_cxl_array() -> Vec<u8> {
+    let mut apcb = apcb_with_cxl_array();
+    apcb[0x92] = 0xcd;
+    fstart_amdfw_format::apcb::fix_checksum(&mut apcb).unwrap();
+    apcb
+}
+
+#[test]
+fn board_cxl_regions_are_written_into_every_apcb_with_the_array() {
+    let files: assembly::PspFiles = serde_json::from_value(serde_json::json!({
+        "flash_size": 0x400_0000,
+        "efs_offset": 0x2_0000,
+        "partition_end": 0x100_0000,
+        "micron": false,
+        "ish": true,
+        "psp_id": 0xbc0e_1000u32,
+        "psp": [],
+        "bios": [
+            { "key": { "kind": 0x60, "subprogram": 0, "instance": 0 }, "path": "apcb-60" },
+            { "key": { "kind": 0x68, "subprogram": 0, "instance": 8 }, "path": "apcb-68" },
+            { "key": { "kind": 0x68, "subprogram": 0, "instance": 0 }, "path": "memg" }
+        ],
+        "apob_nv": null,
+        "psp_nv": null,
+        "cxl_regions": [{
+            "size": 0x10_0000_0000u64, "socket": 0, "die": 0, "nbio-map": 1,
+            "memory": "volatile"
+        }]
+    }))
+    .unwrap();
+    let reset = levels::Reset {
+        offset: 0x300_0000,
+        size: 0x1000,
+        destination: 0x7600_0000,
+        compressed: false,
+    };
+    let image = files
+        .ish_image(
+            |file| {
+                Ok(match file.path.as_str() {
+                    "memg" => apcb_without_cxl_array(),
+                    _ => apcb_with_cxl_array(),
+                })
+            },
+            reset,
+            0x7500_0000,
+        )
+        .unwrap();
+    let apcbs: Vec<&[u8]> = image
+        .bios
+        .iter()
+        .filter_map(|e| match &e.content {
+            levels::Content::File(bytes) if bytes[0x92] == 0xcc => Some(bytes.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(apcbs.len(), 2);
+    for apcb in apcbs {
+        assert_eq!(&apcb[0xa0..0xa8], &0x10_0000_0000u64.to_le_bytes());
+        assert_eq!(apcb[0xab], 1);
+        assert!(fstart_amdfw_format::apcb::checksum_ok(apcb).unwrap());
+    }
+
+    // Regions without an APCB that takes them fail the build.
+    let only_memg = assembly::PspFiles {
+        bios: files.bios[2..].to_vec(),
+        ..files.clone()
+    };
+    assert!(
+        only_memg
+            .ish_image(|_| Ok(apcb_without_cxl_array()), reset, 0x7500_0000)
+            .is_err()
+    );
 }

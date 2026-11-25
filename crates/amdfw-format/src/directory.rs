@@ -108,6 +108,12 @@ impl PspEntry {
     pub fn writable(&self) -> bool {
         self.attributes[0] & 4 != 0
     }
+    pub fn with_writable(mut self, writable: bool) -> Self {
+        if writable {
+            self.attributes[0] |= 4;
+        }
+        self
+    }
 }
 #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
@@ -160,12 +166,84 @@ impl BiosEntry {
     pub fn rom_id(&self) -> u8 {
         self.subprogram >> 3 & 3
     }
+    /// Whether the PSP may write to this BIOS directory entry in flash (bit 5
+    /// of the `subprogram`/attribute byte, i.e. TypeAttrib bit 29).
+    pub fn writable(&self) -> bool {
+        self.subprogram & 0x20 != 0
+    }
+    pub fn with_writable(mut self, writable: bool) -> Self {
+        if writable {
+            self.subprogram |= 0x20;
+        }
+        self
+    }
     /// Where the PSP copies the file, `u64::MAX` for nowhere; the APOB
     /// entry has only this.
     pub fn destination(&self) -> u64 {
         self.destination.get()
     }
 }
+
+/// 32-byte Image Slot Header referenced by PSP L1 recovery entries
+/// (`0x48` / `0x4A`) on ISH A/B platforms.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct ImageSlotHeader {
+    /// Fletcher-32 checksum over bytes `[4..32)`.
+    pub checksum: U32,
+    pub priority: U32,
+    pub update_retry_count: U32,
+    pub glitch_retry_count: u8,
+    pub reserved_0d: [u8; 3],
+    /// PSP L2 directory (`$PL2`) offset relative to the EFS bank origin.
+    pub location: U32,
+    pub psp_id: U32,
+    pub max_size: U32,
+    pub reserved_1c: U32,
+}
+const _: () = assert!(size_of::<ImageSlotHeader>() == 32);
+
+impl ImageSlotHeader {
+    /// Construct a new ISH and compute its Fletcher-32 checksum over `[4..32)`.
+    pub fn new(
+        priority: u32,
+        update_retry_count: u32,
+        glitch_retry_count: u8,
+        location: u32,
+        psp_id: u32,
+        max_size: u32,
+    ) -> Self {
+        let mut ish = Self {
+            checksum: 0.into(),
+            priority: priority.into(),
+            update_retry_count: update_retry_count.into(),
+            glitch_retry_count,
+            reserved_0d: [0xff; 3],
+            location: location.into(),
+            psp_id: psp_id.into(),
+            max_size: max_size.into(),
+            reserved_1c: u32::MAX.into(),
+        };
+        let sum = fletcher32(&ish.as_bytes()[4..]);
+        ish.checksum = sum.into();
+        ish
+    }
+
+    /// Read and checksum-verify an ISH at `offset` in `flash`.
+    pub fn read_checked(flash: Flash<'_>, offset: usize) -> Result<&ImageSlotHeader, Error> {
+        let raw = flash
+            .slice(offset, size_of::<Self>())
+            .ok_or(Error::Truncated(offset))?;
+        let (ish, _) = Self::ref_from_prefix(raw).map_err(|_| Error::Truncated(offset))?;
+        if fletcher32(&raw[4..]) != ish.checksum.get() {
+            return Err(Error::Checksum(offset));
+        }
+        Ok(ish)
+    }
+}
+
 const _: () = {
     assert!(size_of::<Header>() == 16);
     assert!(size_of::<PspEntry>() == 16);
@@ -174,6 +252,7 @@ const _: () = {
 pub trait Entry: FromBytes + KnownLayout + Immutable + Unaligned {
     const COOKIES: [[u8; 4]; 2];
     const LEVEL2: u8;
+    const IS_BIOS: bool = false;
     fn kind(&self) -> u8;
     fn size(&self) -> u32;
     fn source(&self) -> u64;
@@ -211,6 +290,7 @@ impl Entry for PspEntry {
 impl Entry for BiosEntry {
     const COOKIES: [[u8; 4]; 2] = [BIOS_COOKIE, BIOS_LEVEL2_COOKIE];
     const LEVEL2: u8 = bios::LEVEL2;
+    const IS_BIOS: bool = true;
     fn kind(&self) -> u8 {
         self.kind
     }
@@ -249,20 +329,25 @@ impl<'a, E: Entry> Directory<'a, E> {
         Self::read_checked(flash, offset, level).ok()
     }
     pub fn read_checked(flash: Flash<'a>, offset: usize, level: usize) -> Result<Self, Error> {
-        let bytes = flash
-            .bytes()
-            .get(offset..)
+        let head = flash
+            .slice(offset, size_of::<Header>())
             .ok_or(Error::Truncated(offset))?;
-        let (header, rest) =
-            Header::ref_from_prefix(bytes).map_err(|_| Error::Truncated(offset))?;
+        let (header, _) = Header::ref_from_prefix(head).map_err(|_| Error::Truncated(offset))?;
         if E::COOKIES.get(level) != Some(&header.cookie) {
             return Err(Error::Cookie(offset));
         }
         // v1 still stores entries immediately after the 16-byte fixed header;
         // HEADER_KIB describes the header allocation, not an entries offset.
-        let (entries, _) = <[E]>::ref_from_prefix_with_elems(rest, header.count.get() as usize)
-            .map_err(|_| Error::Truncated(offset))?;
-        let table = &bytes[..size_of::<Header>() + size_of_val(entries)];
+        let count = header.count.get() as usize;
+        let table = count
+            .checked_mul(size_of::<E>())
+            .and_then(|entries| entries.checked_add(size_of::<Header>()))
+            .and_then(|len| flash.slice(offset, len))
+            .ok_or(Error::Truncated(offset))?;
+        let (header, rest) =
+            Header::ref_from_prefix(table).map_err(|_| Error::Truncated(offset))?;
+        let (entries, _) =
+            <[E]>::ref_from_prefix_with_elems(rest, count).map_err(|_| Error::Truncated(offset))?;
         if fletcher32(&table[8..]) != header.checksum.get() {
             return Err(Error::Checksum(offset));
         }
@@ -284,7 +369,7 @@ impl<'a, E: Entry> Directory<'a, E> {
         let end = self
             .offset
             .checked_add(self.header.directory_size().max(self.table.len()))
-            .filter(|&e| e <= self.flash.bytes().len())
+            .filter(|&e| e <= self.flash.len())
             .ok_or(Error::Truncated(self.offset))?;
         Ok(self.offset..end)
     }
@@ -299,17 +384,29 @@ impl<'a, E: Entry> Directory<'a, E> {
                 .checked_add((source - 0xff00_0000) as usize)
                 .ok_or(Error::Address(source))?
         } else {
-            self.flash
-                .resolve(source, self.header.address_mode(), self.offset)?
+            let mode1_origin = if E::IS_BIOS {
+                self.flash.bios_origin.unwrap_or(self.flash.origin)
+            } else {
+                self.flash.origin
+            };
+            self.flash.resolve_with_mode1_origin(
+                source,
+                self.header.address_mode(),
+                self.offset,
+                mode1_origin,
+            )?
         };
         let end = start
             .checked_add(entry.size() as usize)
-            .filter(|&e| e <= self.flash.bytes().len())
+            .filter(|&e| e <= self.flash.len())
             .ok_or(Error::Address(source))?;
         Ok(start..end)
     }
     pub fn data(&self, entry: &E) -> Result<&'a [u8], Error> {
-        Ok(&self.flash.bytes()[self.range(entry)?])
+        let range = self.range(entry)?;
+        self.flash
+            .slice(range.start, range.len())
+            .ok_or(Error::Truncated(range.start))
     }
     pub fn level2_checked(&self) -> Result<Option<Self>, Error> {
         let mut entries = self.entries.iter().filter(|e| e.kind() == E::LEVEL2);
@@ -424,21 +521,30 @@ pub struct ComboEntry {
 }
 impl<'a> Combo<'a> {
     pub fn read(flash: Flash<'a>, offset: usize) -> Result<Option<Self>, Error> {
-        let bytes = flash
-            .bytes()
-            .get(offset..)
-            .ok_or(Error::Truncated(offset))?;
-        if bytes.get(..4) != Some(&PSP_COMBO_COOKIE) {
+        if offset > flash.len() {
+            return Err(Error::Truncated(offset));
+        }
+        if flash.slice(offset, PSP_COMBO_COOKIE.len()) != Some(&PSP_COMBO_COOKIE[..]) {
             return Ok(None);
         }
-        let (header, rest) =
-            ComboHeader::ref_from_prefix(bytes).map_err(|_| Error::Truncated(offset))?;
+        let head = flash
+            .slice(offset, size_of::<ComboHeader>())
+            .ok_or(Error::Truncated(offset))?;
+        let (header, _) =
+            ComboHeader::ref_from_prefix(head).map_err(|_| Error::Truncated(offset))?;
         if header.mode.get() > 1 {
             return Err(Error::ComboSelection);
         }
-        let (entries, _) =
-            <[RawComboEntry]>::ref_from_prefix_with_elems(rest, header.count.get() as usize)
-                .map_err(|_| Error::Truncated(offset))?;
+        let count = header.count.get() as usize;
+        let bytes = count
+            .checked_mul(size_of::<RawComboEntry>())
+            .and_then(|entries| entries.checked_add(size_of::<ComboHeader>()))
+            .and_then(|len| flash.slice(offset, len))
+            .ok_or(Error::Truncated(offset))?;
+        let (header, rest) =
+            ComboHeader::ref_from_prefix(bytes).map_err(|_| Error::Truncated(offset))?;
+        let (entries, _) = <[RawComboEntry]>::ref_from_prefix_with_elems(rest, count)
+            .map_err(|_| Error::Truncated(offset))?;
         let end = size_of::<ComboHeader>() + size_of_val(entries);
         if fletcher32(&bytes[8..end]) != header.checksum.get() {
             return Err(Error::Checksum(offset));

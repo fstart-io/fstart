@@ -50,9 +50,15 @@ pub struct Efs {
     /// The eSPI controllers' configuration the PSP applies before x86
     /// runs (server SoCs): [`Espi`].
     pub espi: Espi,
-    pub rest: [u8; 0xc],
+    pub reserved_54: [u8; 4],
+    /// Integrated firmware ROM layout selector (`+0x58`, Venice / Family 1Ah).
+    /// Values `0..=3` map `EfsSpiOffset` (`image_origin`) to `BiosImageBase`
+    /// (`bios_origin`); `0xff` (erased) is rejected by Venice firmware.
+    pub rom_layout_selector: u8,
+    pub reserved_59: [u8; 7],
 }
 const _: () = assert!(size_of::<Efs>() == 0x60);
+const _: () = assert!(core::mem::offset_of!(Efs, rom_layout_selector) == 0x58);
 
 /// The EFS's eSPI configuration bytes (+0x50), erased if unused.
 #[derive(
@@ -100,6 +106,43 @@ impl Efs {
                 self.spi_read_mode_f17_30 = mode;
                 self.spi_speed_f17_30 = speed;
             }
+        }
+    }
+
+    /// Derive the Venice `BiosImageBase` (`bios_origin`) from EFS `+0x58`
+    /// (`rom_layout_selector`) and the EFS bank offset (`image_origin`).
+    ///
+    /// Matches Venice `AmdDirectoryBaseLib` layout cases `0..=3`:
+    /// - `0`: single-origin (`image_origin <= 0x0300_0000` -> `image_origin`)
+    /// - `1`: dual-origin (`<= 0x0100_0000` -> `0`; `0x0200_0000..=0x0300_0000` -> `0x0200_0000`)
+    /// - `2`: split (`0` -> `0`; `0x0300_0000` -> `0x0100_0000`)
+    /// - `3`: BIOS-at-zero (`<= 0x0300_0000` -> `0`)
+    pub const fn venice_bios_origin(&self, image_origin: u32) -> Option<u32> {
+        match self.rom_layout_selector {
+            0 if image_origin <= 0x0300_0000 => Some(image_origin),
+            1 if image_origin <= 0x0100_0000 => Some(0),
+            1 if image_origin >= 0x0200_0000 && image_origin <= 0x0300_0000 => Some(0x0200_0000),
+            2 if image_origin == 0 => Some(0),
+            2 if image_origin == 0x0300_0000 => Some(0x0100_0000),
+            3 if image_origin <= 0x0300_0000 => Some(0),
+            _ => None,
+        }
+    }
+
+    /// Choose the Venice EFS `+0x58` selector byte encoding `(image_origin, bios_origin)`.
+    pub const fn venice_layout_selector_for(image_origin: u32, bios_origin: u32) -> Option<u8> {
+        if (image_origin == 0x0100_0000 && bios_origin == 0)
+            || (matches!(image_origin, 0x0200_0000..=0x0300_0000) && bios_origin == 0x0200_0000)
+        {
+            Some(1)
+        } else if image_origin <= 0x0300_0000 && bios_origin == image_origin {
+            Some(0)
+        } else if image_origin == 0x0300_0000 && bios_origin == 0x0100_0000 {
+            Some(2)
+        } else if image_origin <= 0x0300_0000 && bios_origin == 0 {
+            Some(3)
+        } else {
+            None
         }
     }
 }
