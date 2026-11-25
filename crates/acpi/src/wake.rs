@@ -112,6 +112,15 @@ pub fn rsdp_is_valid_with(read: &impl Fn(u64, &mut [u8]) -> bool, rsdp_addr: u64
 }
 
 fn find_fadt_in_xsdt(read: &impl Fn(u64, &mut [u8]) -> bool, xsdt_addr: u64) -> Option<u64> {
+    find_in_xsdt(read, xsdt_addr, *b"FACP")
+}
+
+/// The first table with `signature` the XSDT at `xsdt_addr` lists.
+fn find_in_xsdt(
+    read: &impl Fn(u64, &mut [u8]) -> bool,
+    xsdt_addr: u64,
+    table: [u8; 4],
+) -> Option<u64> {
     let mut bytes = [0u8; MAX_SDT_LEN];
     let length = read_sdt(read, xsdt_addr, *b"XSDT", &mut bytes)?;
     let (entries, remainder) = bytes[core::mem::size_of::<SdtHeader>()..length].as_chunks::<8>();
@@ -128,8 +137,33 @@ fn find_fadt_in_xsdt(read: &impl Fn(u64, &mut [u8]) -> bool, xsdt_addr: u64) -> 
         .filter(|address| *address != 0)
         .find(|address| {
             let mut signature = [0u8; 4];
-            read(*address, &mut signature) && signature == *b"FACP"
+            read(*address, &mut signature) && signature == table
         })
+}
+
+/// The address and length of the first table with `signature` that the
+/// XSDT of the RSDP at `rsdp_addr` lists, for firmware handing its own
+/// tables on (the WH PSP takes the IVRS's): the RSDP and XSDT are
+/// validated, of the table only its header's signature and length.
+#[must_use]
+pub fn table_from_rsdp_with(
+    read: &impl Fn(u64, &mut [u8]) -> bool,
+    rsdp_addr: u64,
+    signature: [u8; 4],
+) -> Option<(u64, u32)> {
+    let mut bytes = [0u8; core::mem::size_of::<Rsdp>()];
+    if !read(rsdp_addr, &mut bytes) {
+        return None;
+    }
+    let rsdp = parse_rsdp(&bytes)?;
+    let address = find_in_xsdt(read, rsdp.xsdt_addr.get(), signature)?;
+    let mut header = [0u8; core::mem::size_of::<SdtHeader>()];
+    if !read(address, &mut header) {
+        return None;
+    }
+    let (header, _) = SdtHeader::read_from_prefix(&header).ok()?;
+    let length = header.length.get();
+    (length as usize >= core::mem::size_of::<SdtHeader>()).then_some((address, length))
 }
 
 fn fadt_facs_addr(read: &impl Fn(u64, &mut [u8]) -> bool, address: u64) -> Option<u64> {

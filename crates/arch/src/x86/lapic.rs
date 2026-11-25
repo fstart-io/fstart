@@ -1,17 +1,20 @@
-//! Local APIC (xAPIC mode) register interface.
+//! Local APIC register interface, in xAPIC (MMIO) or x2APIC (MSR) mode.
 //!
 //! The Local APIC is the per-CPU interrupt controller on x86. This crate
-//! provides an MMIO-based interface for xAPIC mode, covering the operations
-//! needed by firmware:
+//! provides the operations needed by firmware, in whichever mode the CPU's
+//! `IA32_APIC_BASE` selects:
 //!
 //! - LAPIC enable and virtual-wire setup
 //! - APIC ID readback
 //! - BSP detection
 //! - IPI delivery (INIT, SIPI, SMI, self-IPI)
 //!
-//! The LAPIC sits at a well-known physical address (default `0xFEE0_0000`),
-//! configurable via the `IA32_APIC_BASE` MSR.  All register access is
-//! 32-bit aligned MMIO with volatile semantics.
+//! In xAPIC mode the LAPIC sits at a well-known physical address (default
+//! `0xFEE0_0000`, `IA32_APIC_BASE`) and its registers are 32-bit MMIO; the
+//! APIC ID is 8 bits. In x2APIC mode (`IA32_APIC_BASE.EXTD`) register
+//! `offset` is MSR `0x800 + offset / 16`, the APIC ID is 32 bits and the ICR
+//! one 64-bit MSR with no delivery status (SDM Vol. 3A §11.12). Platforms
+//! with APIC IDs above 254 need x2APIC: [`Lapic::enable_x2apic`].
 //!
 //! This crate is intentionally minimal — it exposes the LAPIC as a
 //! thin register interface, not a full interrupt framework.  Higher-level
@@ -26,6 +29,12 @@ const IA32_APIC_BASE: u32 = 0x1B;
 
 /// LAPIC is enabled (bit 11).
 const APIC_BASE_ENABLE: u64 = 1 << 11;
+/// x2APIC mode (bit 10, EXTD).
+const APIC_BASE_EXTD: u64 = 1 << 10;
+/// First x2APIC register MSR: register `offset` is `X2APIC_MSR + offset / 16`.
+const X2APIC_MSR: u32 = 0x800;
+/// CPUID.1:ECX\[21\], x2APIC supported.
+const CPUID1_ECX_X2APIC: u32 = 1 << 21;
 /// This is the bootstrap processor (bit 8).
 const APIC_BASE_BSP: u64 = 1 << 8;
 /// Address mask for the LAPIC base (bits 12..35).
@@ -51,7 +60,6 @@ const REG_ESR: u32 = 0x280;
 /// Interrupt Command Register (low 32 bits).
 const REG_ICR_LO: u32 = 0x300;
 /// Interrupt Command Register (high 32 bits — destination field).
-#[allow(dead_code)]
 const REG_ICR_HI: u32 = 0x310;
 
 /// Spin budget for the ICR delivery-status wait (~1 ms), matching coreboot's
@@ -132,10 +140,10 @@ use crate::x86::msr::{rdmsr, wrmsr};
 // Lapic struct
 // ---------------------------------------------------------------------------
 
-/// Local APIC register interface (xAPIC mode).
+/// Local APIC register interface.
 ///
-/// Constructed from the `IA32_APIC_BASE` MSR or a known base address.
-/// All register access is 32-bit aligned MMIO via volatile reads/writes.
+/// Constructed from the `IA32_APIC_BASE` MSR (which also gives the mode) or
+/// a known xAPIC base address.
 ///
 /// # Example
 ///
@@ -145,7 +153,8 @@ use crate::x86::msr::{rdmsr, wrmsr};
 /// lapic.setup_virtual_wire(Lapic::is_bsp());
 /// ```
 pub struct Lapic {
-    base: usize,
+    /// The xAPIC MMIO base; `None` in x2APIC mode.
+    base: Option<usize>,
 }
 
 // SAFETY: LAPIC registers are per-CPU (each CPU has its own LAPIC at
@@ -157,19 +166,51 @@ unsafe impl Sync for Lapic {}
 impl Lapic {
     // ---- Construction ----
 
-    /// Read the LAPIC base from `IA32_APIC_BASE` and construct.
+    /// The LAPIC in the mode `IA32_APIC_BASE` selects: x2APIC with EXTD
+    /// set, else xAPIC at the MSR's base.
     pub fn from_msr() -> Self {
         // SAFETY: IA32_APIC_BASE (0x1B) is architecturally defined on
         // all x86 CPUs with a local APIC.
         let msr = unsafe { rdmsr(IA32_APIC_BASE) };
         Self {
-            base: (msr & APIC_BASE_ADDR_MASK) as usize,
+            base: (msr & APIC_BASE_EXTD == 0).then_some((msr & APIC_BASE_ADDR_MASK) as usize),
         }
     }
 
-    /// Construct from a known MMIO base address.
+    /// Construct an xAPIC from a known MMIO base address.
     pub const fn at(base: usize) -> Self {
-        Self { base }
+        Self { base: Some(base) }
+    }
+
+    /// Whether the CPU implements x2APIC mode (CPUID.1:ECX\[21\]).
+    pub fn x2apic_supported() -> bool {
+        crate::x86::cpuid(1).2 & CPUID1_ECX_X2APIC != 0
+    }
+
+    /// Switch this CPU's LAPIC to x2APIC mode (enabled xAPIC first, then
+    /// EXTD: the SDM's only legal path) and return it; `None` if the CPU
+    /// lacks x2APIC. x2APIC stays on until reset.
+    pub fn enable_x2apic() -> Option<Self> {
+        if !Self::x2apic_supported() {
+            return None;
+        }
+        // SAFETY: IA32_APIC_BASE is architecturally defined; the enable
+        // then EXTD writes are the documented transition to x2APIC.
+        unsafe {
+            let msr = rdmsr(IA32_APIC_BASE);
+            if msr & APIC_BASE_EXTD == 0 {
+                if msr & APIC_BASE_ENABLE == 0 {
+                    wrmsr(IA32_APIC_BASE, msr | APIC_BASE_ENABLE);
+                }
+                wrmsr(IA32_APIC_BASE, msr | APIC_BASE_ENABLE | APIC_BASE_EXTD);
+            }
+        }
+        Some(Self { base: None })
+    }
+
+    /// Whether this LAPIC is in x2APIC mode.
+    pub const fn is_x2apic(&self) -> bool {
+        self.base.is_none()
     }
 
     // ---- Register access ----
@@ -177,17 +218,47 @@ impl Lapic {
     /// Read a 32-bit LAPIC register at `offset`.
     #[inline]
     fn read(&self, offset: u32) -> u32 {
-        let addr = (self.base + offset as usize) as *const u32;
-        // SAFETY: LAPIC registers are 32-bit aligned MMIO at known offsets.
-        unsafe { fstart_core::mmio::read32(addr) }
+        match self.base {
+            Some(base) => {
+                let addr = (base + offset as usize) as *const u32;
+                // SAFETY: LAPIC registers are 32-bit aligned MMIO at known offsets.
+                unsafe { fstart_core::mmio::read32(addr) }
+            }
+            // SAFETY: an x2APIC register MSR of this CPU, in x2APIC mode.
+            None => unsafe { rdmsr(X2APIC_MSR + offset / 16) as u32 },
+        }
     }
 
     /// Write a 32-bit LAPIC register at `offset`.
     #[inline]
     fn write(&self, offset: u32, val: u32) {
-        let addr = (self.base + offset as usize) as *mut u32;
-        // SAFETY: LAPIC registers are 32-bit aligned MMIO at known offsets.
-        unsafe { fstart_core::mmio::write32(addr, val) }
+        match self.base {
+            Some(base) => {
+                let addr = (base + offset as usize) as *mut u32;
+                // SAFETY: LAPIC registers are 32-bit aligned MMIO at known offsets.
+                unsafe { fstart_core::mmio::write32(addr, val) }
+            }
+            // SAFETY: an x2APIC register MSR of this CPU, in x2APIC mode.
+            None => unsafe { wrmsr(X2APIC_MSR + offset / 16, val.into()) },
+        }
+    }
+
+    /// Write the ICR: `destination` (an APIC ID, ignored with a shorthand)
+    /// and the low word's `flags`. x2APIC sends with one 64-bit MSR write.
+    fn write_icr(&self, destination: u32, flags: u32) {
+        match self.base {
+            Some(_) => {
+                self.write(REG_ICR_HI, destination << 24);
+                self.write(REG_ICR_LO, flags);
+            }
+            // SAFETY: the x2APIC ICR MSR of this CPU, in x2APIC mode.
+            None => unsafe {
+                wrmsr(
+                    X2APIC_MSR + REG_ICR_LO / 16,
+                    u64::from(destination) << 32 | u64::from(flags),
+                )
+            },
+        }
     }
 
     /// Read-modify-write: `reg = (reg & !clear) | set`.
@@ -199,9 +270,13 @@ impl Lapic {
 
     // ---- Queries ----
 
-    /// Read this CPU's APIC ID (bits [31:24] of the ID register).
+    /// Read this CPU's APIC ID: bits \[31:24\] of the ID register in
+    /// xAPIC mode, all 32 bits in x2APIC mode.
     pub fn id(&self) -> u32 {
-        self.read(REG_ID) >> 24
+        match self.base {
+            Some(_) => self.read(REG_ID) >> 24,
+            None => self.read(REG_ID),
+        }
     }
 
     /// Read the LAPIC version register.
@@ -209,8 +284,8 @@ impl Lapic {
         self.read(REG_VERSION)
     }
 
-    /// Return the MMIO base address.
-    pub fn base(&self) -> usize {
+    /// Return the xAPIC MMIO base address (`None` in x2APIC mode).
+    pub fn base(&self) -> Option<usize> {
         self.base
     }
 
@@ -282,10 +357,11 @@ impl Lapic {
 
     // ---- IPI delivery ----
 
-    /// Check if the LAPIC is busy delivering an IPI.
+    /// Check if the LAPIC is busy delivering an IPI (never in x2APIC
+    /// mode, whose ICR has no delivery status).
     #[inline]
     pub fn busy(&self) -> bool {
-        (self.read(REG_ICR_LO) & ICR_BUSY) != 0
+        self.base.is_some() && (self.read(REG_ICR_LO) & ICR_BUSY) != 0
     }
 
     /// Wait until the LAPIC is ready to accept an IPI.
@@ -309,7 +385,7 @@ impl Lapic {
     /// Send an INIT IPI to all processors except self.
     pub fn send_init_all_but_self(&self) {
         if self.wait_ready() {
-            self.write(REG_ICR_LO, DEST_ALL_EXCL | INT_ASSERT | MT_INIT);
+            self.write_icr(0, DEST_ALL_EXCL | INT_ASSERT | MT_INIT);
         }
     }
 
@@ -321,8 +397,8 @@ impl Lapic {
         if !self.wait_ready() {
             return;
         }
-        self.write(
-            REG_ICR_LO,
+        self.write_icr(
+            0,
             DEST_ALL_EXCL | INT_ASSERT | MT_STARTUP | (vector_page as u32),
         );
     }
@@ -334,8 +410,7 @@ impl Lapic {
         if !self.wait_ready() {
             return;
         }
-        self.write(REG_ICR_HI, apic_id << 24);
-        self.write(REG_ICR_LO, flags);
+        self.write_icr(apic_id, flags);
     }
 
     /// Send an SMI to this processor, for SMM relocation.

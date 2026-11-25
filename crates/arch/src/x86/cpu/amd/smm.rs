@@ -97,19 +97,35 @@ fn free_range(cpus: &[fstart_smm::CpuSmmLayout]) -> Range<u64> {
     start..(windows & !0xfff).max(start)
 }
 
-/// Program this CPU's TSEG and SMBASE and lock them. Returns SMM_ADDR,
-/// SMM_MASK, SMM_BASE and HWCR.SmmLock as read back afterwards.
+/// Model-specific bits a CPU's vendor code holds set while it programs
+/// TSEG and clears once SMM is locked (Zen 6: `C001_1023[27]`, see the SoC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetupBits {
+    pub msr: u32,
+    pub bits: u64,
+}
+
+/// Program this CPU's TSEG and SMBASE and lock them, `setup` held set
+/// around it. Returns SMM_ADDR, SMM_MASK, SMM_BASE and HWCR.SmmLock as
+/// read back afterwards.
 ///
 /// # Safety
 /// AMD64 CPU in normal mode, with SMM not locked and nothing on this CPU
-/// accessing TSEG from normal mode afterwards.
-unsafe fn program_cpu(base: u64, mask: u64, smbase: u64) -> [u64; 4] {
+/// accessing TSEG from normal mode afterwards; `setup` names bits of an
+/// MSR of this CPU that may be set and cleared here.
+unsafe fn program_cpu(base: u64, mask: u64, smbase: u64, setup: Option<SetupBits>) -> [u64; 4] {
     // SAFETY: the caller's contract; these MSRs exist on every AMD64 CPU.
     let cpu = unsafe { NativeMsr::new() };
+    if let Some(SetupBits { msr, bits }) = setup {
+        cpu.write(msr, cpu.read(msr) | bits);
+    }
     cpu.reg(SMM_ADDR).set(base);
     cpu.reg(SMM_MASK).set(mask);
     cpu.reg(SMM_BASE).set(smbase);
     cpu.reg(HWCR).modify(Hwcr::SMM_LOCK::SET);
+    if let Some(SetupBits { msr, bits }) = setup {
+        cpu.write(msr, cpu.read(msr) & !bits);
+    }
     [
         cpu.reg(SMM_ADDR).get(),
         cpu.reg(SMM_MASK).get(),
@@ -131,11 +147,23 @@ const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
 pub struct AmdSmm<'a, S: SmiControl> {
     name: &'static str,
     smi: &'a S,
+    setup: Option<SetupBits>,
 }
 
 impl<'a, S: SmiControl> AmdSmm<'a, S> {
     pub const fn new(name: &'static str, smi: &'a S) -> Self {
-        Self { name, smi }
+        Self {
+            name,
+            smi,
+            setup: None,
+        }
+    }
+
+    /// Hold `setup` set on every CPU while it programs its TSEG, until
+    /// it locked SMM.
+    pub const fn with_setup_bits(mut self, setup: Option<SetupBits>) -> Self {
+        self.setup = setup;
+        self
     }
 
     /// Install the handler `image` in the TSEG at `base`, point every online
@@ -205,6 +233,7 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
         let mask = smm_mask(size, crate::x86::physical_address_bits());
         let failures = AtomicU32::new(0);
         let cpus = installed.cpus;
+        let setup = self.setup;
         // The APs run before the BSP, which locks last as the vendor does.
         mp.scope(|scope| {
             scope.scatter(&|cpu| {
@@ -214,7 +243,7 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
                 };
                 // SAFETY: normal mode, SMM not locked; after this nothing
                 // touches TSEG from normal mode.
-                let read = unsafe { program_cpu(base, mask, layout.smbase) };
+                let read = unsafe { program_cpu(base, mask, layout.smbase, setup) };
                 if read != [base, mask, layout.smbase, 1] {
                     fstart_log::error!(
                         "CPU {}: SMM_ADDR {:#x} SMM_MASK {:#x} SMM_BASE {:#x} SmmLock {}",

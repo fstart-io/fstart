@@ -72,6 +72,14 @@ register_bitfields![u64,
         T_VALID OFFSET(1) NUMBITS(1) [],
         TM_TYPE_DRAM OFFSET(12) NUMBITS(3) [WriteBack = 6],
         MASK OFFSET(17) NUMBITS(35) []
+    ],
+    /// VM_CR (C001_0114, APM vol. 2 §15.30.1).
+    pub VmCr [
+        /// SVMDIS and itself are read-only until reset or the SVM_KEY
+        /// unlocks them.
+        LOCK OFFSET(3) NUMBITS(1) [],
+        /// EFER.SVME cannot be set.
+        SVMDIS OFFSET(4) NUMBITS(1) []
     ]
 ];
 
@@ -86,6 +94,10 @@ pub const PSTATE_0: Msr<PstateDef::Register> = Msr::new(0xc001_0064);
 pub const SMM_BASE: Msr = Msr::new(0xc001_0111);
 pub const SMM_ADDR: Msr = Msr::new(0xc001_0112);
 pub const SMM_MASK: Msr<SmmMask::Register> = Msr::new(0xc001_0113);
+pub const VM_CR: Msr<VmCr::Register> = Msr::new(0xc001_0114);
+/// The key that unlocks VM_CR.LOCK; 0 means no key, the lock holds until
+/// reset.
+pub const SVM_KEY: Msr = Msr::new(0xc001_0118);
 
 /// Core MHz of a Family 17h+ P-state definition, `None` if it isn't
 /// enabled.

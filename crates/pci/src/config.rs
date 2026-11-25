@@ -57,6 +57,23 @@ pub const PCI_HEADER_TYPE_MULTI_FUNC: u8 = 0x80;
 /// Value read from PCI_VENDOR_ID when no device is present.
 pub const PCI_VENDOR_INVALID: u32 = 0xFFFF_FFFF;
 
+/// Secondary bus number of a type-1 header (byte 1 of [`PCI_PRIMARY_BUS`]).
+pub const PCI_SECONDARY_BUS: u16 = 0x19;
+/// Class code (base, sub) of a PCI-to-PCI bridge, the high word of
+/// [`PCI_CLASS_REVISION`].
+pub const PCI_CLASS_BRIDGE_PCI: u16 = 0x0604;
+
+/// The PCI Express capability's ID ([`crate::EcamDevice::find_capability`]).
+pub const PCI_CAP_ID_EXP: u8 = 0x10;
+/// Link Capabilities dword, at PCI Express capability+0Ch
+/// ([`PCI_EXPRESS_LINK_CAPABILITIES`]).
+pub const PCI_EXP_LNKCAP: u16 = 0x0c;
+/// Link Status word, at PCI Express capability+12h
+/// ([`PCI_EXPRESS_LINK_STATUS`]).
+pub const PCI_EXP_LNKSTA: u16 = 0x12;
+/// Link Status 2 word, at PCI Express capability+32h.
+pub const PCI_EXP_LNKSTA2: u16 = 0x32;
+
 /// I/O Space Enable (bit 0).
 pub const PCI_CMD_IO: u16 = 0x0001;
 /// Memory Space Enable (bit 1).
@@ -65,6 +82,13 @@ pub const PCI_CMD_MEMORY: u16 = 0x0002;
 pub const PCI_CMD_BUS_MASTER: u16 = 0x0004;
 
 register_bitfields! [u32,
+    /// Link Capabilities dword at PCI Express capability+0Ch.
+    pub PCI_EXPRESS_LINK_CAPABILITIES [
+        MAX_SPEED OFFSET(0) NUMBITS(4) [],
+        MAX_WIDTH OFFSET(4) NUMBITS(6) [],
+        DLL_ACTIVE_REPORTING OFFSET(20) NUMBITS(1) [],
+        PORT_NUMBER OFFSET(24) NUMBITS(8) []
+    ],
     /// Type-1 bus routing dword at18h. Preserve the secondary latency byte.
     pub PCI_BRIDGE_BUSES [
         PRIMARY OFFSET(0) NUMBITS(8) [],

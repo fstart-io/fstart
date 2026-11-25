@@ -34,7 +34,8 @@ pub mod wake;
 /// Describes the APIC interrupt controllers, optional HPET, the legacy ACPI
 /// fixed hardware and the FADT feature set of an x86 platform.
 pub struct X86Config {
-    /// Local APIC IDs in MADT order; the ACPI processor UID is the index.
+    /// Local APIC IDs in MADT order; their ACPI processor UIDs are
+    /// [`processor_uids`]'s.
     pub apic_ids: Vec<u32>,
     /// Local APIC base address (usually 0xFEE0_0000).
     pub lapic_base: u64,
@@ -210,10 +211,48 @@ pub fn build_platform_tables(config: &X86Config) -> (Vec<Vec<u8>>, FadtConfig) {
 const MADT_ALL_PROCESSORS: u8 = 0xff;
 const MADT_X2APIC_ALL_PROCESSORS: u32 = 0xffff_ffff;
 
+/// The ACPI processor UID of each CPU of `apic_ids` (MADT order), which
+/// its processor device's `_UID` repeats.
+///
+/// The MADT entry of a CPU is a function of its APIC ID alone (ACPI 6.5
+/// §5.2.12.12: an APIC ID below FFh is a Local APIC structure, whose UID
+/// is a byte; Linux ignores an x2APIC structure with such an ID once there
+/// are Local APIC ones). So the CPUs with an APIC ID below FFh are numbered
+/// first, in order, from 0 (at most FFh of them: UIDs 0..=FEh), the others
+/// after them. UID FFh, the Local APIC NMI's "all processors", is never
+/// assigned. Up to 255 CPUs with xAPIC IDs, the UID is the index.
+pub fn processor_uids(apic_ids: &[u32]) -> Vec<u32> {
+    let xapic = apic_ids
+        .iter()
+        .filter(|&&id| id < u32::from(MADT_ALL_PROCESSORS))
+        .count()
+        .min(usize::from(MADT_ALL_PROCESSORS)) as u32;
+    let (mut low, mut high) = (0u32, xapic);
+    apic_ids
+        .iter()
+        .map(|&id| {
+            if id < u32::from(MADT_ALL_PROCESSORS) && low < u32::from(MADT_ALL_PROCESSORS) {
+                low += 1;
+                low - 1
+            } else {
+                if high == u32::from(MADT_ALL_PROCESSORS) {
+                    high += 1;
+                }
+                high += 1;
+                high - 1
+            }
+        })
+        .collect()
+}
+
 /// The (UID, APIC ID) of an xAPIC MADT entry; `None` needs an x2APIC entry.
-fn xapic_entry(uid: usize, apic_id: u32) -> Option<(u8, u8)> {
+/// [`processor_uids`] gives every APIC ID below FFh a UID below FFh.
+fn xapic_entry(uid: u32, apic_id: u32) -> Option<(u8, u8)> {
     let id = u8::try_from(apic_id).ok().filter(|&id| id != 0xff)?;
-    Some((u8::try_from(uid).ok()?, id))
+    let uid = u8::try_from(uid)
+        .ok()
+        .filter(|&uid| uid != MADT_ALL_PROCESSORS)?;
+    Some((uid, id))
 }
 
 /// Build the x86 MADT (Multiple APIC Description Table).
@@ -243,7 +282,8 @@ fn build_madt(config: &X86Config) -> Vec<u8> {
 
     const LAPIC_ENABLED: u32 = 1;
     let mut x2apic = false;
-    for (uid, &apic_id) in config.apic_ids.iter().enumerate() {
+    let uids = processor_uids(&config.apic_ids);
+    for (&uid, &apic_id) in uids.iter().zip(&config.apic_ids) {
         if let Some((uid, id)) = xapic_entry(uid, apic_id) {
             // Processor Local APIC (type 0, length 8)
             madt.append_slice(&[0, 8, uid, id]);
@@ -254,7 +294,7 @@ fn build_madt(config: &X86Config) -> Vec<u8> {
             madt.append_slice(&[9, 16, 0, 0]);
             madt.append_slice(&apic_id.to_le_bytes());
             madt.append_slice(&LAPIC_ENABLED.to_le_bytes());
-            madt.append_slice(&(uid as u32).to_le_bytes());
+            madt.append_slice(&uid.to_le_bytes());
         }
     }
 
@@ -411,6 +451,54 @@ mod tests {
         assert_eq!(of(4).next().unwrap().1, &[4, 6, 0xff, 5, 0, 1]);
         assert_eq!(of(10).count(), 1);
         assert_eq!(madt.iter().fold(0u8, |a, &x| a.wrapping_add(x)), 0);
+    }
+
+    /// Every APIC ID below FFh is a Local APIC entry and no UID is FFh
+    /// (the NMI entry's "all processors"), whatever the order of the CPUs
+    /// and however many there are.
+    #[test]
+    fn xapic_ids_keep_xapic_entries_and_no_uid_is_ff() {
+        // 256 threads, APIC ID FFh at index FEh; 1024 threads (2P SP7).
+        for apic_ids in [
+            (0..256).map(|i| i ^ 1).collect::<Vec<u32>>(),
+            (0..1024).map(|i| (i & 1) << 9 | i >> 1).collect(),
+        ] {
+            let mut config = test_config();
+            config.apic_ids = apic_ids.clone();
+            config.lapic_nmi_lint = Some(1);
+            let madt = build_madt(&config);
+            let entries = madt_entries(&madt);
+            let xapic: Vec<_> = (entries.iter())
+                .filter(|(k, _)| *k == 0)
+                .map(|(_, e)| (e[2], e[3]))
+                .collect();
+            let x2apic: Vec<_> = (entries.iter())
+                .filter(|(k, _)| *k == 9)
+                .map(|(_, e)| {
+                    let word = |at: usize| u32::from_le_bytes(e[at..at + 4].try_into().unwrap());
+                    (word(12), word(4))
+                })
+                .collect();
+            let below_ff = apic_ids.iter().filter(|&&id| id < 0xff).count();
+            assert_eq!(xapic.len(), below_ff);
+            assert_eq!(xapic.len() + x2apic.len(), apic_ids.len());
+            assert!(xapic.iter().all(|&(uid, _)| uid != 0xff));
+            assert!(x2apic.iter().all(|&(uid, id)| id >= 0xff && uid != 0xff));
+            // Unique UIDs.
+            let mut uids: Vec<u32> = (xapic.iter().map(|&(uid, _)| u32::from(uid)))
+                .chain(x2apic.iter().map(|&(uid, _)| uid))
+                .collect();
+            uids.sort_unstable();
+            uids.dedup();
+            assert_eq!(uids.len(), apic_ids.len());
+            assert_eq!(processor_uids(&apic_ids).len(), apic_ids.len());
+            assert!(entries.iter().any(|(k, _)| *k == 4));
+            assert!(entries.iter().any(|(k, _)| *k == 10));
+        }
+        // Up to 255 CPUs with xAPIC IDs, the UID is the index.
+        let ids: Vec<u32> = (0..255).rev().collect();
+        assert!(processor_uids(&ids).into_iter().eq(0..255));
+        assert_eq!(processor_uids(&[0, 8, 0x100, 9]), [0, 1, 3, 2]);
     }
 
     #[test]

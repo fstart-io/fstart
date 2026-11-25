@@ -24,6 +24,10 @@ pub enum E820Kind {
     Nvs = 4,
     /// Unusable / defective memory.
     Unusable = 5,
+    /// Specific-purpose memory (UEFI `EFI_MEMORY_SP`) the OS does not take
+    /// as general RAM unless told to: Linux's soft-reserved pseudo type and
+    /// coreboot's `LB_MEM_SOFT_RESERVED`, e.g. CXL memory a driver claims.
+    SoftReserved = 0xefff_ffff,
 }
 
 /// A single memory region entry (matches the x86 e820 layout).
@@ -212,6 +216,44 @@ impl E820State {
         self.retype(base, size, kind, false)
     }
 
+    /// Add `[base, base + size)` as `kind` where the map has nothing yet
+    /// (ranges the memory map was built without, such as CXL windows above
+    /// DRAM), keeping the entries sorted. A range that overlaps an entry is
+    /// refused and the map left as it was.
+    pub fn insert(&mut self, base: u64, size: u64, kind: E820Kind) -> Result<(), ServiceError> {
+        if size == 0 {
+            return Ok(());
+        }
+        let end = base.checked_add(size).ok_or(ServiceError::InvalidParam)?;
+        if self
+            .entries()
+            .iter()
+            .any(|e| base < e.addr.saturating_add(e.size) && e.addr < end)
+        {
+            return Err(ServiceError::InvalidParam);
+        }
+        let mut out = [E820Entry::zeroed(); MAX_E820_ENTRIES];
+        let mut out_count = 0usize;
+        let mut new = Some(E820Entry::new(base, size, kind));
+        for entry in self.entries().iter().copied() {
+            if entry.addr > base
+                && let Some(new) = new.take()
+            {
+                append_entry(&mut out, &mut out_count, new)?;
+            }
+            append_entry(&mut out, &mut out_count, entry)?;
+        }
+        if let Some(new) = new {
+            append_entry(&mut out, &mut out_count, new)?;
+        }
+        if kind == E820Kind::Ram {
+            self.total_ram = self.total_ram.saturating_add(size);
+        }
+        self.entries = out;
+        self.count = out_count;
+        Ok(())
+    }
+
     fn retype(
         &mut self,
         base: u64,
@@ -394,5 +436,35 @@ mod tests {
                 (0x5_0000, 0xb_0000, E820Kind::Ram as u32),
             ]
         );
+    }
+
+    #[test]
+    fn inserting_a_range_keeps_the_map_sorted_and_refuses_overlaps() {
+        let mut map = E820State::new();
+        map.entries_mut()[0] = E820Entry::new(0, 0x8000_0000, E820Kind::Ram);
+        map.entries_mut()[1] = E820Entry::new(0x1_0000_0000, 0x1_0000_0000, E820Kind::Ram);
+        map.set_detected(2, 0x1_8000_0000).unwrap();
+        map.insert(0x40_0000_0000, 0x10_0000_0000, E820Kind::SoftReserved)
+            .unwrap();
+        map.insert(0x2_0000_0000, 0x1000_0000, E820Kind::Ram)
+            .unwrap();
+        assert_eq!(
+            map.insert(0x7000_0000, 0x2000_0000, E820Kind::Ram),
+            Err(ServiceError::InvalidParam)
+        );
+        let ranges: heapless::Vec<_, 8> = map
+            .entries()
+            .iter()
+            .map(|e| (e.addr, e.size, e.kind))
+            .collect();
+        assert_eq!(
+            ranges[..],
+            [
+                (0, 0x8000_0000, E820Kind::Ram as u32),
+                (0x1_0000_0000, 0x1_1000_0000, E820Kind::Ram as u32),
+                (0x40_0000_0000, 0x10_0000_0000, 0xefff_ffff),
+            ]
+        );
+        assert_eq!(map.total_ram(), 0x1_9000_0000);
     }
 }

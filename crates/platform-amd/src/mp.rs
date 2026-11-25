@@ -49,6 +49,7 @@ pub fn start(
             cpu_drivers: &drivers,
             num_cpus: threads,
             max_cpus,
+            x2apic: false,
         },
         &mut launch,
     );
