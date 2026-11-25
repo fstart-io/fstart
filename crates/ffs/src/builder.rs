@@ -35,6 +35,7 @@ use heapless::String as HString;
 pub struct BootRootConfig {
     pub image_family: [u8; 16],
     pub security_version: u64,
+    pub fw_version: u32,
     pub bootstrap: Vec<(String, BootstrapRole)>,
 }
 
@@ -1079,6 +1080,7 @@ where
     }
     let mut root = Root {
         security_version: config.security_version,
+        fw_version: config.fw_version,
         image_family: config.image_family,
         key_id: u32::from(key.key_id),
         descriptors,

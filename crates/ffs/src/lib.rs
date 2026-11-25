@@ -27,6 +27,7 @@ pub mod lz4;
 #[cfg(feature = "directory")]
 pub mod reader;
 pub mod root;
+pub mod slot_state;
 
 #[cfg(feature = "std")]
 pub mod builder;

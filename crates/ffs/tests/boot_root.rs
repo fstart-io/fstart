@@ -24,6 +24,7 @@ fn descriptor() -> BootstrapDescriptor {
 fn root_wire_golden_and_reserved_bytes() {
     let root = Root {
         security_version: 0x0102030405060708,
+        fw_version: 0x0001_0002,
         image_family: [0x21; 16],
         key_id: 7,
         descriptors: [Some(descriptor()), None],
@@ -39,6 +40,7 @@ fn root_wire_golden_and_reserved_bytes() {
         &b[..24],
         b"FSTARTBR\x01\x00\x40\x00\x00\x02\x00\x00\x08\x07\x06\x05\x04\x03\x02\x01"
     );
+    assert_eq!(&b[44..48], &0x0001_0002u32.to_le_bytes());
     assert_eq!(
         &b[64..80],
         b"\x02\x00\x00\x00\x00\x00\x00\x00\x20\x10\x00\x00\x00\x00\x00\x00"
@@ -50,7 +52,7 @@ fn root_wire_golden_and_reserved_bytes() {
         b"\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
     );
     assert_eq!(Root::parse(&b).unwrap(), root);
-    for index in [44, 48, 63, 67, 68, 184, 223, 224, 436, 447] {
+    for index in [48, 63, 67, 68, 184, 223, 224, 436, 447] {
         let mut bad = b;
         bad[index] ^= 0x80;
         assert!(Root::parse(&bad).is_err(), "byte {index}");
@@ -102,6 +104,7 @@ fn fixture(compression: Compression) -> (FfsImage, VerificationKey) {
     let policy = BootRootConfig {
         image_family: [0x44; 16],
         security_version: 5,
+        fw_version: 0,
         bootstrap: vec![("mainstage".into(), BootstrapRole::Mainstage)],
     };
     let signer = |b: &[u8]| Ok(Signature::ed25519(0, key.sign(b).to_bytes()));

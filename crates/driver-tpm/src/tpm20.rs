@@ -11,13 +11,44 @@ const CC_HIERARCHY_CONTROL: u32 = 0x121;
 const CC_PCR_EVENT: u32 = 0x13C;
 const CC_CLEAR: u32 = 0x126;
 const CC_HIERARCHY_CHANGE_AUTH: u32 = 0x129;
+const CC_NV_DEFINE_SPACE: u32 = 0x12A;
+const CC_NV_WRITE: u32 = 0x137;
+const CC_NV_WRITE_LOCK: u32 = 0x138;
 const CC_SELF_TEST: u32 = 0x143;
 const CC_STARTUP: u32 = 0x144;
 const CC_SHUTDOWN: u32 = 0x145;
 const CC_STIR_RANDOM: u32 = 0x146;
+const CC_NV_READ: u32 = 0x14E;
+const CC_NV_READ_PUBLIC: u32 = 0x169;
 const CC_GET_CAPABILITY: u32 = 0x17A;
 const CC_GET_RANDOM: u32 = 0x17B;
 const CC_PCR_EXTEND: u32 = 0x182;
+
+/// Default platform-hierarchy NV index for fstart firmware rollback floor.
+///
+/// TCG Registry of Reserved TPM 2.0 Handles and Localities §2.2 allocates
+/// `0x0140_0000..=0x017F_FFFF` for platform-defined NV indices (OEM/platform
+/// firmware).
+pub const ROLLBACK_NV_INDEX: u32 = 0x0140_0001;
+
+/// `TPMA_NV` attribute bits (TPM 2.0 Library Part 2 §13.2).
+pub mod nv_attr {
+    pub const PPWRITE: u32 = 1 << 0;
+    pub const WRITELOCKED: u32 = 1 << 11;
+    pub const WRITESTCLEAR: u32 = 1 << 14;
+    pub const PPREAD: u32 = 1 << 16;
+    pub const AUTHREAD: u32 = 1 << 18;
+    pub const WRITTEN: u32 = 1 << 29;
+    pub const PLATFORMCREATE: u32 = 1 << 30;
+
+    /// Platform-created NV space, readable/writable by platform hierarchy and
+    /// lockable per-boot via `TPM2_NV_WriteLock` (`TPMA_NV_WRITESTCLEAR`).
+    pub const ROLLBACK_FLOOR: u32 = PLATFORMCREATE | PPWRITE | PPREAD | AUTHREAD | WRITESTCLEAR;
+
+    /// Runtime state bits set by the TPM on write/write-lock rather than at
+    /// `TPM2_NV_DefineSpace` time (`TPMA_NV_WRITTEN | TPMA_NV_WRITELOCKED`).
+    pub const RUNTIME_STATE_MASK: u32 = WRITELOCKED | WRITTEN;
+}
 
 /// Password authorization session handle.
 const RS_PW: u32 = 0x4000_0009;
@@ -49,8 +80,12 @@ pub mod rc {
     pub const YIELDED: u32 = 0x908;
     pub const RETRY: u32 = 0x922;
     pub const VALUE: u32 = 0x084;
+    pub const HANDLE: u32 = 0x08B;
     pub const LOCALITY: u32 = 0x107;
     pub const COMMAND_CODE: u32 = 0x143;
+    pub const NV_LOCKED: u32 = 0x148;
+    pub const NV_UNINITIALIZED: u32 = 0x14A;
+    pub const NV_DEFINED: u32 = 0x14C;
 }
 
 /// `TPM_SU`.
@@ -277,6 +312,218 @@ pub fn get_random<T: Transport + ?Sized>(tpm: &mut T, out: &mut [u8]) -> Result<
     Ok(())
 }
 
+/// `TPM2_NV_DefineSpace` under `auth_handle` (typically [`hierarchy::PLATFORM`])
+/// with empty authorization and empty `authPolicy`.
+pub fn nv_define_space<T: Transport + ?Sized>(
+    tpm: &mut T,
+    auth_handle: u32,
+    nv_index: u32,
+    attributes: u32,
+    data_size: u16,
+) -> Result<(), Error> {
+    let mut command = Command::new(ST_SESSIONS, CC_NV_DEFINE_SPACE);
+    command.u32(auth_handle);
+    password_session(&mut command);
+    // auth: empty TPM2B_AUTH
+    command.sized(&[]);
+    // publicInfo: TPM2B_NV_PUBLIC (14 bytes: nvIndex(4) + nameAlg(2) +
+    // attributes(4) + authPolicy(2) + dataSize(2)).
+    command
+        .u16(14)
+        .u32(nv_index)
+        .u16(alg::SHA256)
+        .u32(attributes)
+        .sized(&[])
+        .u16(data_size);
+    run(tpm, &mut command)
+}
+
+/// Public metadata returned by `TPM2_NV_ReadPublic`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NvPublic {
+    pub nv_index: u32,
+    pub name_alg: u16,
+    pub attributes: u32,
+    pub data_size: u16,
+}
+
+/// Result of [`advance_rollback_floor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloorAdvance {
+    /// NV floor was already `>= requested`.
+    AlreadyAtOrAbove(u64),
+    /// NV floor was advanced and read back as this value.
+    Advanced(u64),
+}
+
+/// `TPM2_NV_ReadPublic`: read and parse `TPMS_NV_PUBLIC` for `nv_index`.
+pub fn nv_read_public<T: Transport + ?Sized>(
+    tpm: &mut T,
+    nv_index: u32,
+) -> Result<NvPublic, Error> {
+    let mut command = Command::new(ST_NO_SESSIONS, CC_NV_READ_PUBLIC);
+    command.u32(nv_index);
+    let mut response = [0; BUFFER_SIZE];
+    let body = execute(tpm, command.finish()?, &mut response)?;
+    let mut reader = Reader::new(body);
+    let pub_size = usize::from(reader.u16()?);
+    let mut pub_reader = Reader::new(reader.bytes(pub_size)?);
+    let index = pub_reader.u32()?;
+    let name_alg = pub_reader.u16()?;
+    let attributes = pub_reader.u32()?;
+    let policy_len = usize::from(pub_reader.u16()?);
+    let _ = pub_reader.bytes(policy_len)?;
+    let data_size = pub_reader.u16()?;
+    Ok(NvPublic {
+        nv_index: index,
+        name_alg,
+        attributes,
+        data_size,
+    })
+}
+
+/// `TPM2_NV_Read`: read `out.len()` bytes starting at `offset` from `nv_index`.
+pub fn nv_read<T: Transport + ?Sized>(
+    tpm: &mut T,
+    auth_handle: u32,
+    nv_index: u32,
+    offset: u16,
+    out: &mut [u8],
+) -> Result<(), Error> {
+    let size = u16::try_from(out.len()).map_err(|_| Error::Response)?;
+    let mut command = Command::new(ST_SESSIONS, CC_NV_READ);
+    command.u32(auth_handle).u32(nv_index);
+    password_session(&mut command);
+    command.u16(size).u16(offset);
+    let mut response = [0; BUFFER_SIZE];
+    let body = execute(tpm, command.finish()?, &mut response)?;
+    let mut reader = Reader::new(body);
+    let param_size = reader.u32()? as usize;
+    let params = reader.bytes(param_size)?;
+    let mut params = Reader::new(params);
+    let data_len = usize::from(params.u16()?);
+    if data_len != out.len() {
+        return Err(Error::Response);
+    }
+    let bytes = params.bytes(data_len)?;
+    out.copy_from_slice(bytes);
+    if u16::from_be_bytes([response[0], response[1]]) != ST_SESSIONS {
+        return Err(Error::Response);
+    }
+    Ok(())
+}
+
+/// `TPM2_NV_Write`: write `data` starting at `offset` into `nv_index`.
+pub fn nv_write<T: Transport + ?Sized>(
+    tpm: &mut T,
+    auth_handle: u32,
+    nv_index: u32,
+    offset: u16,
+    data: &[u8],
+) -> Result<(), Error> {
+    let mut command = Command::new(ST_SESSIONS, CC_NV_WRITE);
+    command.u32(auth_handle).u32(nv_index);
+    password_session(&mut command);
+    command.sized(data).u16(offset);
+    run(tpm, &mut command)
+}
+
+/// `TPM2_NV_WriteLock`: lock `nv_index` against further writes until the next
+/// TPM reset/restart (requires `TPMA_NV_WRITESTCLEAR` on the index).
+pub fn nv_write_lock<T: Transport + ?Sized>(
+    tpm: &mut T,
+    auth_handle: u32,
+    nv_index: u32,
+) -> Result<(), Error> {
+    let mut command = Command::new(ST_SESSIONS, CC_NV_WRITE_LOCK);
+    command.u32(auth_handle).u32(nv_index);
+    password_session(&mut command);
+    run(tpm, &mut command)
+}
+
+/// Explicit one-time factory/provisioning step: define the 8-byte platform
+/// rollback-floor NV index and write `initial_floor`.
+///
+/// Never call this as a silent fallback on normal boots of a provisioned
+/// device—a missing NV index on a provisioned board must fail closed into
+/// recovery.
+pub fn provision_rollback_floor<T: Transport + ?Sized>(
+    tpm: &mut T,
+    nv_index: u32,
+    initial_floor: u64,
+) -> Result<u64, Error> {
+    nv_define_space(
+        tpm,
+        hierarchy::PLATFORM,
+        nv_index,
+        nv_attr::ROLLBACK_FLOOR,
+        8,
+    )?;
+    nv_write(
+        tpm,
+        hierarchy::PLATFORM,
+        nv_index,
+        0,
+        &initial_floor.to_le_bytes(),
+    )?;
+    let readback = read_rollback_floor(tpm, nv_index)?;
+    if readback != initial_floor {
+        return Err(Error::Response);
+    }
+    Ok(readback)
+}
+
+/// Verify the rollback-floor NV index's static public attributes match
+/// [`nv_attr::ROLLBACK_FLOOR`] (ignoring only the TPM-managed runtime state
+/// bits [`nv_attr::RUNTIME_STATE_MASK`], while still rejecting any extra
+/// OS-writable bits such as `AUTHWRITE`/`OWNERWRITE`) and read its
+/// little-endian `u64` floor.
+pub fn read_rollback_floor<T: Transport + ?Sized>(
+    tpm: &mut T,
+    nv_index: u32,
+) -> Result<u64, Error> {
+    let public = nv_read_public(tpm, nv_index)?;
+    if public.nv_index != nv_index
+        || public.data_size != 8
+        || (public.attributes & !nv_attr::RUNTIME_STATE_MASK) != nv_attr::ROLLBACK_FLOOR
+    {
+        return Err(Error::Response);
+    }
+    let mut buf = [0u8; 8];
+    nv_read(tpm, hierarchy::PLATFORM, nv_index, 0, &mut buf)?;
+    Ok(u64::from_le_bytes(buf))
+}
+
+/// Monotonically advance `nv_index` to `new_floor` (refusing any decrease) and
+/// verify the readback value.
+pub fn advance_rollback_floor<T: Transport + ?Sized>(
+    tpm: &mut T,
+    nv_index: u32,
+    new_floor: u64,
+) -> Result<FloorAdvance, Error> {
+    let current = read_rollback_floor(tpm, nv_index)?;
+    if new_floor <= current {
+        return Ok(FloorAdvance::AlreadyAtOrAbove(current));
+    }
+    nv_write(
+        tpm,
+        hierarchy::PLATFORM,
+        nv_index,
+        0,
+        &new_floor.to_le_bytes(),
+    )?;
+    let readback = read_rollback_floor(tpm, nv_index)?;
+    if readback != new_floor {
+        return Err(Error::Response);
+    }
+    Ok(FloorAdvance::Advanced(readback))
+}
+
+/// Lock the rollback-floor NV index against writes until the next TPM reset.
+pub fn lock_rollback_floor<T: Transport + ?Sized>(tpm: &mut T, nv_index: u32) -> Result<(), Error> {
+    nv_write_lock(tpm, hierarchy::PLATFORM, nv_index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +574,97 @@ mod tests {
         assert_eq!(tpm.1, 2, "retried once");
         assert!(banks.contains(alg::SHA256) && !banks.contains(alg::SHA1));
         assert_eq!(banks.allocations().next(), Some((alg::SHA256, 0x00FF_FFFF)));
+    }
+
+    #[test]
+    fn nv_read_write_lock_and_monotonic_rollback_floor() {
+        // TPM2B_NV_PUBLIC: size(2)=14, index(4)=0x01400001, nameAlg(2)=SHA256(0x000B),
+        // attrs(4)=ROLLBACK_FLOOR|WRITTEN(0x60054001), authPolicy(2)=0, dataSize(2)=8.
+        const PUB_WRITTEN: &[u8] = &[
+            0, 14, 0x01, 0x40, 0x00, 0x01, 0x00, 0x0B, 0x60, 0x05, 0x40, 0x01, 0, 0, 0, 8,
+        ];
+        // After TPM2_NV_WriteLock: ROLLBACK_FLOOR|WRITTEN|WRITELOCKED(0x60054801).
+        const PUB_LOCKED: &[u8] = &[
+            0, 14, 0x01, 0x40, 0x00, 0x01, 0x00, 0x0B, 0x60, 0x05, 0x48, 0x01, 0, 0, 0, 8,
+        ];
+        // parameterSize(4) = 10, TPM2B length(2) = 8, payload(8) = 5u64 LE.
+        const READ_5: &[u8] = &[0, 0, 0, 10, 0, 8, 5, 0, 0, 0, 0, 0, 0, 0];
+        const READ_9: &[u8] = &[0, 0, 0, 10, 0, 8, 9, 0, 0, 0, 0, 0, 0, 0];
+
+        let mut tpm = Script(
+            &[
+                // advance_rollback_floor(9): read_public + read(5), write(9), read_public + readback(9)
+                (ST_NO_SESSIONS, 0, PUB_WRITTEN),
+                (ST_SESSIONS, 0, READ_5),
+                (ST_SESSIONS, 0, &[]),
+                (ST_NO_SESSIONS, 0, PUB_WRITTEN),
+                (ST_SESSIONS, 0, READ_9),
+                // advance_rollback_floor(7) refuses decrease: read_public + read(9) only
+                (ST_NO_SESSIONS, 0, PUB_WRITTEN),
+                (ST_SESSIONS, 0, READ_9),
+                // lock_rollback_floor
+                (ST_SESSIONS, 0, &[]),
+                // read_rollback_floor still succeeds after write-lock (WRITELOCKED bit set)
+                (ST_NO_SESSIONS, 0, PUB_LOCKED),
+                (ST_SESSIONS, 0, READ_9),
+            ],
+            0,
+        );
+
+        assert_eq!(
+            advance_rollback_floor(&mut tpm, ROLLBACK_NV_INDEX, 9),
+            Ok(FloorAdvance::Advanced(9))
+        );
+        assert_eq!(
+            advance_rollback_floor(&mut tpm, ROLLBACK_NV_INDEX, 7),
+            Ok(FloorAdvance::AlreadyAtOrAbove(9))
+        );
+        assert_eq!(lock_rollback_floor(&mut tpm, ROLLBACK_NV_INDEX), Ok(()));
+        assert_eq!(read_rollback_floor(&mut tpm, ROLLBACK_NV_INDEX), Ok(9));
+        assert_eq!(tpm.1, 10);
+    }
+
+    #[test]
+    fn read_rollback_floor_rejects_wrong_attributes() {
+        // Missing PLATFORMCREATE (attrs = 0x20054001 with WRITTEN set).
+        const PUB_MISSING: &[u8] = &[
+            0, 14, 0x01, 0x40, 0x00, 0x01, 0x00, 0x0B, 0x20, 0x05, 0x40, 0x01, 0, 0, 0, 8,
+        ];
+        let mut tpm = Script(&[(ST_NO_SESSIONS, 0, PUB_MISSING)], 0);
+        assert_eq!(
+            read_rollback_floor(&mut tpm, ROLLBACK_NV_INDEX),
+            Err(Error::Response)
+        );
+        // Superset with AUTHWRITE (bit 2 = 0x04 -> 0x60054005 with WRITTEN set) must be rejected!
+        const PUB_SUPERSET: &[u8] = &[
+            0, 14, 0x01, 0x40, 0x00, 0x01, 0x00, 0x0B, 0x60, 0x05, 0x40, 0x05, 0, 0, 0, 8,
+        ];
+        let mut tpm = Script(&[(ST_NO_SESSIONS, 0, PUB_SUPERSET)], 0);
+        assert_eq!(
+            read_rollback_floor(&mut tpm, ROLLBACK_NV_INDEX),
+            Err(Error::Response)
+        );
+    }
+
+    #[test]
+    fn provision_rollback_floor_defines_writes_and_verifies() {
+        const PUB_WRITTEN: &[u8] = &[
+            0, 14, 0x01, 0x40, 0x00, 0x01, 0x00, 0x0B, 0x60, 0x05, 0x40, 0x01, 0, 0, 0, 8,
+        ];
+        const READ_3: &[u8] = &[0, 0, 0, 10, 0, 8, 3, 0, 0, 0, 0, 0, 0, 0];
+        let mut tpm = Script(
+            &[
+                (ST_SESSIONS, 0, &[]),
+                (ST_SESSIONS, 0, &[]),
+                (ST_NO_SESSIONS, 0, PUB_WRITTEN),
+                (ST_SESSIONS, 0, READ_3),
+            ],
+            0,
+        );
+        assert_eq!(
+            provision_rollback_floor(&mut tpm, ROLLBACK_NV_INDEX, 3),
+            Ok(3)
+        );
+        assert_eq!(tpm.1, 4);
     }
 }

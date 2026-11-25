@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-crabefi-hw = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "b26754578ae23bdd7a2397047489530d2fb28140" }
+crabefi-hw = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "973847019835970e8d9750c4c25194cf8c26e621" }
 
 [lints]
 workspace = true

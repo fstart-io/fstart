@@ -4,6 +4,7 @@ pub mod assemble;
 pub mod boot_test;
 pub mod build_plan;
 pub mod bundle;
+pub mod capsule;
 pub mod files;
 
 mod coreboot_payload;

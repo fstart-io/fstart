@@ -61,6 +61,7 @@ fn compression_uses_final_constant_policy_and_deterministic_input_identity() {
         let root_config = BootRootConfig {
             image_family: [count; 16],
             security_version: 19,
+            fw_version: 0,
             bootstrap: vec![("main".into(), BootstrapRole::Mainstage)],
         };
         let sign = |b: &[u8]| Ok(Signature::ed25519(0, signer.sign(b).to_bytes()));

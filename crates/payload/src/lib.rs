@@ -64,6 +64,13 @@ pub struct Handoff<'a> {
     /// The board's options, for CrabEFI's firmware settings menu.
     #[cfg(feature = "crabefi-basic")]
     pub settings: Option<crate::crabefi::settings::FirmwareSettings>,
+    /// Optional Capsule-on-Disk backend for RO/A/B or RO/A firmware updates.
+    #[cfg(feature = "crabefi-basic")]
+    pub capsule_backend: Option<&'a mut dyn crate::crabefi::CapsuleBackend>,
+    /// Optional warm-reset-retained deferred variable buffer for runtime
+    /// `SetVariable(OsIndications)` without SMM.
+    #[cfg(feature = "crabefi-basic")]
+    pub deferred_buffer: Option<crate::crabefi::DeferredBufferConfig>,
 }
 
 impl<'a> Handoff<'a> {
@@ -78,6 +85,10 @@ impl<'a> Handoff<'a> {
             variable_storage: None,
             #[cfg(feature = "crabefi-basic")]
             settings: None,
+            #[cfg(feature = "crabefi-basic")]
+            capsule_backend: None,
+            #[cfg(feature = "crabefi-basic")]
+            deferred_buffer: None,
         }
     }
 }
@@ -225,6 +236,10 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
                 settings: handoff.settings,
+                capsule_backend: handoff
+                    .capsule_backend
+                    .map(|b| &mut *b as &mut dyn crate::crabefi::CapsuleBackend),
+                deferred_buffer: handoff.deferred_buffer,
             },
             &static_entries,
             ram.base,
@@ -362,6 +377,10 @@ impl Riscv64UefiPayload {
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
                 settings: handoff.settings,
+                capsule_backend: handoff
+                    .capsule_backend
+                    .map(|b| &mut *b as &mut dyn crate::crabefi::CapsuleBackend),
+                deferred_buffer: handoff.deferred_buffer,
             },
             &static_entries,
             ram.base,
@@ -622,6 +641,10 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
                 settings: handoff.settings,
+                capsule_backend: handoff
+                    .capsule_backend
+                    .map(|b| &mut *b as &mut dyn crate::crabefi::CapsuleBackend),
+                deferred_buffer: handoff.deferred_buffer,
             },
             description.memory,
             &platform_entries,

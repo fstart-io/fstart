@@ -70,8 +70,8 @@ aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "5849
 
 # CrabEFI's EFI types and X.509 parsing, for host tools; the same revision
 # as crabefi-core in crates/boot.
-crabefi-efi-types = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "b26754578ae23bdd7a2397047489530d2fb28140" }
-crabefi-pkcs7 = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "b26754578ae23bdd7a2397047489530d2fb28140" }
+crabefi-efi-types = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "973847019835970e8d9750c4c25194cf8c26e621" }
+crabefi-pkcs7 = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "973847019835970e8d9750c4c25194cf8c26e621" }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }
