@@ -329,7 +329,9 @@ impl MemoryWindow {
 
     pub fn overlaps(self, other: Self) -> bool {
         match (self.end(), other.end()) {
-            (Some(end), Some(other_end)) => self.start < other_end && other.start < end,
+            (Some(end), Some(other_end)) => {
+                self.size != 0 && other.size != 0 && self.start < other_end && other.start < end
+            }
             _ => true,
         }
     }
@@ -400,20 +402,27 @@ pub fn bootstrap_footprint(descriptor: &BootstrapDescriptor) -> Result<u64, Load
     descriptor
         .validate(u64::MAX)
         .map_err(|_| LoadError::Bounds)?;
-    match descriptor.compression {
+    let footprint = match descriptor.compression {
         Compression::None => {
             if descriptor.stored_size != descriptor.loaded_size
                 || descriptor.stored_digest != descriptor.loaded_digest
             {
                 return Err(LoadError::Bounds);
             }
-            Ok(descriptor.loaded_size)
+            descriptor.loaded_size
         }
         _ => descriptor
             .loaded_size
             .checked_add(descriptor.stored_size)
-            .ok_or(LoadError::Bounds),
-    }
+            .ok_or(LoadError::Bounds)?,
+    };
+    // Descriptor validation bounds only the output; the compressed input
+    // window behind it must not wrap the address space either.
+    descriptor
+        .load_addr
+        .checked_add(footprint)
+        .ok_or(LoadError::Bounds)?;
+    Ok(footprint)
 }
 
 /// Where [`load_bootstrap`] leaves the descriptor's verified stored bytes:
@@ -517,4 +526,143 @@ pub unsafe fn load_bootstrap(
     };
     load_bootstrap_into(media, descriptor, workspace, codec, measurement)?;
     Ok(VerifiedExecutable { entry })
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Exact `[start, start + size)` end, never wrapping.
+    fn end_u128(w: MemoryWindow) -> u128 {
+        u128::from(w.start) + u128::from(w.size)
+    }
+
+    fn fits(w: MemoryWindow) -> bool {
+        end_u128(w) <= u128::from(u64::MAX)
+    }
+
+    fn any_window() -> MemoryWindow {
+        MemoryWindow {
+            start: kani::any(),
+            size: kani::any(),
+        }
+    }
+
+    #[kani::proof]
+    fn verify_memory_window_matches_u128_spec() {
+        let a = any_window();
+        let b = any_window();
+
+        match a.end() {
+            Some(end) => assert_eq!(u128::from(end), end_u128(a)),
+            None => assert!(!fits(a)),
+        }
+
+        let contains = fits(a)
+            && fits(b)
+            && u128::from(b.start) >= u128::from(a.start)
+            && end_u128(b) <= end_u128(a);
+        assert_eq!(a.contains(b), contains);
+
+        // A window that does not fit in u64 is conservatively overlapping;
+        // representable empty half-open windows share no bytes.
+        let overlaps = !fits(a)
+            || !fits(b)
+            || (a.size != 0
+                && b.size != 0
+                && u128::from(a.start) < end_u128(b)
+                && u128::from(b.start) < end_u128(a));
+        assert_eq!(a.overlaps(b), overlaps);
+        assert_eq!(a.overlaps(b), b.overlaps(a));
+    }
+
+    #[kani::proof]
+    fn verify_memory_policy_permits_only_writable_unreserved_ranges() {
+        let writable = [any_window(), any_window()];
+        let reserved = [any_window(), any_window()];
+        let policy = MemoryPolicy {
+            writable: &writable,
+            reserved: &reserved,
+            entry_alignment: kani::any(),
+        };
+        let start: u64 = kani::any();
+        let size: u64 = kani::any();
+
+        if !policy.permits(start, size) {
+            return;
+        }
+        kani::cover!(true, "range accepted beside two reservations");
+        let range = MemoryWindow { start, size };
+        let end = end_u128(range);
+        assert!(size != 0 && start != 0);
+        assert!(end <= u128::from(u64::MAX));
+        assert!(end <= usize::MAX as u128);
+        assert!(u128::from(size) <= isize::MAX as u128);
+        assert!(
+            policy.writable.iter().any(|w| fits(*w)
+                && u128::from(w.start) <= u128::from(start)
+                && end <= end_u128(*w))
+        );
+        for r in policy.reserved {
+            // No byte of the accepted range lies in any reservation.
+            assert!(fits(*r));
+            assert!(r.size == 0 || end <= u128::from(r.start) || u128::from(start) >= end_u128(*r));
+        }
+    }
+
+    fn any_descriptor() -> BootstrapDescriptor {
+        BootstrapDescriptor {
+            role: if kani::any() {
+                fstart_ffs::root::BootstrapRole::Postcar
+            } else {
+                fstart_ffs::root::BootstrapRole::Mainstage
+            },
+            compression: match kani::any::<u8>() % 3 {
+                0 => Compression::None,
+                1 => Compression::Lz4,
+                _ => Compression::Lzma,
+            },
+            offset: kani::any(),
+            stored_size: kani::any(),
+            loaded_size: kani::any(),
+            load_addr: kani::any(),
+            entry_offset: kani::any(),
+            scratch_size: kani::any(),
+            stored_digest: kani::any(),
+            loaded_digest: kani::any(),
+        }
+    }
+
+    #[kani::proof]
+    fn verify_bootstrap_footprint_contains_disjoint_output_and_input() {
+        let d = any_descriptor();
+        let Ok(footprint) = bootstrap_footprint(&d) else {
+            return;
+        };
+        let input = stored_input(&d).expect("validated descriptor has an input window");
+
+        let base = u128::from(d.load_addr);
+        let limit = base + u128::from(footprint);
+        let out_end = base + u128::from(d.loaded_size);
+        let in_start = u128::from(input.start);
+        let in_end = in_start + u128::from(input.size);
+
+        // The whole footprint is addressable without wrap.
+        assert!(limit <= u128::from(u64::MAX));
+        assert!(d.loaded_size != 0 && input.size == d.stored_size && input.size != 0);
+        assert!(out_end <= limit && in_start >= base && in_end <= limit);
+        if d.compression == Compression::None {
+            kani::cover!(true, "uncompressed footprint");
+            assert_eq!(footprint, d.loaded_size);
+            assert!(in_start == base && in_end == out_end);
+        } else {
+            kani::cover!(true, "compressed footprint");
+            assert_eq!(
+                u128::from(footprint),
+                u128::from(d.loaded_size) + u128::from(d.stored_size)
+            );
+            // Scratch starts where output ends: disjoint half-open intervals.
+            assert!(in_start >= out_end);
+        }
+    }
 }

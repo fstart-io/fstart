@@ -321,16 +321,24 @@ pub fn authenticate_root(
     }
     root.directory
         .validate(policy.image_size, policy.max_directory_size)?;
-    for d in root.descriptors.iter().flatten() {
+    // Plain slice iteration keeps the bounded loop visible to Kani.
+    for d in &root.descriptors {
+        let Some(d) = d else { continue };
         d.validate(policy.image_size)?;
     }
     // Current protected anchor keys have u8 IDs. Reject rather than truncate.
     let key_id = u8::try_from(root.key_id).map_err(|_| RootError::PolicyRejected)?;
-    let mut keys = policy.keys.iter().filter(|k| k.key_id == key_id);
-    let key = keys.next().ok_or(RootError::PolicyRejected)?;
-    if keys.next().is_some() {
-        return Err(RootError::PolicyRejected);
+    // Exactly one protected key may carry the ID; duplicates are ambiguous.
+    let mut key = None;
+    for k in policy.keys {
+        if k.key_id == key_id {
+            if key.is_some() {
+                return Err(RootError::PolicyRejected);
+            }
+            key = Some(k);
+        }
     }
+    let key = key.ok_or(RootError::PolicyRejected)?;
     let sig = Signature {
         key_id,
         kind: SignatureKind::Ed25519,
@@ -367,5 +375,291 @@ fn range(offset: u64, size: u64, limit: u64) -> Result<(), RootError> {
         Ok(())
     } else {
         Err(RootError::OutOfBounds)
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+    use fstart_core::ffs::TRUST_MAX_KEYS;
+    use fstart_crypto::verify::VerifyError;
+
+    fn in_bounds(offset: u64, size: u64, limit: u64) -> bool {
+        u128::from(offset) + u128::from(size) <= u128::from(limit)
+    }
+
+    #[kani::proof]
+    fn verify_bootstrap_descriptor_parse_encode_round_trip() {
+        let bytes: [u8; 160] = kani::any();
+        if let Ok(d) = BootstrapDescriptor::parse(&bytes) {
+            kani::cover!(d.compression != Compression::None, "compressed descriptor");
+            kani::cover!(d.compression == Compression::None, "stored descriptor");
+            assert!(d.validate(u64::MAX).is_ok());
+            assert!(d.stored_size != 0 && d.entry_offset < d.loaded_size);
+            assert!(in_bounds(d.offset, d.stored_size, u64::MAX));
+            assert!(in_bounds(d.load_addr, d.loaded_size, u64::MAX));
+            // Reserved bytes are zero, so encoding reproduces the wire exactly.
+            assert!(d.encode() == bytes);
+        }
+        // Any other length is rejected without panicking.
+        let len: usize = kani::any_where(|&l| l < bytes.len());
+        assert!(BootstrapDescriptor::parse(&bytes[..len]).is_err());
+    }
+
+    #[kani::proof]
+    fn verify_bootstrap_descriptor_validate_encode_parse_round_trip() {
+        let bytes: [u8; 160] = kani::any();
+        let Ok(d) = BootstrapDescriptor::parse(&bytes) else {
+            return;
+        };
+        // Re-encode any accepted descriptor after symbolic field updates.
+        let mut e = d;
+        e.offset = kani::any();
+        e.stored_size = kani::any();
+        e.loaded_size = kani::any();
+        e.load_addr = kani::any();
+        e.entry_offset = kani::any();
+        e.scratch_size = kani::any();
+        e.stored_digest = kani::any();
+        e.loaded_digest = kani::any();
+        let image_size: u64 = kani::any();
+        if e.validate(image_size).is_ok() {
+            kani::cover!(true, "updated descriptor accepted");
+            kani::cover!(
+                e.compression == Compression::None,
+                "stored descriptor accepted"
+            );
+            assert!(in_bounds(e.offset, e.stored_size, image_size));
+            if e.compression != Compression::None {
+                assert!(
+                    u128::from(e.scratch_size)
+                        >= u128::from(e.stored_size) + u128::from(e.loaded_size)
+                );
+            } else {
+                assert!(e.scratch_size == 0 && e.stored_size == e.loaded_size);
+                assert!(e.stored_digest == e.loaded_digest);
+            }
+            assert_eq!(BootstrapDescriptor::parse(&e.encode()), Ok(e));
+        } else {
+            kani::cover!(
+                e.compression == Compression::None
+                    && e.stored_size != 0
+                    && e.stored_size == e.loaded_size
+                    && e.entry_offset < e.loaded_size
+                    && in_bounds(e.offset, e.stored_size, image_size)
+                    && in_bounds(e.load_addr, e.loaded_size, u64::MAX)
+                    && e.scratch_size == 0
+                    && e.stored_digest != e.loaded_digest,
+                "stored descriptor rejected only for mismatched digests"
+            );
+        }
+    }
+
+    #[kani::proof]
+    fn verify_directory_ref_parse_validate_encode_round_trip() {
+        let bytes: [u8; 64] = kani::any();
+        if let Ok(r) = DirectoryRef::parse(&bytes) {
+            kani::cover!(true, "directory reference accepted");
+            assert!(r.size != 0 && in_bounds(r.offset, r.size, u64::MAX));
+            assert!(r.encode() == bytes);
+        }
+        let r = DirectoryRef {
+            offset: kani::any(),
+            size: kani::any(),
+            digest: kani::any(),
+        };
+        let image_size: u64 = kani::any();
+        let max_size: u64 = kani::any();
+        let valid = r.size != 0 && r.size <= max_size && in_bounds(r.offset, r.size, image_size);
+        assert_eq!(r.validate(image_size, max_size).is_ok(), valid);
+        if valid {
+            assert_eq!(DirectoryRef::parse(&r.encode()), Ok(r));
+        }
+        let len: usize = kani::any_where(|&l| l < bytes.len());
+        assert!(DirectoryRef::parse(&bytes[..len]).is_err());
+    }
+
+    #[kani::proof]
+    fn verify_root_parse_enforces_layout_and_round_trips() {
+        let bytes: [u8; ROOT_SIZE] = kani::any();
+        let Ok(root) = Root::parse(&bytes) else {
+            return;
+        };
+        kani::cover!(root.descriptors[1].is_some(), "root with two descriptors");
+        kani::cover!(root.descriptors[0].is_none(), "root without descriptors");
+        assert!(bytes[..8] == ROOT_MAGIC);
+        assert!(bytes[44..64] == [0; 20]);
+        // Slots fill in order; an empty slot is all-zero on the wire.
+        assert!(root.descriptors[0].is_some() || root.descriptors[1].is_none());
+        for (i, d) in root.descriptors.iter().enumerate() {
+            let slot = &bytes[64 + i * 160..224 + i * 160];
+            match d {
+                Some(d) => assert!(d.validate(u64::MAX).is_ok()),
+                None => assert!(slot == [0; 160]),
+            }
+        }
+        assert!(root.directory.validate(u64::MAX, u64::MAX).is_ok());
+        assert!(root.encode() == bytes);
+    }
+
+    #[kani::proof]
+    fn verify_root_parse_rejects_wrong_length() {
+        let bytes: [u8; ROOT_SIZE + 1] = kani::any();
+        let len: usize = kani::any_where(|&l| l <= ROOT_SIZE + 1 && l != ROOT_SIZE);
+        assert_eq!(Root::parse(&bytes[..len]), Err(RootError::InvalidFormat));
+    }
+
+    /// What `authenticate_root` passed to signature verification, and what
+    /// the (stubbed) cryptography answered.
+    #[derive(Clone, Copy)]
+    struct VerifyCall {
+        message: *const u8,
+        message_len: usize,
+        key: *const VerificationKey,
+        key_id: u8,
+        ed25519: bool,
+        sig_lo: [u8; 32],
+        sig_hi: [u8; 32],
+        result: Result<(), VerifyError>,
+    }
+
+    static mut CALLS: usize = 0;
+    static mut CALL: Option<VerifyCall> = None;
+
+    /// Signature checking is cryptography, not policy: any outcome is
+    /// possible. The call and its outcome are recorded for the harness.
+    fn verify_signature_stub(
+        message: &[u8],
+        signature: &Signature,
+        key: &VerificationKey,
+    ) -> Result<(), VerifyError> {
+        let result = match kani::any::<u8>() {
+            0 => Ok(()),
+            1 => Err(VerifyError::InvalidSignature),
+            2 => Err(VerifyError::AlgorithmMismatch),
+            3 => Err(VerifyError::UnsupportedAlgorithm),
+            4 => Err(VerifyError::InvalidKey),
+            _ => Err(VerifyError::KeyNotFound),
+        };
+        // SAFETY: Kani harnesses are single-threaded.
+        unsafe {
+            CALLS += 1;
+            CALL = Some(VerifyCall {
+                message: message.as_ptr(),
+                message_len: message.len(),
+                key,
+                key_id: signature.key_id,
+                ed25519: signature.kind == SignatureKind::Ed25519,
+                sig_lo: signature.sig_lo,
+                sig_hi: signature.sig_hi,
+                result,
+            });
+        }
+        result
+    }
+
+    fn any_key() -> VerificationKey {
+        VerificationKey {
+            key_id: kani::any(),
+            algorithm: kani::any(),
+            _pad: kani::any(),
+            key_lo: kani::any(),
+            key_hi: kani::any(),
+        }
+    }
+
+    /// `authenticate_root` succeeds exactly when the root parses, satisfies
+    /// family, version, directory and descriptor policy, names exactly one
+    /// protected key, and that key's signature check over the exact signed
+    /// bytes succeeds. Policy failures never reach the cryptography.
+    ///
+    /// The key table has symbolic length, so its loop needs an explicit
+    /// bound; `ci/kani.sh` raises memcmp's for the 160-byte slot compares.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    #[kani::stub(fstart_crypto::verify::verify_signature, verify_signature_stub)]
+    fn verify_authenticate_root_enforces_policy() {
+        let bytes: [u8; ROOT_SIZE] = kani::any();
+        let keys: [VerificationKey; TRUST_MAX_KEYS] = core::array::from_fn(|_| any_key());
+        let key_count: usize = kani::any_where(|&n| n <= TRUST_MAX_KEYS);
+        let policy = RootPolicy {
+            image_family: kani::any(),
+            minimum_security_version: kani::any(),
+            image_size: kani::any(),
+            max_directory_size: kani::any(),
+            keys: &keys[..key_count],
+        };
+        let parsed = Root::parse(&bytes);
+        let result = authenticate_root(&policy, &bytes);
+        // SAFETY: Kani harnesses are single-threaded.
+        let (calls, call) = unsafe { (CALLS, CALL) };
+        assert!(calls <= 1);
+
+        // Independent policy model over the (separately proven) parser.
+        let mut selected = None;
+        let mut policy_ok = false;
+        if let Ok(root) = parsed {
+            let mut matching = 0;
+            for (i, k) in keys.iter().enumerate() {
+                if i < key_count && u32::from(k.key_id) == root.key_id {
+                    matching += 1;
+                    selected = Some(i);
+                }
+            }
+            policy_ok = root.image_family == policy.image_family
+                && root.security_version >= policy.minimum_security_version
+                && root.directory.size != 0
+                && root.directory.size <= policy.max_directory_size
+                && in_bounds(
+                    root.directory.offset,
+                    root.directory.size,
+                    policy.image_size,
+                )
+                && root
+                    .descriptors
+                    .iter()
+                    .flatten()
+                    .all(|d| d.validate(policy.image_size).is_ok())
+                && matching == 1;
+        }
+
+        let Some(call) = call else {
+            assert!(!policy_ok);
+            assert!(result.is_err());
+            kani::cover!(result.is_err(), "policy rejection before cryptography");
+            return;
+        };
+        assert!(policy_ok);
+        let i = selected.unwrap();
+        assert!(core::ptr::eq(call.key, &keys[i]));
+        assert!(core::ptr::eq(call.message, bytes.as_ptr()));
+        assert_eq!(call.message_len, SIGNED_SIZE);
+        assert_eq!(call.key_id, keys[i].key_id);
+        assert!(call.ed25519);
+        assert!(call.sig_lo == bytes[448..480]);
+        assert!(call.sig_hi == bytes[480..512]);
+        match call.result {
+            Ok(()) => {
+                let auth = result.unwrap();
+                kani::cover!(
+                    auth.root().descriptors[0].is_some() && key_count == TRUST_MAX_KEYS,
+                    "authenticated root with descriptor and full key table"
+                );
+                assert!(Ok(*auth.root()) == parsed);
+                let dir = auth.directory();
+                assert!(dir.size != 0 && dir.size <= policy.max_directory_size);
+                assert!(in_bounds(dir.offset, dir.size, policy.image_size));
+                for d in auth.descriptors().iter().flatten() {
+                    assert!(in_bounds(d.offset, d.stored_size, policy.image_size));
+                }
+            }
+            Err(VerifyError::UnsupportedAlgorithm | VerifyError::AlgorithmMismatch) => {
+                assert_eq!(result.unwrap_err(), RootError::UnsupportedAlgorithm);
+            }
+            Err(_) => {
+                kani::cover!(true, "signature rejected");
+                assert_eq!(result.unwrap_err(), RootError::SignatureInvalid);
+            }
+        }
     }
 }

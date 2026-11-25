@@ -223,3 +223,68 @@ mod tests {
         assert!(LocatorBlock::parse(&bytes).is_none());
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    fn within(offset: u64, size: u64, limit: u64) -> bool {
+        u128::from(offset) + u128::from(size) <= u128::from(limit)
+    }
+
+    #[kani::proof]
+    fn verify_media_locator_validate_matches_u128_spec() {
+        let m = MediaLocator {
+            image_offset: kani::any(),
+            image_size: kani::any(),
+            root_offset: kani::any(),
+            root_size: kani::any(),
+            microcode_offset: kani::any(),
+            microcode_size: kani::any(),
+        };
+        let capacity: u64 = kani::any();
+        let microcode = if m.microcode_size == 0 {
+            m.microcode_offset == 0
+        } else {
+            m.microcode_offset != 0 && within(m.microcode_offset, m.microcode_size, m.image_size)
+        };
+        let spec = m.image_size != 0
+            && within(m.image_offset, m.image_size, capacity)
+            && m.root_size == 512
+            && within(m.root_offset, m.root_size, m.image_size)
+            && microcode;
+        assert_eq!(m.validate(capacity), spec);
+        if spec {
+            kani::cover!(m.microcode_size != 0, "locator with microcode accepted");
+            // Absolute media ranges stay inside the platform window.
+            let base = u128::from(m.image_offset);
+            assert!(base + u128::from(m.root_offset) + 512 <= u128::from(capacity));
+            assert!(
+                base + u128::from(m.microcode_offset) + u128::from(m.microcode_size)
+                    <= u128::from(capacity)
+            );
+        }
+    }
+
+    #[kani::proof]
+    fn verify_locator_block_parse_round_trips() {
+        let bytes: [u8; LOCATOR_SIZE + 1] = kani::any();
+        let len: usize = kani::any_where(|&l| l <= LOCATOR_SIZE + 1);
+        let parsed = LocatorBlock::parse(&bytes[..len]);
+        if len != LOCATOR_SIZE {
+            assert!(parsed.is_none());
+            return;
+        }
+        let Some(block) = parsed else {
+            return;
+        };
+        kani::cover!(block.media().validate(u64::MAX), "valid locator parsed");
+        assert!(block.magic == LOCATOR_MAGIC && block.version.get() == LOCATOR_VERSION);
+        let mut out = [0; LOCATOR_SIZE];
+        block.write_to(&mut out);
+        assert!(out == bytes[..LOCATOR_SIZE]);
+        let media = block.media();
+        assert_eq!(media.image_offset, u64::from(block.image_offset.get()));
+        assert_eq!(media.root_size, u64::from(block.root_size.get()));
+    }
+}

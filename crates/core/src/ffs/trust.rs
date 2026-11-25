@@ -181,3 +181,31 @@ mod tests {
         assert!(unsafe { TrustRef::read_volatile(&bytes.0[..TRUST_SIZE - 1]) }.is_none());
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn verify_trust_block_parse_round_trips_and_bounds_keys() {
+        let bytes: [u8; TRUST_SIZE + 1] = kani::any();
+        let len: usize = kani::any_where(|&l| l <= TRUST_SIZE + 1);
+        let parsed = TrustBlock::parse(&bytes[..len]);
+        if len != TRUST_SIZE {
+            assert!(parsed.is_none());
+            return;
+        }
+        let Some(block) = parsed else {
+            return;
+        };
+        kani::cover!(block.valid_keys().len() == TRUST_MAX_KEYS, "full key table");
+        kani::cover!(block.valid_keys().is_empty(), "empty key table");
+        let count = block.key_count.get() as usize;
+        assert!(count <= TRUST_MAX_KEYS);
+        assert_eq!(block.valid_keys().len(), count);
+        assert!(block.magic == TRUST_MAGIC && block.reserved.get() == 0);
+        let mut out = [0; TRUST_SIZE];
+        block.write_to(&mut out);
+        assert!(out == bytes[..TRUST_SIZE]);
+    }
+}
