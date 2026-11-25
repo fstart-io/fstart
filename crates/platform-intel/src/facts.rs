@@ -12,6 +12,9 @@ pub trait IntelPlatform: 'static {
     /// Bootblock stack in CAR. Chipsets whose raminit keeps more on the
     /// stack (the training cache record, deep call chains) raise it.
     const BOOTBLOCK_STACK: u64 = 0x2000;
+    /// The CPU loads microcode from an Intel FIT before the reset vector,
+    /// instead of the bootblock's pre-CAR loader.
+    const FIT: bool = false;
     const MICROCODE_SIGNATURES: &'static [&'static str];
 }
 

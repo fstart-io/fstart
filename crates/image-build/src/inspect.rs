@@ -90,6 +90,19 @@ pub fn inspect(path: &str) -> Result<(), String> {
         .read_manifest(&anchor)
         .map_err(|e| format!("failed to read/verify manifest: {e:?}"))?;
 
+    let has_intel_fit = manifest.regions.iter().any(|region| match &region.content {
+        RegionContent::Container { children } => children
+            .iter()
+            .any(|file| file.name.as_str() == crate::intel_fit::NAME),
+        _ => false,
+    });
+    if has_intel_fit {
+        println!(
+            "Intel FIT: indexes the FFS microcode (fbuild audits it when it composes the flash image)"
+        );
+        println!();
+    }
+
     if anchor.version.get() != LOCATOR_VERSION {
         println!(
             "  warning: version {} (expected {LOCATOR_VERSION})",

@@ -6,7 +6,13 @@
 use alloc::vec::Vec;
 
 use acpi_tables::Aml;
-use acpi_tables::aml::{Name, PackageBuilder};
+use acpi_tables::aml::{Name, Package, PackageBuilder, Path};
+
+fn push_prt_entry(pkg: &mut PackageBuilder, slot: u8, pin: u8, source: &dyn Aml, index: u32) {
+    let address = (u32::from(slot) << 16) | 0xFFFF;
+    let pin = u32::from(pin);
+    pkg.add_element(&Package::new(alloc::vec![&address, &pin, source, &index]));
+}
 
 /// AML `Name(_PRT, Package(...))` for a root-bus scope, one entry per route.
 ///
@@ -17,17 +23,41 @@ use acpi_tables::aml::{Name, PackageBuilder};
 pub fn prt_name_aml<G: Into<u32>>(routes: impl Iterator<Item = (u8, u8, G)>) -> Vec<u8> {
     let mut entries = PackageBuilder::new();
     for (slot, pin, gsi) in routes {
-        let address = (u32::from(slot) << 16) | 0xFFFF;
-        let mut entry = PackageBuilder::new();
-        entry.add_element(&address);
-        entry.add_element(&u32::from(pin));
-        entry.add_element(&0u32);
-        entry.add_element(&gsi.into());
-        entries.add_element(&entry);
+        push_prt_entry(&mut entries, slot, pin, &0u32, gsi.into());
     }
 
     let mut bytes = Vec::new();
     Name::new("_PRT".into(), &entries).to_aml_bytes(&mut bytes);
+    bytes
+}
+
+/// APIC GSIs and legacy PIC links from the SAME routing snapshot. Direct
+/// GSIs outside PIRQ A..D have no legacy-PIC entry. The caller emits root
+/// `PICM` and `_PIC`; `link_root` contains its real LNKA..LNKD devices.
+#[must_use]
+pub fn prt_modes_aml(
+    routes: impl Iterator<Item = (u8, u8, u8)>,
+    link_root: &crate::AcpiPath,
+) -> Vec<u8> {
+    let mut apic = PackageBuilder::new();
+    let mut pic = PackageBuilder::new();
+    for (slot, pin, gsi) in routes {
+        assert!(slot < 32 && pin < 4);
+        push_prt_entry(&mut apic, slot, pin, &0u32, u32::from(gsi));
+        if (16..20).contains(&gsi) {
+            let link = link_root.child(["LNKA", "LNKB", "LNKC", "LNKD"][usize::from(gsi - 16)]);
+            push_prt_entry(&mut pic, slot, pin, &Path::new(link.as_str()), 0);
+        }
+    }
+    let mut bytes = Vec::new();
+    Name::new("PICP".into(), &apic).to_aml_bytes(&mut bytes);
+    Name::new("PICN".into(), &pic).to_aml_bytes(&mut bytes);
+    bytes.extend_from_slice(&crate::acpi_dsl! {
+        Method("_PRT",0,NotSerialized) {
+            If (PICM) { Return(PICP); }
+            Return(PICN);
+        }
+    });
     bytes
 }
 

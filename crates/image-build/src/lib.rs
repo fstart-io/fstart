@@ -15,6 +15,7 @@ pub mod image;
 pub mod image_steps;
 pub mod inspect;
 mod intel_assembly;
+pub mod intel_fit;
 mod intel_flash;
 pub mod intel_plan;
 pub mod layout;

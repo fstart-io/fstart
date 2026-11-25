@@ -57,6 +57,30 @@ pub struct EcamDevice {
 }
 
 impl EcamDevice {
+    /// Bind a function within a bounded root mapping without constructing the
+    /// PCI resource allocator. The segment's bus-zero base is retained even
+    /// when only a nonzero-bus prefix is mapped, as in PciEcam.
+    pub fn from_root(
+        root: crate::PciRootInfo,
+        mapped_bytes: usize,
+        address: PciAddress,
+    ) -> Option<Self> {
+        if root.bus_end < root.bus_start
+            || address.segment() != root.segment
+            || !(root.bus_start..=root.bus_end).contains(&address.bus())
+        {
+            return None;
+        }
+        let offset = function_offset(address);
+        let relative = offset.checked_sub(usize::from(root.bus_start) << 20)?;
+        if relative.checked_add(FUNCTION_CONFIG_BYTES)? > mapped_bytes {
+            return None;
+        }
+        let config_base = usize::try_from(root.ecam_base).ok()?.checked_add(offset)?;
+        config_base.checked_add(FUNCTION_CONFIG_BYTES - 1)?;
+        Some(Self::at_config_base(address, config_base))
+    }
+
     /// Create a new ECAM device handle for a PCI function address.
     #[inline]
     pub fn new_address(address: PciAddress) -> Self {
@@ -229,6 +253,27 @@ impl EcamDevice {
         // SAFETY: a mapped, aligned register of this function; the caller's
         // contract covers ownership.
         unsafe { fstart_core::mmio::MmioRegister::new(address) }
+    }
+
+    /// Fallible typed register binding for fail-stop/permanent owners which
+    /// must not pull panic formatting or load-address-dependent metadata into
+    /// a relocatable image. Same width, alignment and mapping checks as
+    /// `register`; `None` is NOT an all-ones hardware read or success.
+    ///
+    /// # Safety
+    /// Same register ownership and plain-MMIO requirements as `register`.
+    #[inline]
+    pub unsafe fn try_register<T, R>(
+        &self,
+        reg: u16,
+    ) -> Option<fstart_core::mmio::MmioRegister<T, R>>
+    where
+        T: tock_registers::UIntLike,
+        R: tock_registers::RegisterLongName,
+    {
+        let address = self.register_address(reg, core::mem::size_of::<T>())?;
+        // SAFETY: checked mapped span, caller owns its hardware semantics.
+        Some(unsafe { fstart_core::mmio::MmioRegister::new(address) })
     }
 
     /// Read a 32-bit PCI config register.
@@ -427,6 +472,27 @@ impl EcamDevice {
         self.write8(reg, (v & mask) | bits);
     }
 
+    /// First PCIe extended capability of this ID. Reject out-of-function or
+    /// unaligned links; a cycle cannot exceed the 960 possible dword headers.
+    /// A returned header does not prove a particular capability body's size.
+    pub fn find_extended_capability(&self, id: u16) -> Option<u16> {
+        let mut offset = 0x100u16;
+        for _ in 0..960 {
+            if !(0x100..=0xffc).contains(&offset) || offset & 3 != 0 {
+                return None;
+            }
+            let header = self.read32(offset);
+            if header == 0 || header == u32::MAX {
+                return None;
+            }
+            if header as u16 == id {
+                return Some(offset);
+            }
+            offset = (header >> 20) as u16;
+        }
+        None
+    }
+
     /// Program the subsystem vendor/device dword (vendor in the low half),
     /// like coreboot `pci_dev_set_subsystem()`: type-0 headers at 0x2c,
     /// bridges through their SSVID capability. Returns whether a register
@@ -616,6 +682,26 @@ mod tests {
         bridge.write8(0x91, 0x40); // cycle without SSVID
         bridge.write8(0x90, 0x05);
         assert_eq!(bridge.find_capability(0x0d), None);
+        init(0);
+        unsafe { dealloc(memory, layout) };
+    }
+
+    #[test]
+    fn extended_capability_walk_follows_gaps_and_rejects_cycles_and_bad_links() {
+        let _ecam = ECAM.lock().unwrap_or_else(|p| p.into_inner());
+        use std::alloc::{Layout, alloc_zeroed, dealloc};
+        let layout = Layout::from_size_align(1 << 20, 1 << 20).unwrap();
+        let memory = unsafe { alloc_zeroed(layout) };
+        assert!(!memory.is_null());
+        init(memory as usize);
+        let dev = EcamDevice::new(0, 3, 0);
+        dev.write32(0x100, 0x24010001); // AER -> non-adjacent L1SS
+        dev.write32(0x240, 0x0001001e);
+        assert_eq!(dev.find_extended_capability(0x1e), Some(0x240));
+        for bad in [0x1001000d, 0x2411000d, 0x0801000d] {
+            dev.write32(0x240, bad);
+            assert_eq!(dev.find_extended_capability(0x1e), None);
+        }
         init(0);
         unsafe { dealloc(memory, layout) };
     }

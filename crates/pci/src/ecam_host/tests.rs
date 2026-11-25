@@ -1882,6 +1882,37 @@ fn firmware_io_reservations_exclude_dynamic_bars() {
 }
 
 #[test]
+fn exact_bar_query_requires_that_registers_allocation_not_an_aliasing_base() {
+    let (mut pci, _memory) = test_pci();
+    let addr = PciAddress::new(0, 0, 0x14, 2);
+    let mut dev = endpoint(
+        addr,
+        &[
+            (0, BarType::Memory64, 0x1000),
+            (2, BarType::Memory64, 0x2000),
+            (4, BarType::Io, 32),
+        ],
+    );
+    dev.bars[0].allocated = true;
+    dev.bars[4].allocated = true;
+    pci.write32(addr, 0x10, 0x10000004);
+    pci.write32(addr, 0x14, 1);
+    pci.write32(addr, 0x18, 0x10000004); // identical full base, but unallocated
+    pci.write32(addr, 0x1c, 1);
+    assert!(pci.devices.push(dev).is_ok());
+    let window = pci.assigned_memory_bar(addr, 0x10).unwrap();
+    assert_eq!(window.base, 0x110000000);
+    assert_eq!(window.size, 0x1000);
+    for register in [0x14, 0x18, 0x1c, 0x20, 0x24] {
+        assert_eq!(pci.assigned_memory_bar(addr, register), None);
+    }
+    assert_eq!(
+        pci.assigned_memory_bars().collect::<Vec<_>>(),
+        vec![(addr, window)]
+    );
+}
+
+#[test]
 fn fixed_bar_is_preserved_without_consuming_dynamic_space() {
     let (mut pci, _config_space) = test_pci();
     let fixed = PciFixedBar {

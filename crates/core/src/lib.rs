@@ -18,6 +18,7 @@ pub mod description;
 pub mod ffs;
 pub mod handoff;
 pub mod indexed;
+pub mod intel_microcode;
 pub mod layout;
 pub mod memory;
 pub mod memory_info;

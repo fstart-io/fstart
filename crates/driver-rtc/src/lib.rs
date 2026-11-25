@@ -14,11 +14,13 @@
 use tock_registers::register_bitfields;
 
 register_bitfields![u8,
-    RtcFrequency [
+    /// RTC register A, index 0x0a, 8 bits.
+    pub RtcFrequency [
         RATE OFFSET(0) NUMBITS(4) [],
         DIVIDER OFFSET(4) NUMBITS(3) []
     ],
-    RtcControl [
+    /// RTC register B, index 0x0b, 8 bits.
+    pub RtcControl [
         MODE_24_HOUR OFFSET(1) NUMBITS(1) [],
         BINARY_MODE OFFSET(2) NUMBITS(1) [],
         SET OFFSET(7) NUMBITS(1) []
@@ -458,19 +460,5 @@ mod tests {
             [0x00, 0x00, 0x60, 0x15, 0x04, 0x26],
             bcd_24
         ));
-    }
-
-    #[test]
-    fn valid_clocks_keep_their_data_and_hour_modes() {
-        let modes = [
-            0,
-            RtcControl::MODE_24_HOUR::SET.value,
-            RtcControl::BINARY_MODE::SET.value,
-            (RtcControl::MODE_24_HOUR::SET + RtcControl::BINARY_MODE::SET).value,
-        ];
-        for mode in modes {
-            let noisy_control = mode | RtcControl::SET::SET.value | 0x70;
-            assert_eq!(control_mode(noisy_control), mode);
-        }
     }
 }

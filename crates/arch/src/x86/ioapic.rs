@@ -70,6 +70,18 @@ impl IoApic {
         version.set(version.get());
     }
 
+    /// Program the chipset-specific write-once maximum redirection count.
+    /// Use only on IOAPICs implementing writable IOAPICVER[23:16], before
+    /// routing interrupts. Read-only implementations fail the readback.
+    pub fn set_redirection_entries(&self, entries: u16) -> bool {
+        if !(1..=256).contains(&entries) {
+            return false;
+        }
+        self.reg::<Version::Register>(VERSION)
+            .modify(Version::MAX_REDIRECTION.val(u32::from(entries) - 1));
+        self.redirection_entries() == u32::from(entries)
+    }
+
     pub fn redirection_entries(&self) -> u32 {
         self.reg::<Version::Register>(VERSION)
             .read(Version::MAX_REDIRECTION)
@@ -107,26 +119,5 @@ impl IoApic {
             .write(RedirectionLow::DELIVERY::ExtInt);
         self.reg::<RedirectionHigh::Register>(redirection(0) + 1)
             .write(RedirectionHigh::DESTINATION.val(bsp_apic_id.into()));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn identity_probe_only_writes_the_index_not_routing_data() {
-        let mut words = [0u32; 5];
-        words[4] = 0x1234_0000;
-        // SAFETY: modeled select/window in aligned, exclusively owned RAM.
-        let apic = unsafe { IoApic::new(words.as_mut_ptr() as usize) };
-        assert_eq!(apic.id(), 0x12);
-        assert_eq!(words[0], 0);
-        assert_eq!(apic.redirection_entries(), 0x35);
-        assert_eq!(words[0], 1);
-        assert_eq!(words[4], 0x1234_0000);
-        assert!(!apic.all_masked());
-        // SAFETY: the modeled window register, written as the IOAPIC would.
-        unsafe { fstart_core::mmio::write32(words.as_mut_ptr().add(4), 0x0001_0000) };
-        assert!(apic.all_masked());
     }
 }

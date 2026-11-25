@@ -36,6 +36,7 @@ getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 tempfile = "3.27"
+object = { workspace = true, features = ["write"] }
 # The blob table tests read the real Cargo.toml tables.
 toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
 

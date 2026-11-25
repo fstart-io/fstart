@@ -15,7 +15,9 @@
 
 extern crate std;
 
+mod fixups;
 mod trust;
+pub use fixups::{FileAlignment, FileLayout, FilePatch, FinalizedExternalFile};
 pub use trust::PatchedInputIdentity;
 
 use std::string::String;
@@ -163,6 +165,8 @@ pub struct FileDataLocation {
 
 /// Result of building an FFS image.
 pub struct FfsImage {
+    /// Exact sealed external bytes, including locator and packaging fixups.
+    pub external_files: Vec<FinalizedExternalFile>,
     /// Exact raw input identities after constant policy patching, before compression.
     pub patched_inputs: Vec<PatchedInputIdentity>,
     /// Exact selected policy encoding, also used for separate physical reset copies.
@@ -208,9 +212,24 @@ pub fn build_image_with_root<F>(
 where
     F: Fn(&[u8]) -> Result<Signature, String>,
 {
-    let mut patched = config.clone();
-    let (patched_inputs, trust_bytes) = trust::finalize_trust(&mut patched, root_config)?;
-    let config = &patched;
+    build_image_with_root_and_fixups(config, root_config, &[], |_| Ok(Vec::new()), sign)
+}
+
+/// Resolve bounded, fixed-size edits before final file/directory digests and
+/// signing. The callback cannot resize files or mutate unrelated image bytes.
+pub fn build_image_with_root_and_fixups<F, P>(
+    config: &FfsImageConfig,
+    root_config: &BootRootConfig,
+    alignments: &[FileAlignment],
+    finalize: P,
+    sign: &F,
+) -> Result<FfsImage, String>
+where
+    F: Fn(&[u8]) -> Result<Signature, String>,
+    P: FnOnce(&[FileLayout]) -> Result<Vec<FilePatch>, String>,
+{
+    let mut config = config.clone();
+    let (mut patched_inputs, trust_bytes) = trust::finalize_trust(&mut config, root_config)?;
     if root_config.bootstrap.len() > 2 {
         return Err("boot root supports at most two bootstrap stages".into());
     }
@@ -244,7 +263,12 @@ where
                 let mut children: heapless::Vec<RegionEntry, 8> = heapless::Vec::new();
 
                 for file in files {
-                    let entry = lay_out_file(&mut image, file, region_base)?;
+                    let entry = lay_out_file(
+                        &mut image,
+                        file,
+                        region_base,
+                        fixups::alignment(file, alignments)?,
+                    )?;
 
                     // Record file data location for the assembler.
                     if let EntryContent::File { segments, .. } = &entry.content
@@ -298,7 +322,12 @@ where
                 let mut children: heapless::Vec<RegionEntry, 8> = heapless::Vec::new();
 
                 for file in files {
-                    let entry = lay_out_file(&mut image, file, region_base)?;
+                    let entry = lay_out_file(
+                        &mut image,
+                        file,
+                        region_base,
+                        fixups::alignment(file, alignments)?,
+                    )?;
 
                     if let EntryContent::File { segments, .. } = &entry.content
                         && let Some(first_seg) = segments.first()
@@ -407,6 +436,30 @@ where
         }
     }
 
+    let mut manifest = ImageManifest {
+        regions: manifest_regions,
+    };
+    let files = fixups::layouts(&image, &manifest, &config)?;
+    for alignment in alignments {
+        if alignment.alignment == 0
+            || files
+                .iter()
+                .filter(|f| {
+                    f.file == alignment.file
+                        && (f.offset as usize).is_multiple_of(alignment.alignment)
+                })
+                .count()
+                != 1
+        {
+            return Err("alignment requires one flat read-only file".into());
+        }
+    }
+    let patches = finalize(&files)?;
+    let changed = fixups::apply(&mut image, &manifest, &mut config, &files, &patches)?;
+    if !patches.is_empty() {
+        patched_inputs = trust::finalize_trust(&mut config, root_config)?.0;
+    }
+
     // Keep one uncompressed policy record available for host inspection even
     // when all verifier-containing files are compressed or externally placed.
     // Runtime expected policy comes from linked code, never this media scan.
@@ -415,10 +468,6 @@ where
     image.extend_from_slice(&trust_bytes);
 
     // ---- Phase 2: Reserve fixed directory and boot-root storage ----
-    let mut manifest = ImageManifest {
-        regions: manifest_regions,
-    };
-
     let directory_bytes = crate::directory::encode_manifest(&manifest)?;
     let directory_offset = u32::try_from(image.len()).map_err(|_| "image exceeds u32")?;
     image.extend_from_slice(&directory_bytes);
@@ -481,11 +530,12 @@ where
         anchor.write_to(&mut image[offset..]);
     }
 
-    // ---- Phase 4: Recompute digests for files containing patched anchors ----
+    // ---- Phase 4: Hash files after locator and bounded packaging fixups ----
     //
     // Anchors are patched after digests were computed, so each containing
     // file's digest in the manifest is stale.
-    recompute_file_digests(
+    anchor_offsets.extend(changed);
+    let external_files = recompute_file_digests(
         &image,
         &mut manifest,
         &anchor_offsets,
@@ -525,6 +575,7 @@ where
     anchor.write_to(&mut anchor_bytes);
 
     Ok(FfsImage {
+        external_files,
         trust_bytes,
         patched_inputs,
         image,
@@ -567,6 +618,7 @@ fn lay_out_file(
     image: &mut Vec<u8>,
     file: &InputFile,
     region_base: u32,
+    alignment: usize,
 ) -> Result<RegionEntry, String> {
     let mut segments: heapless::Vec<Segment, 12> = heapless::Vec::new();
     let mut digest_input: Vec<u8> = Vec::new();
@@ -574,15 +626,10 @@ fn lay_out_file(
     let entry_offset = image_len(image)? - region_base;
 
     for seg in &file.segments {
-        // Anchors need 8-byte alignment. Microcode needs 16: Intel's
-        // pre-CAR loader passes the in-flash record + 48 to WRMSR 0x79,
-        // which requires a 16-byte-aligned update-data address. A preceding
-        // compressed stage can otherwise leave that pointer 8 bytes off.
-        let alignment = if file.file_type == FileType::CpuMicrocode {
-            16
-        } else {
-            8
-        };
+        // Structures/locators need eight-byte alignment. CPU update payloads
+        // need sixteen (Intel data follows its 48-byte header; AMD's update
+        // loader also requires sixteen). The pre-CAR reader cannot copy an
+        // eight-aligned flash record into an aligned RAM buffer.
         let pad = (alignment - (image.len() % alignment)) % alignment;
         image.extend(core::iter::repeat_n(0u8, pad));
 
@@ -751,10 +798,9 @@ fn recompute_file_digests(
     anchor_offsets: &[usize],
     input_regions: &[InputRegion],
     anchor: &LocatorBlock,
-) -> Result<(), String> {
+) -> Result<Vec<FinalizedExternalFile>, String> {
     recompute_inline_file_digests(image, manifest, anchor_offsets)?;
-    recompute_external_file_digests(manifest, input_regions, anchor)?;
-    Ok(())
+    recompute_external_file_digests(manifest, input_regions, anchor)
 }
 
 fn validate_external_layout(
@@ -902,7 +948,8 @@ fn recompute_external_file_digests(
     manifest: &mut ImageManifest,
     input_regions: &[InputRegion],
     anchor: &LocatorBlock,
-) -> Result<(), String> {
+) -> Result<Vec<FinalizedExternalFile>, String> {
+    let mut finalized = Vec::new();
     for input_region in input_regions {
         let InputRegion::ContainerWithExternal {
             name,
@@ -973,10 +1020,17 @@ fn recompute_external_file_digests(
             }
 
             *digests = file_hash(&digest_input).map_err(|_| "no digest algorithms available")?;
+            finalized.push(FinalizedExternalFile {
+                file: file.name.clone(),
+                offset: region_offset
+                    .checked_add(file.offset)
+                    .ok_or("external offset overflow")?,
+                data: digest_input,
+            });
         }
     }
 
-    Ok(())
+    Ok(finalized)
 }
 
 /// Empty pure zero-fill segments have no content digest.
