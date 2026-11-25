@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run Miri undefined-behavior checks on SMM and SMM-adjacent crates.
+# Run Miri undefined-behavior checks on SMM and SMM-adjacent crates and the
+# FFS boot path (LZ4, loader, resume stage cache).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,6 +17,9 @@ cargo miri test --locked -p fstart-core --lib
 cargo miri test --locked -p fstart-options --all-features --lib
 cargo miri test --locked -p fstart-store --lib
 cargo miri test --locked -p fstart-coreboot --lib
+cargo miri test --locked -p fstart-ffs --lib
+cargo miri test --locked -p fstart-load --lib
+cargo miri test --locked -p fstart-resume --lib
 case "$(uname -m)" in
   x86_64|i?86)
     cargo miri test --locked -p fstart-arch --features x86_64 --lib -- \

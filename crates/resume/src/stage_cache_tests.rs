@@ -47,7 +47,7 @@ fn load(
     output: &mut [u8],
 ) -> Option<u64> {
     let mut descriptor = *descriptor;
-    descriptor.load_addr = output.as_ptr() as u64;
+    descriptor.load_addr = output.as_mut_ptr() as u64;
     let writable = [MemoryWindow {
         start: descriptor.load_addr,
         size: output.len() as u64,

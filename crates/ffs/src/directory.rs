@@ -207,6 +207,15 @@ impl<'a> DirectoryView<'a> {
     }
 
     fn validate(&self) -> Result<(), ReaderError> {
+        self.validate_tables()?;
+        self.validate_regions()?;
+        self.validate_files()?;
+        self.validate_partition()?;
+        self.validate_segments()
+    }
+
+    /// Record kinds, names and child ranges: everything lookups index by.
+    fn validate_tables(&self) -> Result<(), ReaderError> {
         for region in self.regions {
             self.string(region.name_offset.get())?;
             match region.kind {
@@ -232,6 +241,11 @@ impl<'a> DirectoryView<'a> {
                 _ => return Err(ReaderError::DeserializeError),
             }
         }
+        Ok(())
+    }
+
+    /// Region extents, unique region names and unique, contained children.
+    fn validate_regions(&self) -> Result<(), ReaderError> {
         for (i, region) in self.regions.iter().enumerate() {
             if region._reserved != [0; 2]
                 || region.offset.get().checked_add(region.size.get()).is_none()
@@ -262,6 +276,11 @@ impl<'a> DirectoryView<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// File digest policy and segments within their file.
+    fn validate_files(&self) -> Result<(), ReaderError> {
         for entry in self.entries {
             if entry.kind != ENTRY_KIND_FILE {
                 continue;
@@ -282,8 +301,12 @@ impl<'a> DirectoryView<'a> {
                 )?;
             }
         }
-        // Tables partition their children exactly; aliasing records or orphan
-        // records would make lookup identity and authenticated ranges ambiguous.
+        Ok(())
+    }
+
+    /// Tables partition their children exactly; aliasing records or orphan
+    /// records would make lookup identity and authenticated ranges ambiguous.
+    fn validate_partition(&self) -> Result<(), ReaderError> {
         for i in 0..self.entries.len() {
             if self
                 .regions
@@ -314,6 +337,11 @@ impl<'a> DirectoryView<'a> {
                 return Err(ReaderError::DeserializeError);
             }
         }
+        Ok(())
+    }
+
+    /// Segment names, kinds, compression, sizes and digest invariants.
+    fn validate_segments(&self) -> Result<(), ReaderError> {
         for segment in self.segments {
             self.string(segment.name_offset.get())?;
             let kind = segment.kind()?;
@@ -895,5 +923,533 @@ fn decode_compression(value: u8) -> Result<Compression, ReaderError> {
         1 => Ok(Compression::Lz4),
         2 => Ok(Compression::Lzma),
         _ => Err(ReaderError::DeserializeError),
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    const HEADER: usize = core::mem::size_of::<Header>();
+    const REGION: usize = core::mem::size_of::<RegionRecord>();
+    const ENTRY: usize = core::mem::size_of::<EntryRecord>();
+    const SEGMENT: usize = core::mem::size_of::<SegmentRecord>();
+
+    /// The real lookup: in bounds, NUL-terminated, no interior NUL.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn verify_string_at_is_bounded_and_nul_terminated() {
+        let strings: [u8; 6] = kani::any();
+        let offset: u32 = kani::any();
+        if let Ok(name) = string_at(&strings, offset) {
+            kani::cover!(!name.is_empty(), "non-empty name");
+            let start = offset as usize;
+            let end = start + name.len();
+            assert!(end < strings.len());
+            assert_eq!(strings[end], 0);
+            assert!(name.as_bytes() == &strings[start..end]);
+            assert!(!name.as_bytes().contains(&0));
+        }
+    }
+
+    /// Table contents are `validate`'s job, proven phase by phase below.
+    // `'a: 'a` makes the lifetime early-bound, matching the impl's generic.
+    #[allow(clippy::extra_unused_lifetimes)]
+    fn validate_any<'a>(_: &DirectoryView<'a>) -> Result<(), ReaderError>
+    where
+        'a: 'a,
+    {
+        if kani::any() {
+            Ok(())
+        } else {
+            Err(ReaderError::DeserializeError)
+        }
+    }
+
+    /// Room for one record of each table plus a short string table.
+    const SMALL: usize = HEADER + REGION + ENTRY + SEGMENT + 8;
+
+    /// Arbitrary header values: all count, offset and size arithmetic is
+    /// checked, and the tables exactly partition the buffer.
+    #[kani::proof]
+    #[kani::stub(DirectoryView::validate, validate_any)]
+    fn verify_directory_parse_never_panics_on_arbitrary_bytes() {
+        let bytes: [u8; SMALL] = kani::any();
+        let len: usize = kani::any_where(|&l| l <= SMALL);
+        if let Ok(view) = DirectoryView::parse(&bytes[..len]) {
+            kani::cover!(
+                !view.regions.is_empty() && !view.entries.is_empty() && !view.segments.is_empty(),
+                "all three tables present"
+            );
+            let size = HEADER
+                + view.regions.len() * REGION
+                + view.entries.len() * ENTRY
+                + view.segments.len() * SEGMENT
+                + view.strings.len();
+            assert_eq!(size, len);
+            assert_eq!(
+                view.summary(),
+                DirectorySummary {
+                    regions: view.regions.len(),
+                    entries: view.entries.len(),
+                }
+            );
+        }
+    }
+
+    const R: usize = 2;
+    const E: usize = 2;
+    const S: usize = 2;
+    /// `x\0y\0` for any ASCII `x`, `y` spells two distinct non-empty names
+    /// (`a\0b\0`), duplicates (`a\0a\0`) and empty names (`\0` at either
+    /// offset), while every NUL search ends within two bytes, so all loops
+    /// stay within an unwinding bound of 3. Unterminated and non-ASCII
+    /// strings are `string_at`'s own proof above.
+    const STRINGS: usize = 4;
+
+    fn any_string_table() -> [u8; STRINGS] {
+        [
+            kani::any_where(u8::is_ascii),
+            0,
+            kani::any_where(u8::is_ascii),
+            0,
+        ]
+    }
+
+    const ASCII_BYTES: [u8; 128] = {
+        let mut bytes = [0u8; 128];
+        let mut i = 0;
+        while i < bytes.len() {
+            bytes[i] = i as u8;
+            i += 1;
+        }
+        bytes
+    };
+    /// Every ASCII character, in order, validated at compile time.
+    const ASCII: &str = match core::str::from_utf8(&ASCII_BYTES) {
+        Ok(s) => s,
+        Err(_) => panic!(),
+    };
+
+    /// `core::str::from_utf8` on at most one ASCII byte, the only strings the
+    /// lookup harnesses decode: the same text (proven below), taken from
+    /// [`ASCII`] so no UTF-8 validator is unrolled. Any other input fails
+    /// the proof instead of being modelled.
+    fn from_utf8_ascii(v: &[u8]) -> Result<&str, core::str::Utf8Error> {
+        match *v {
+            [] => Ok(""),
+            [b] if b.is_ascii() => Ok(&ASCII[b as usize..b as usize + 1]),
+            _ => panic!("outside the modelled UTF-8 domain"),
+        }
+    }
+
+    /// The real validator agrees with [`from_utf8_ascii`] on its domain.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn verify_from_utf8_ascii_matches_core() {
+        let bytes: [u8; 1] = [kani::any_where(u8::is_ascii)];
+        let len: usize = kani::any_where(|&l| l <= 1);
+        let v = &bytes[..len];
+        let s = core::str::from_utf8(v).unwrap();
+        assert!(core::ptr::eq(s.as_bytes(), v));
+        assert_eq!(Ok(s), from_utf8_ascii(v));
+    }
+
+    /// Region and entry names must decode for `validate_tables` to accept,
+    /// so offsets past the table are only ever rejected; the harnesses below
+    /// assume acceptance and skip generating them. (Segment names are only
+    /// checked by the segment phase and stay unconstrained.)
+    fn any_name_offset() -> U32<LE> {
+        U32::new(kani::any_where(|&o: &u32| (o as usize) < STRINGS))
+    }
+
+    fn any_region() -> RegionRecord {
+        RegionRecord {
+            name_offset: any_name_offset(),
+            offset: U32::new(kani::any()),
+            size: U32::new(kani::any()),
+            first_entry: U32::new(kani::any()),
+            entry_count: U32::new(kani::any()),
+            kind: kani::any(),
+            fill: kani::any(),
+            _reserved: kani::any(),
+        }
+    }
+
+    fn any_entry() -> EntryRecord {
+        EntryRecord {
+            name_offset: any_name_offset(),
+            offset: U32::new(kani::any()),
+            size: U32::new(kani::any()),
+            first_segment: U32::new(kani::any()),
+            segment_count: U32::new(kani::any()),
+            file_type: kani::any(),
+            kind: kani::any(),
+            fill: kani::any(),
+            digest_flags: kani::any(),
+            sha256: kani::any(),
+            sha3_256: kani::any(),
+        }
+    }
+
+    fn any_segment() -> SegmentRecord {
+        SegmentRecord {
+            name_offset: U32::new(kani::any()),
+            offset: U32::new(kani::any()),
+            stored_size: U32::new(kani::any()),
+            loaded_size: U32::new(kani::any()),
+            in_place_size: U32::new(kani::any()),
+            load_addr: U64::new(kani::any()),
+            kind: kani::any(),
+            compression: kani::any(),
+            flags: kani::any(),
+            _reserved: kani::any(),
+            initialized_size: U32::new(kani::any()),
+            stored_digest: kani::any(),
+            loaded_digest: kani::any(),
+        }
+    }
+
+    /// Any two-record tables over an ASCII string table that pass
+    /// `validate_tables`, the first phase of `validate`: every later phase
+    /// and every lookup runs only on such views. `validate` is the five
+    /// phases in sequence, so each phase's harness below states a property of
+    /// every validated view, and lookups are proven under the weaker first
+    /// phase alone. Records are built field by field; the wire layout of
+    /// parsed views is proven separately.
+    fn with_tables(check: impl FnOnce(&DirectoryView<'_>)) {
+        let regions: [RegionRecord; R] = [any_region(), any_region()];
+        let entries: [EntryRecord; E] = [any_entry(), any_entry()];
+        let segments: [SegmentRecord; S] = [any_segment(), any_segment()];
+        let strings = any_string_table();
+        let view = DirectoryView {
+            regions: &regions,
+            entries: &entries,
+            segments: &segments,
+            strings: &strings,
+        };
+        kani::assume(view.validate_tables().is_ok());
+        check(&view);
+    }
+
+    /// Any query of at most one ASCII byte: spelled by the table or absent.
+    fn with_query(check: impl FnOnce(&str)) {
+        let bytes: [u8; 1] = [kani::any_where(u8::is_ascii)];
+        let len: usize = kani::any_where(|&l| l <= 1);
+        check(core::str::from_utf8(&bytes[..len]).unwrap());
+    }
+
+    /// A non-empty query that no name in the table can spell.
+    fn absent(view: &DirectoryView<'_>, name: &str) -> bool {
+        let [x, _, y, _] = view.strings else {
+            return false;
+        };
+        name.len() == 1 && name.as_bytes()[0] != *x && name.as_bytes()[0] != *y
+    }
+
+    /// Count container-owned files whose index satisfies `matches`;
+    /// remember the last (region, entry) pair.
+    fn files_matching(
+        view: &DirectoryView<'_>,
+        matches: impl Fn(usize) -> bool,
+    ) -> (usize, usize, usize) {
+        let (mut count, mut hit_r, mut hit_e) = (0, 0, 0);
+        for (r, region) in view.regions.iter().enumerate() {
+            if region.kind != REGION_KIND_CONTAINER {
+                continue;
+            }
+            let first = region.first_entry.get() as usize;
+            let end = first + region.entry_count.get() as usize;
+            for (e, entry) in view.entries.iter().enumerate() {
+                if e >= first && e < end && entry.kind == ENTRY_KIND_FILE && matches(e) {
+                    count += 1;
+                    (hit_r, hit_e) = (r, e);
+                }
+            }
+        }
+        (count, hit_r, hit_e)
+    }
+
+    /// Each entry's name, decoded once.
+    fn entry_names<'a>(view: &DirectoryView<'a>) -> [Result<&'a str, ReaderError>; E] {
+        core::array::from_fn(|e| view.string(view.entries[e].name_offset.get()))
+    }
+
+    /// The file view is exactly entry `e` reached through region `r`: that
+    /// region's offset, that record and that entry's segment slice.
+    fn assert_file_is(view: &DirectoryView<'_>, file: &FileView<'_>, r: usize, e: usize) {
+        let entry = &view.entries[e];
+        assert!(core::ptr::eq(file.entry, entry));
+        assert_eq!(file.region_offset(), view.regions[r].offset.get());
+        assert_eq!(file.entry_offset(), entry.offset.get());
+        let first = entry.first_segment.get() as usize;
+        let count = entry.segment_count.get() as usize;
+        assert!(core::ptr::eq(
+            file.segments(),
+            &view.segments[first..first + count]
+        ));
+        assert!(core::ptr::eq(file.strings, view.strings));
+    }
+
+    /// Found exactly when exactly one (container, file) pair has the type,
+    /// and then it is that file; more are ambiguous; never a panic.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    #[kani::stub(core::str::from_utf8, from_utf8_ascii)]
+    fn verify_directory_find_file_by_type_is_exact() {
+        with_tables(|view| {
+            let raw_type: u8 = kani::any_where(|&t| (1..=10).contains(&t));
+            let file_type = decode_file_type(raw_type).unwrap();
+            let (typed, r, e) = files_matching(view, |e| view.entries[e].file_type == raw_type);
+            match view.find_file_by_type(file_type) {
+                Ok(file) => {
+                    kani::cover!(true, "file found by type");
+                    assert_eq!(typed, 1);
+                    assert_eq!(file.file_type(), Ok(file_type));
+                    assert_file_is(view, &file, r, e);
+                }
+                Err(ReaderError::FileNotFound) => assert_eq!(typed, 0),
+                Err(ReaderError::DeserializeError) => {
+                    kani::cover!(true, "ambiguous type rejected");
+                    assert!(typed >= 2);
+                }
+                Err(_) => panic!("validated tables have no other lookup error"),
+            }
+        });
+    }
+
+    /// Lookup by any short name, spelled by the table or absent from it:
+    /// found exactly when one (container, file) pair has the name, and then
+    /// it is that file.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    #[kani::stub(core::str::from_utf8, from_utf8_ascii)]
+    fn verify_directory_find_file_by_name_is_exact() {
+        with_tables(|view| {
+            with_query(|name| {
+                let names = entry_names(view);
+                let (named, r, e) = files_matching(view, |e| names[e] == Ok(name));
+                match view.find_file_by_name(name) {
+                    Ok(file) => {
+                        kani::cover!(
+                            !name.is_empty()
+                                && view.entries.iter().all(|e| e.kind == ENTRY_KIND_FILE)
+                                && names[0] != names[1],
+                            "file found among two distinct names"
+                        );
+                        assert_eq!(named, 1);
+                        assert_eq!(file.name(), Ok(name));
+                        assert_file_is(view, &file, r, e);
+                    }
+                    Err(ReaderError::FileNotFound) => {
+                        kani::cover!(absent(view, name), "name absent from the string table");
+                        assert_eq!(named, 0);
+                    }
+                    Err(ReaderError::DeserializeError) => {
+                        kani::cover!(true, "ambiguous name rejected");
+                        assert!(named >= 2);
+                    }
+                    Err(_) => panic!("validated tables have no other lookup error"),
+                }
+            });
+        });
+    }
+
+    /// A raw-region lookup returns exactly the raw region of that name,
+    /// rejects a container or a duplicate of that name, and reports an absent
+    /// name as `None`.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    #[kani::stub(core::str::from_utf8, from_utf8_ascii)]
+    fn verify_directory_raw_region_is_exact() {
+        with_tables(|view| {
+            with_query(|name| {
+                let (mut named, mut hit) = (0, 0);
+                for (r, region) in view.regions.iter().enumerate() {
+                    if view.string(region.name_offset.get()) == Ok(name) {
+                        named += 1;
+                        hit = r;
+                    }
+                }
+                let region = &view.regions[hit];
+                let expected = match (named, region.kind) {
+                    (0, _) => Ok(None),
+                    (1, REGION_KIND_RAW) => {
+                        Ok(Some((region.offset.get(), region.size.get(), region.fill)))
+                    }
+                    _ => Err(ReaderError::DeserializeError),
+                };
+                kani::cover!(matches!(expected, Ok(Some(_))), "raw region found");
+                kani::cover!(
+                    named == 1 && expected.is_err(),
+                    "container of that name rejected"
+                );
+                kani::cover!(absent(view, name), "name absent from the string table");
+                assert_eq!(view.raw_region(name), expected);
+            });
+        });
+    }
+
+    /// Region phase: region names are unique, each container's children have
+    /// unique names, and every extent fits its parent without overflow.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    #[kani::stub(core::str::from_utf8, from_utf8_ascii)]
+    fn verify_directory_validate_regions_enforces_unique_contained_names() {
+        with_tables(|view| {
+            if view.validate_regions().is_err() {
+                return;
+            }
+            kani::cover!(
+                view.regions.iter().all(|r| r.kind == REGION_KIND_CONTAINER),
+                "two containers accepted"
+            );
+            let [a, b] = [&view.regions[0], &view.regions[1]];
+            assert!(view.string(a.name_offset.get()) != view.string(b.name_offset.get()));
+            let names = entry_names(view);
+            for region in view.regions {
+                assert!(region._reserved == [0; 2]);
+                assert!(region.offset.get().checked_add(region.size.get()).is_some());
+                if region.kind != REGION_KIND_CONTAINER {
+                    continue;
+                }
+                let first = region.first_entry.get() as usize;
+                let end = first + region.entry_count.get() as usize;
+                for (i, entry) in view.entries.iter().enumerate() {
+                    if i < first || i >= end {
+                        continue;
+                    }
+                    assert!(
+                        u64::from(entry.offset.get()) + u64::from(entry.size.get())
+                            <= u64::from(region.size.get())
+                    );
+                    if i > first {
+                        assert!(names[i - 1] != names[i]);
+                    }
+                }
+            }
+        });
+    }
+
+    /// File phase: every file has a SHA-256 digest only, no fill and at
+    /// least one segment, each stored within the file.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    #[kani::stub(core::str::from_utf8, from_utf8_ascii)]
+    fn verify_directory_validate_files_bounds_segments() {
+        with_tables(|view| {
+            if view.validate_files().is_err() {
+                return;
+            }
+            for entry in view.entries {
+                if entry.kind != ENTRY_KIND_FILE {
+                    continue;
+                }
+                kani::cover!(entry.segment_count.get() == 2, "file with two segments");
+                assert!(entry.segment_count.get() != 0 && entry.fill == 0);
+                assert_eq!(entry.digest_flags, DIGEST_SHA256);
+                assert!(entry.sha3_256 == [0; 32]);
+                let first = entry.first_segment.get() as usize;
+                let end = first + entry.segment_count.get() as usize;
+                for (i, s) in view.segments.iter().enumerate() {
+                    if i >= first && i < end {
+                        assert!(
+                            u64::from(s.offset()) + u64::from(s.stored_size())
+                                <= u64::from(entry.size.get())
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    /// Partition phase: every entry has exactly one container and every
+    /// segment exactly one file, so a lookup can never reach a record twice.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    #[kani::stub(core::str::from_utf8, from_utf8_ascii)]
+    fn verify_directory_validate_partition_gives_unique_owners() {
+        with_tables(|view| {
+            if view.validate_partition().is_err() {
+                return;
+            }
+            kani::cover!(
+                view.regions[0].kind == REGION_KIND_CONTAINER
+                    && view.regions[0].entry_count.get() == 2,
+                "one container owns both entries"
+            );
+            kani::cover!(
+                view.entries.iter().any(|e| e.kind == ENTRY_KIND_RAW),
+                "raw entry uniquely owned"
+            );
+            for e in 0..E {
+                let mut owners = 0;
+                for region in view.regions {
+                    let first = region.first_entry.get() as usize;
+                    let end = first + region.entry_count.get() as usize;
+                    if region.kind == REGION_KIND_CONTAINER && e >= first && e < end {
+                        owners += 1;
+                    }
+                }
+                assert_eq!(owners, 1);
+            }
+            for s in 0..S {
+                let mut owners = 0;
+                for entry in view.entries {
+                    let first = entry.first_segment.get() as usize;
+                    let end = first + entry.segment_count.get() as usize;
+                    if entry.kind == ENTRY_KIND_FILE && s >= first && s < end {
+                        owners += 1;
+                    }
+                }
+                assert_eq!(owners, 1);
+            }
+        });
+    }
+
+    /// Segment phase: decodable kinds and compression, named, initialized
+    /// bytes within memory, no address overflow, stored segments carry their
+    /// digests and uncompressed ones are their own initialized image.
+    #[kani::proof]
+    #[kani::unwind(3)]
+    #[kani::stub(core::str::from_utf8, from_utf8_ascii)]
+    fn verify_directory_validate_segments_enforces_segment_rules() {
+        with_tables(|view| {
+            if view.validate_segments().is_err() {
+                return;
+            }
+            for s in view.segments {
+                let kind = s.kind().unwrap();
+                let compression = s.compression().unwrap();
+                kani::cover!(compression == Compression::Lz4, "compressed segment");
+                assert!(s.name(view.strings).is_ok());
+                assert!(s.initialized_size() <= s.loaded_size());
+                assert!(
+                    s.load_addr()
+                        .checked_add(u64::from(s.loaded_size()))
+                        .is_some()
+                );
+                assert!(s._reserved == 0 && s.flags & !7 == 0);
+                if s.stored_size() == 0 {
+                    assert!(kind == SegmentKind::Bss && s.initialized_size() == 0);
+                    assert!(compression == Compression::None);
+                    assert!(s.stored_digest == [0; 32] && s.loaded_digest == [0; 32]);
+                } else {
+                    assert!(kind != SegmentKind::Bss && s.initialized_size() != 0);
+                }
+                if compression == Compression::None {
+                    assert_eq!(s.in_place_size(), 0);
+                    if s.stored_size() != 0 {
+                        assert_eq!(s.stored_size(), s.initialized_size());
+                        assert!(s.stored_digest == s.loaded_digest);
+                    }
+                } else {
+                    assert!(
+                        u64::from(s.in_place_size())
+                            >= u64::from(s.initialized_size()) + u64::from(s.stored_size())
+                    );
+                }
+            }
+        });
     }
 }
