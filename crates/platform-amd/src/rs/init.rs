@@ -669,7 +669,9 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         let e820 = memory::build(V::NAME, &regions, TopOfMemory { tom, tom2 }, &reservations)
             .map_err(|_| "memory map")?;
         // RAM below 4 GiB WB in the MTRRs, above through TOM2, as SP3.
-        crate::sp3::flow::cache_ram(&regions);
+        if let Err(step) = crate::memory::cache_ram(&regions) {
+            crate::flow::fail::<Self>(step);
+        }
         if board.discrete_tpm {
             // SAFETY: the boot flash below 4 GiB, read only.
             let flash = unsafe {

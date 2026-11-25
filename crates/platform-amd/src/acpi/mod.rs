@@ -146,6 +146,10 @@ pub struct RootBridgeAcpi<'a> {
     /// root bus.
     pub ioapic_features: u32,
     pub iommu: Option<Iommu>,
+    /// Per-root-bridge PCIe/internal bridge routing override (`None` uses
+    /// `SocAcpi::bridges`). Unset `(0, 0)` entries are omitted when emitting
+    /// `_PRT` and `RPxx` devices.
+    pub bridges: Option<&'a [prt::Bridge]>,
 }
 
 /// Processor power data for `_PSS`/`_PCT`/`_PSD`/`_CST` (BSP's view;

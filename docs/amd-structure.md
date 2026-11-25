@@ -43,7 +43,7 @@ separate feature.
 ## platform-amd: SoCs
 
 One module per SoC: `picasso`, `zeppelin`, `naples`, `rome`, `milan`,
-`genoa`, `siena`.
+`genoa`, `siena`, `venice` (via shared `sp7`).
 A SoC module says which IP versions it runs, in which order
 (`soc::Init`), with which constants (ECAM, layout, APOB, packages), and
 what the flow needs of it beyond the silicon (`flow::Soc`). SoCs that share

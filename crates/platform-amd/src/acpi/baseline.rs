@@ -99,6 +99,10 @@ pub fn baseline_for_soc<B: Board>(
     let rs_legacy = !board.lpc_aml.is_empty() || board.i8042;
     let genoa_soc = crate::rs::acpi::soc(crate::genoa::Stones::PMBASE, rs_legacy);
     let siena_soc = crate::rs::acpi::soc(crate::siena::Dense::PMBASE, rs_legacy);
+    let venice_soc = crate::sp7::acpi::soc(
+        <crate::venice::Wh as crate::sp7::Variant>::PMBASE,
+        rs_legacy,
+    );
 
     let (soc_acpi, segment, fch_ioapic, nbio_ioapic, acpi_smi, default_fch_aml): (
         &SocAcpi,
@@ -188,6 +192,19 @@ pub fn baseline_for_soc<B: Board>(
             None,
             true,
         ),
+        SocId::Venice => (
+            &venice_soc,
+            PciRootInfo {
+                segment: 0,
+                ecam_base: crate::sp7::ECAM_BASE,
+                bus_start: 0,
+                bus_end: (crate::sp7::ECAM_BUSES - 1) as u8,
+            },
+            crate::sp7::FCH_IOAPIC_ID,
+            nbio_ioapic_id(fstart_driver_amd::cpu::Silicon::Gn, 0),
+            None,
+            true,
+        ),
     };
 
     let ecam_size = (u64::from(segment.bus_end) - u64::from(segment.bus_start) + 1) << 20;
@@ -215,6 +232,7 @@ pub fn baseline_for_soc<B: Board>(
         }),
         ioapic_features: 0,
         iommu: Some(SYNTHETIC_IOMMU),
+        bridges: None,
     }];
 
     let cpu_count = B::MAX_CPUS.clamp(1, 2) as usize;
@@ -288,6 +306,7 @@ mod tests {
             SocId::Milan,
             SocId::Genoa,
             SocId::Siena,
+            SocId::Venice,
         ];
         const MAX_CPUS: u16 = 16;
         const DISCRETE_TPM: bool = true;

@@ -92,12 +92,35 @@ pub(super) fn bridge_name(device: u8, function: u8) -> [u8; 4] {
 /// (device 0x14).
 const FCH_INTX_DEVICES: [u8; 2] = [0x00, 0x14];
 
-/// The root bus `_PRT` and one device per bridge with its own.
+/// The root bus `_PRT` and one device per active bridge with its own.
+///
+/// Unset `(0, 0)` bridge entries are omitted; remaining entries must have
+/// valid `(device < 16, function < 8)` coordinates and unique DevFns / AML
+/// `RPxx` names within this root bus.
 fn routing(
     soc: &SocAcpi,
+    bridges: &[prt::Bridge],
     fch_intx_gsi: Option<[u8; 4]>,
     gsi_base: Option<u32>,
 ) -> Result<Vec<u8>, AmlError> {
+    let mut active: Vec<prt::Bridge> = Vec::new();
+    let mut names: Vec<[u8; 4]> = Vec::new();
+    for &b in bridges {
+        if b.device == 0 && b.function == 0 {
+            continue;
+        }
+        if b.device >= 16 || b.function >= 8 {
+            return Err(AmlError::InvalidOperand);
+        }
+        let devfn = (b.device, b.function);
+        let aml_name = bridge_name(b.device, b.function);
+        if active.iter().any(|o| (o.device, o.function) == devfn) || names.contains(&aml_name) {
+            return Err(AmlError::InvalidOperand);
+        }
+        active.push(b);
+        names.push(aml_name);
+    }
+
     let fch = fch_intx_gsi.into_iter().flat_map(|gsi| {
         FCH_INTX_DEVICES.into_iter().flat_map(move |device| {
             (0..4).map(move |pin| (device, pin, gsi[usize::from(pin)].into()))
@@ -105,7 +128,7 @@ fn routing(
     });
     let nbio = gsi_base.into_iter().flat_map(|gsi_base| {
         (soc.root_complex_pin.map(|pin| (0, 0, pin)).into_iter())
-            .chain(prt::root_entries(soc.bridges))
+            .chain(prt::root_entries(&active))
             .map(move |(d, p, pin)| (d, p, gsi_base + u32::from(pin)))
     });
     let mut root = fch.chain(nbio).peekable();
@@ -118,7 +141,7 @@ fn routing(
     let Some(gsi_base) = gsi_base else {
         return Ok(root);
     };
-    soc.bridges.iter().try_fold(root, |mut out, b| {
+    active.iter().try_fold(root, |mut out, b| {
         let at = (b.device, b.function);
         let mut body = [
             name("_ADR", &(u32::from(b.device) << 16 | u32::from(b.function))),
@@ -241,7 +264,12 @@ fn root_bridge(
         fstart_acpi::pci_root::crs(rb.root),
         osc(),
         ioapic_acpi::nbio_aml(rb.ioapic_features)?,
-        routing(soc, soc.fch_intx_gsi.filter(|_| rb.fch), gsi_base)?,
+        routing(
+            soc,
+            rb.bridges.unwrap_or(soc.bridges),
+            soc.fch_intx_gsi.filter(|_| rb.fch),
+            gsi_base,
+        )?,
     ]
     .concat();
     if rb.fch {
