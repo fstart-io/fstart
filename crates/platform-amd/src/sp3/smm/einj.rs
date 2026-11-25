@@ -53,7 +53,8 @@ pub(super) fn status(error: PspError) -> u64 {
         | PspError::Size { .. }
         | PspError::Poisoned
         | PspError::Finished
-        | PspError::Placement => 0x4_0000,
+        | PspError::Placement
+        | PspError::Busy => 0x4_0000,
     }
 }
 

@@ -13,7 +13,8 @@
 //!   §4.1.7, Tables 21–22: XOR\[24\] = `SPIx5C[0]`, XOR\[25\]), so ROM2
 //!   shows the half whose EFS it took.
 //! - **ROM3** `[FD_0000_0000h, FD_0400_0000h)` (PPR 55570 §9.1.13, "LPC/SPI
-//!   ROM_3", 64 MiB) is the flash above 4 GiB, inside the 12 GiB hole
+//!   ROM_3", 64 MiB; [`BASE`]) is the flash above 4 GiB on SP3, inside the
+//!   12 GiB hole
 //!   `[FD_0000_0000h, 1 TiB)` that DRAM and the DF's MMIO pools skip
 //!   (`df::plan`, PSP_APOB §3.6; illumos `zen/physaddrs.h` names the hole
 //!   and the SPI controller's 64 MiB flash aperture in it).
@@ -32,6 +33,13 @@
 //!   16 MiB (the PSP itself reads the upper half when it boots it, so the
 //!   part must already be in a mode that reaches it).
 //!
+//! - On Qilian (Venice) ROM3's base is the APCB's (`FchRom3BaseHigh`):
+//!   `SPIx60[31:26] | SPIx64 << 32` ([`hardware_base`]; Venice FchPei
+//!   `0xcf11e0`, AmdPspPeiV2Wh `0xe576c0` [I]), `0x2FFD_0000_0000` on the
+//!   GIGABYTE MD25-CG0, 0 (below 4 GiB, unusable) on Dell's PR9XJ. The
+//!   vendors' x86 code reads flash through SMN instead
+//!   ([`super::spi::smn`]).
+//!
 //! [`FlashMap::probe`] answers the last two by comparing ROM3 with ROM2 at
 //! the EFS of the shown page; without a usable ROM3 only the shown page is
 //! readable (through ROM2) and everything else fails closed.
@@ -47,7 +55,7 @@ use tock_registers::register_bitfields;
 use super::FchHw;
 use crate::window::Window;
 
-/// ROM3 window base and size (PPR 55570 §9.1.13).
+/// ROM3 window base and size on SP3 (PPR 55570 §9.1.13).
 pub const BASE: u64 = 0xFD_0000_0000;
 pub const SIZE: u64 = 64 << 20;
 /// A ROM2 page (one flash half on SP3).
@@ -55,6 +63,10 @@ pub const PAGE_SIZE: u32 = 16 << 20;
 
 /// SPIx5C Addr32_Ctrl3 (AMD #55758 §4.1.7).
 pub const ADDR32_CTRL3: u32 = 0x5C;
+/// SPIx60: the ROM3 base's low bits and the flash size.
+pub const ROM3_LOW: u32 = 0x60;
+/// SPIx64: the ROM3 base's high dword.
+pub const ROM3_HIGH: u32 = 0x64;
 
 register_bitfields![u32,
     /// SPIx5C FCH::ITF::SPI::Addr32_Ctrl3.
@@ -62,6 +74,16 @@ register_bitfields![u32,
         /// XOR\[25:24\] of host and PSP SPI addresses: the 16 MiB page ROM2
         /// shows.
         SPI_ROM_PAGE OFFSET(0) NUMBITS(2) []
+    ],
+    /// SPIx60 (32-bit, Qilian; SMN `0x02DC_4060`): ROM3 base\[31:26\] and
+    /// the size of the first flash part, `64 MiB >> ROM_SIZE`.
+    pub Rom3Low [
+        ROM_SIZE OFFSET(0) NUMBITS(3) [],
+        BASE OFFSET(26) NUMBITS(6) []
+    ],
+    /// SPIx64 (32-bit, Qilian): ROM3 base\[63:32\].
+    pub Rom3High [
+        BASE OFFSET(0) NUMBITS(32) []
     ]
 ];
 
@@ -70,6 +92,27 @@ pub fn rom_page<H: FchHw>(hw: &H) -> u8 {
     hw.mmio()
         .reg::<u32, ADDR32_CTRL3::Register>(super::SPI_BASE + ADDR32_CTRL3)
         .read(ADDR32_CTRL3::SPI_ROM_PAGE) as u8
+}
+
+/// ROM3's base as the FCH decodes it (Qilian: `SPIx60[31:26] | SPIx64 <<
+/// 32`, the APCB's `FchRom3BaseHigh`), `None` if the controller reads
+/// all-ones or the base is below 4 GiB, where the ROM3 window would
+/// overlap the 32-bit MMIO (Dell's APCB leaves it 0).
+pub fn hardware_base<H: FchHw>(hw: &H) -> Option<u64> {
+    let low = hw
+        .mmio()
+        .reg::<u32, Rom3Low::Register>(super::SPI_BASE + ROM3_LOW)
+        .extract();
+    let high = hw
+        .mmio()
+        .reg::<u32, Rom3High::Register>(super::SPI_BASE + ROM3_HIGH)
+        .extract();
+    if low.get() == u32::MAX || high.get() == u32::MAX {
+        return None;
+    }
+    let base =
+        u64::from(low.read(Rom3Low::BASE)) << 26 | u64::from(high.read(Rom3High::BASE)) << 32;
+    (base >= 1 << 32).then_some(base)
 }
 
 /// What ROM3 turned out to be.
@@ -95,6 +138,8 @@ pub struct FlashMap {
     /// `SPIx5C` page: ROM2 shows flash `[page × 16 MiB, +16 MiB)`.
     pub page: u8,
     pub rom3: Rom3,
+    /// Where ROM3 decodes ([`BASE`] on SP3, [`hardware_base`] on Qilian).
+    pub base: u64,
     /// Size of the flash part (16 or 32 MiB on SP3 boards).
     pub size: u32,
 }
@@ -105,6 +150,7 @@ impl FlashMap {
         Self {
             page,
             rom3: Rom3::Absent,
+            base: BASE,
             size,
         }
     }
@@ -115,22 +161,75 @@ impl FlashMap {
     /// halves) leave ROM3 unused. `read(address, buf)` reads physical
     /// memory.
     pub fn probe(page: u8, size: u32, read: impl Fn(u64, &mut [u8])) -> Self {
+        Self::probe_with(BASE, page, size, PROBE_OFFSET, read, |rom2| {
+            rom2[..4] == EFS_SIGNATURE
+        })
+    }
+
+    /// As [`Self::probe`] with ROM3 at `base`, comparing ROM2 and ROM3 at
+    /// `offset` within the page ROM2 shows instead of at its EFS: for
+    /// layouts whose shown page has no EFS (Venice's dual-origin images
+    /// show the BIOS bank). The bytes there must be programmed (neither
+    /// erased nor zero); a reset image's 16-bit entry at the top of the
+    /// page is.
+    pub fn probe_at(
+        base: u64,
+        page: u8,
+        size: u32,
+        offset: u32,
+        read: impl Fn(u64, &mut [u8]),
+    ) -> Self {
+        Self::probe_with(base, page, size, offset, read, |rom2| {
+            rom2.iter().any(|&b| b != 0xff) && rom2.iter().any(|&b| b != 0)
+        })
+    }
+
+    /// As [`Self::probe`] with ROM3 at `base` (the EFS of the shown page).
+    pub fn probe_efs_at(base: u64, page: u8, size: u32, read: impl Fn(u64, &mut [u8])) -> Self {
+        Self::probe_with(base, page, size, PROBE_OFFSET, read, |rom2| {
+            rom2[..4] == EFS_SIGNATURE
+        })
+    }
+
+    fn probe_with(
+        base: u64,
+        page: u8,
+        size: u32,
+        offset: u32,
+        read: impl Fn(u64, &mut [u8]),
+        programmed: impl Fn(&[u8; PROBE_LEN]) -> bool,
+    ) -> Self {
+        let absent = Self {
+            base,
+            ..Self::rom2(page, size)
+        };
+        let Some(end) = offset.checked_add(PROBE_LEN as u32) else {
+            return absent;
+        };
+        if end > PAGE_SIZE {
+            return absent;
+        }
         let mut rom2 = [0u8; PROBE_LEN];
-        read(ROM2_BASE + u64::from(PROBE_OFFSET), &mut rom2);
+        read(ROM2_BASE + u64::from(offset), &mut rom2);
         let shown = u32::from(page & 3) * PAGE_SIZE;
         let rom3_shows = |offset: u32| {
             let mut bytes = [0u8; PROBE_LEN];
-            read(BASE + u64::from(offset), &mut bytes);
+            read(base + u64::from(offset), &mut bytes);
             bytes == rom2
         };
-        let linear = shown + PROBE_OFFSET < size && rom3_shows(shown + PROBE_OFFSET);
-        let paged = page & 3 != 0 && rom3_shows(PROBE_OFFSET);
-        let rom3 = match (rom2[..4] == EFS_SIGNATURE, linear, paged) {
+        let linear = shown + end <= size && rom3_shows(shown + offset);
+        let paged = page & 3 != 0 && rom3_shows(offset);
+        let rom3 = match (programmed(&rom2), linear, paged) {
             (true, true, false) => Rom3::Linear,
             (true, false, true) => Rom3::Paged,
             _ => Rom3::Absent,
         };
-        Self { page, rom3, size }
+        Self {
+            page,
+            rom3,
+            base,
+            size,
+        }
     }
 
     /// Flash offset of the page ROM2 shows.
@@ -150,8 +249,8 @@ impl FlashMap {
             return Some(ROM2_BASE + u64::from(offset - xor));
         }
         match self.rom3 {
-            Rom3::Linear => Some(BASE + u64::from(offset)),
-            Rom3::Paged if xor == 0 || same_page => Some(BASE + u64::from(offset ^ xor)),
+            Rom3::Linear => Some(self.base + u64::from(offset)),
+            Rom3::Paged if xor == 0 || same_page => Some(self.base + u64::from(offset ^ xor)),
             Rom3::Paged | Rom3::Absent => None,
         }
     }
@@ -226,10 +325,37 @@ mod tests {
     }
 
     #[test]
+    fn probe_at_works_without_an_efs_in_the_shown_page() {
+        let top = PAGE_SIZE - PROBE_LEN as u32;
+        for page in [0, 1] {
+            for rom3 in [Rom3::Linear, Rom3::Paged, Rom3::Absent] {
+                let map = FlashMap::probe_at(BASE, page, 2 * HALF, top, bus(page, rom3));
+                let expected = match (page, rom3) {
+                    (0, Rom3::Paged) => Rom3::Linear,
+                    _ => rom3,
+                };
+                assert_eq!(map.rom3, expected, "page {page} {rom3:?}");
+            }
+        }
+        // Erased flash at the probe proves nothing.
+        let erased = |_: u64, buf: &mut [u8]| buf.fill(0xff);
+        assert_eq!(
+            FlashMap::probe_at(BASE, 0, 2 * HALF, top, erased).rom3,
+            Rom3::Absent
+        );
+        // A probe beyond the page is refused.
+        assert_eq!(
+            FlashMap::probe_at(BASE, 0, 2 * HALF, PAGE_SIZE, bus(0, Rom3::Linear)).rom3,
+            Rom3::Absent
+        );
+    }
+
+    #[test]
     fn addresses_follow_the_mapping() {
         let map = |page, rom3| FlashMap {
             page,
             rom3,
+            base: BASE,
             size: 2 * HALF,
         };
         let ffs = (0x60_0000, 0x7e_0000);
@@ -259,6 +385,44 @@ mod tests {
         assert_eq!(rom2.address(ffs.0, ffs.1), Some(ROM2_BASE + 0x60_0000));
         assert_eq!(rom2.address(HALF + 0x2_0000, 0x40), None);
         assert_eq!(map(1, Rom3::Absent).address(HALF, HALF), Some(ROM2_BASE));
+    }
+
+    #[test]
+    fn hardware_base_is_the_apcb_policy() {
+        let hw = fch();
+        let spi = crate::fch::SPI_BASE;
+        // GIGABYTE MD25-CG0: FchRom3BaseHigh = 0x2FFD; size code 0 (64 MiB).
+        hw.mmio.put(spi + ROM3_LOW, 4, 0x0000_0000);
+        hw.mmio.put(spi + ROM3_HIGH, 4, 0x2ffd);
+        assert_eq!(hardware_base(&hw), Some(0x2ffd_0000_0000));
+        // The low bits come from SPIx60[31:26] only.
+        hw.mmio.put(spi + ROM3_LOW, 4, 0xfc00_0003);
+        assert_eq!(hardware_base(&hw), Some(0x2ffd_fc00_0000));
+        // Dell's 0: below 4 GiB, not used.
+        hw.mmio.put(spi + ROM3_HIGH, 4, 0);
+        assert_eq!(hardware_base(&hw), None);
+        hw.mmio.put(spi + ROM3_LOW, 4, u32::MAX);
+        assert_eq!(hardware_base(&hw), None);
+    }
+
+    #[test]
+    fn a_hardware_base_moves_the_rom3_probe_and_addresses() {
+        const ROM3: u64 = 0x2ffd_0000_0000;
+        let moved = |a: u64, buf: &mut [u8]| {
+            let a = if a >= ROM3 {
+                a - ROM3 + BASE
+            } else if a >= BASE {
+                0x1000
+            } else {
+                a
+            };
+            bus(1, Rom3::Linear)(a, buf)
+        };
+        let map = FlashMap::probe_efs_at(ROM3, 1, 2 * HALF, moved);
+        assert_eq!(map.rom3, Rom3::Linear);
+        assert_eq!(map.address(0x60_0000, 0x100), Some(ROM3 + 0x60_0000));
+        // The SP3 base sees nothing there.
+        assert_eq!(FlashMap::probe(1, 2 * HALF, moved).rom3, Rom3::Absent);
     }
 
     #[test]

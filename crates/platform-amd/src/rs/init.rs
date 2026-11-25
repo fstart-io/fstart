@@ -314,7 +314,8 @@ impl<V: Variant> Init for Rs<V> {
         let psp_bar = psp_bar.ok_or("PSP BAR")?;
         // SAFETY: the BAR just mapped, uncached in the identity map; read
         // only.
-        let c2p = unsafe { psp::MmioTransport::new(psp_bar) }.read(psp::mailbox::C2pReg::Cmd);
+        let c2p = unsafe { psp::MmioTransport::new(psp_bar, psp::Variant::Gn) }
+            .read(psp::mailbox::C2pReg::Cmd);
         fstart_log::info!("rs: PSP BAR {:#x}, C2P {:#x}", psp_bar, c2p);
         if c2p == u32::MAX {
             return Err("PSP BAR");
@@ -573,7 +574,7 @@ fn einj<V: Variant>(ctx: &Ctx<'_, Rs<V>>, bar: u64) -> Result<Einj, &'static str
         .ok_or("no ReservedRasEinj hole")?;
     // SAFETY: IOS0's PSP BAR, mapped by `init_fch`; the BSP is the only
     // user of the RAS mailbox until the OS runs.
-    let mailbox = unsafe { Mailbox::mmio(bar) };
+    let mailbox = unsafe { Mailbox::mmio(bar, psp::Variant::Gn) };
     let base = mailbox
         .buffer(&ctx.clock, &(hole.base..hole.end()))
         .map_err(|_| "the PSP's EINJ buffer")?;
@@ -611,10 +612,7 @@ fn psp_session(bar: u32) -> Result<psp::boot::Psp, &'static str> {
     static mut STORAGE: psp::Storage = psp::Storage::new();
     // SAFETY: the BAR `init_fch` mapped, uncached in the identity map; the
     // BSP is the mailbox's one normal-mode user.
-    let mailbox = psp::Mailbox::new(
-        unsafe { psp::MmioTransport::new(bar.into()) },
-        psp::Variant::Gn,
-    );
+    let mailbox = unsafe { psp::Mailbox::mmio(bar.into(), psp::Variant::Gn) };
     // SAFETY: firmware BSS, identity mapped and reserved until reset; this
     // is its only reference (`init_fch` runs once).
     psp::Session::new(mailbox, unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) }).map_err(|_| "PSP")

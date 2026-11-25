@@ -76,6 +76,7 @@ impl Revision {
         LogicalId {
             cpu: Id { family, revision },
             core: None,
+            model: None,
         }
     }
 

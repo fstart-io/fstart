@@ -227,13 +227,17 @@ pub struct IoRoute {
     pub fabric_id: u16,
 }
 
+/// A plan for up to `RB` root bridges, `MMIO` MmioAddress rules and `IO`
+/// X86IO rules: the defaults are the DF2/DF3/DF4 bounds; a fabric with more
+/// (DFv4.5: 16 root bridges, 32 MMIO and 16 I/O pairs) plans with
+/// [`plan_for`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Plan {
+pub struct Plan<const RB: usize = MAX_ROOT_BRIDGES, const MMIO: usize = 16, const IO: usize = 8> {
     /// Sorted by pair.
-    pub mmio: Vec<MmioRoute, 16>,
-    pub io: Vec<IoRoute, 8>,
+    pub mmio: Vec<MmioRoute, MMIO>,
+    pub io: Vec<IoRoute, IO>,
     /// Physical order (as the input).
-    pub root_bridges: Vec<RootBridgePlan, MAX_ROOT_BRIDGES>,
+    pub root_bridges: Vec<RootBridgePlan, RB>,
     pub above_ecam_too_small: bool,
     pub below_ecam_too_small: bool,
     /// Root bridges placed above the ECAM.
@@ -252,10 +256,12 @@ pub enum PlanError {
     IoOverflow,
     /// Bus requests exceed 256 buses.
     BusOverflow,
+    /// More root bridges than the plan holds.
+    TooManyRootBridges,
 }
 
 /// Physical slot of each root bridge: `socket · per_socket + rank by index`.
-fn slots(rbs: &[RootBridge]) -> (u8, Vec<u8, MAX_ROOT_BRIDGES>) {
+fn slots<const N: usize>(rbs: &[RootBridge]) -> (u8, Vec<u8, N>) {
     let per_socket = (0..=1u8)
         .map(|s| rbs.iter().filter(|r| r.socket == s).count())
         .max()
@@ -274,8 +280,8 @@ fn slots(rbs: &[RootBridge]) -> (u8, Vec<u8, MAX_ROOT_BRIDGES>) {
 }
 
 /// Logical order: indices of `rbs` by ascending bus base.
-fn logical(rbs: &[RootBridge]) -> Vec<usize, MAX_ROOT_BRIDGES> {
-    let mut v: Vec<usize, MAX_ROOT_BRIDGES> = (0..rbs.len()).collect();
+fn logical<const N: usize>(rbs: &[RootBridge]) -> Vec<usize, N> {
+    let mut v: Vec<usize, N> = (0..rbs.len()).collect();
     v.sort_unstable_by_key(|&i| (rbs[i].bus_base, rbs[i].socket, rbs[i].index));
     v
 }
@@ -317,7 +323,10 @@ pub fn plan_buses(
     let Some(counts) = policy.bus_counts else {
         return Ok(None);
     };
-    let order = logical(rbs);
+    if rbs.len() > MAX_ROOT_BRIDGES {
+        return Err(PlanError::TooManyRootBridges);
+    }
+    let order: Vec<usize, MAX_ROOT_BRIDGES> = logical(rbs);
     let want = |k: usize| match counts[k] {
         0 => rbs[order[k]].bus_limit as u16 - rbs[order[k]].bus_base as u16 + 1,
         c => c,
@@ -352,16 +361,30 @@ pub fn plan_buses(
 
 /// Plan MMIO and I/O for `input.root_bridges` (with their final buses).
 pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
+    plan_for(input, policy)
+}
+
+/// [`plan`] for a fabric with up to `RB` root bridges, `MMIO` MmioAddress
+/// and `IO` X86IO rules. The algorithm is the same; only the bounds differ.
+/// The per-root-bridge overrides of `policy` ([`Policy::bus_counts`],
+/// [`Policy::io_sizes`]) hold [`MAX_ROOT_BRIDGES`] entries.
+pub fn plan_for<const RB: usize, const MMIO: usize, const IO: usize>(
+    input: &Input,
+    policy: &Policy,
+) -> Result<Plan<RB, MMIO, IO>, PlanError> {
     let rbs = input.root_bridges;
     let n = rbs.len() as u64;
     if n == 0 {
         return Err(PlanError::NoRootBridges);
     }
+    if rbs.len() > RB || (policy.io_sizes.is_some() && rbs.len() > MAX_ROOT_BRIDGES) {
+        return Err(PlanError::TooManyRootBridges);
+    }
     let p = rbs
         .iter()
         .position(|r| r.primary)
         .ok_or(PlanError::NoPrimary)?;
-    let (_, slot) = slots(rbs);
+    let (_, slot) = slots::<RB>(rbs);
     let max_slots = input.mmio_pairs / 2;
     if slot.iter().any(|&s| s >= max_slots) {
         return Err(PlanError::OutOfPairs);
@@ -409,7 +432,7 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
     };
 
     let order = core::iter::once(p).chain((0..rbs.len()).filter(|&i| i != p));
-    let mut below_w: [Window; MAX_ROOT_BRIDGES] = [Window::new(0, 0); MAX_ROOT_BRIDGES];
+    let mut below_w: [Window; RB] = [Window::new(0, 0); RB];
     let mut left = n_above;
     let mut per_below = None;
     for (k, i) in order.enumerate() {
@@ -434,7 +457,7 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
         below_w[i] = Window::new(cursor, size);
     }
 
-    let mut mmio: Vec<MmioRoute, 16> = Vec::new();
+    let mut mmio: Vec<MmioRoute, MMIO> = Vec::new();
     let mut push = |pair: u8, window: Window, fabric_id: u16| {
         mmio.push(MmioRoute {
             pair,
@@ -456,7 +479,9 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
     }
 
     let free = |s: &u8| !slot.contains(s);
-    let second = (n < 8 && ((above_small && above > 0) || (below > 0 && (below_small || n == 1))))
+    // A second below window needs a pair no root bridge takes.
+    let second = (n < u64::from(max_slots)
+        && ((above_small && above > 0) || (below > 0 && (below_small || n == 1))))
         .then(|| (0..max_slots).find(free))
         .flatten()
         .map(|s| {
@@ -497,7 +522,7 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
     } else {
         base4 = input.tom2.max(TIB);
     }
-    let mut above_w: [Option<Window>; MAX_ROOT_BRIDGES] = [None; MAX_ROOT_BRIDGES];
+    let mut above_w: [Option<Window>; RB] = [None; RB];
     if limit > base4 {
         let per_rb = ((limit - base4) / n) & ALIGN_16M;
         let mut cur = base4;
@@ -532,8 +557,8 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
     mmio.sort_unstable_by_key(|r| r.pair);
 
     // I/O, logical order.
-    let order = logical(rbs);
-    let mut io_w: [Option<Window>; MAX_ROOT_BRIDGES] = [None; MAX_ROOT_BRIDGES];
+    let order: Vec<usize, RB> = logical(rbs);
+    let mut io_w: [Option<Window>; RB] = [None; RB];
     match policy.io_sizes {
         None if n == 1 => io_w[p] = Some(Window::new(0, IO_SPACE)),
         None => {
@@ -572,7 +597,10 @@ pub fn plan(input: &Input, policy: &Policy) -> Result<Plan, PlanError> {
             }
         }
     }
-    let io: Vec<IoRoute, 8> = order
+    if order.len() > IO {
+        return Err(PlanError::OutOfPairs);
+    }
+    let io: Vec<IoRoute, IO> = order
         .iter()
         .enumerate()
         .filter_map(|(k, &i)| {

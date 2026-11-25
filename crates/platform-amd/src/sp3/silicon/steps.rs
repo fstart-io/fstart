@@ -362,16 +362,13 @@ pub fn ready_to_boot(
 /// Socket 0's C2P mailbox through its PSP BAR, its one normal-mode owner.
 /// Once per boot: the session's commands use its retained storage.
 pub fn psp(ctx: &Ctx) -> Result<fstart_driver_amd::psp::boot::Psp, &'static str> {
-    use fstart_driver_amd::psp::{Mailbox, MmioTransport, Session, Storage};
+    use fstart_driver_amd::psp::{Mailbox, Session, Storage};
     static mut STORAGE: Storage = Storage::new();
     if ctx.psp_bar == 0 {
         return Err("PSP BAR");
     }
     // SAFETY: the BAR NBIO programmed; the flow owns the mailbox.
-    let mailbox = Mailbox::new(
-        unsafe { MmioTransport::new(ctx.psp_bar) },
-        ctx.generation.into(),
-    );
+    let mailbox = unsafe { Mailbox::mmio(ctx.psp_bar, ctx.generation.into()) };
     // SAFETY: firmware BSS, identity mapped and reserved until reset; the
     // flow's ReadyToBoot is its one user.
     Session::new(mailbox, unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) }).step("PSP BAR")

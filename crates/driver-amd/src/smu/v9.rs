@@ -26,6 +26,7 @@ pub const MAILBOX: Mailbox = Mailbox {
     response: SmnReg::new(0x03b1_0564),
     arguments: SmnReg::new(0x03b1_0598),
     wait_before: true,
+    argument_count: crate::smu::ARGUMENT_COUNT,
 };
 /// No ID range check is known for V9.
 pub const ID_LIMIT: u32 = u32::MAX;

@@ -14,7 +14,20 @@
 //! so one [`Record`] with optional guards covers both. A record writes
 //! `msr = (msr & !clear) | set`. The tables run on every thread (the BSP in
 //! PEI, each AP from its start routine), scopes in order; the first scope
-//! whose predicate fails ends the run.
+//! whose predicate fails ends the run ([`apply_scoped`]).
+//!
+//! openSIL's engine for WH (CCX §2.2, Dell SilVenicePei, instruction-
+//! checked) differs in three ways, which only its table uses:
+//!
+//! - every table whose scope passes runs, a failing one does not stop the
+//!   later ones (`f502e0`, [`apply_every_scope`]);
+//! - the SoC logical-ID guard has a third byte, the model\[3:0\] of the
+//!   matched revision row, `0xff` for any (`f4f4a0`, `f4f5a0`, `f4f790`;
+//!   [`Guard::model`]);
+//! - record type 4 also reads an MSR and applies only if its masked value
+//!   matches (`f4f4a0`; [`MsrTest`]): the table picks MCA banks by their
+//!   MCA_IPID this way. Such records are [`TestedRecord`]s, so that the
+//!   tables of the other generations keep their [`Record`] size.
 
 use fstart_arch::x86::cpu::msr::MsrAccess;
 
@@ -23,11 +36,24 @@ use super::topology::{Scope, Thread};
 use super::x2apic::ApicMode;
 use crate::cpu::Silicon;
 
-/// A logical-ID guard: passes if the family and the revision bits overlap.
+/// A logical-ID guard: passes if the family and the revision bits overlap
+/// and, on WH, the model matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Guard {
     pub family: u32,
     pub revisions: u32,
+    /// WH: the logical ID's model\[3:0\] ([`LogicalId::model`]); `None` (the
+    /// vendor's `0xff`) for any.
+    pub model: Option<u8>,
+}
+
+/// WH record type 4's MSR condition: `rdmsr(msr) & mask == value`. Read
+/// only after the record's other guards passed, as the vendor handler does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MsrTest {
+    pub msr: u32,
+    pub mask: u64,
+    pub value: u64,
 }
 
 /// A platform-flag requirement: any of the bits, or all of them (AGESA's
@@ -86,6 +112,18 @@ pub mod plat {
         /// PEI PCD 0x2d: FEATURE_EXT_ID bit 31 on B0+ (as Rome's PCD 0xbe).
         pub const IBS_31: u32 = 1 << 8;
     }
+
+    /// WH (openSIL GetPlatformFeaturesSil `f4e180`, instruction-checked).
+    /// Its table only uses the APIC-mode bits.
+    pub mod wh {
+        /// AmdApicMode == x2APIC.
+        pub const X2APIC: u32 = 1 << 4;
+        /// AmdApicMode != x2APIC (xAPIC or compatibility).
+        pub const NOT_X2APIC: u32 = 1 << 5;
+        /// CCX input byte 1 is 0 (its default; no record uses the bit and
+        /// the input is not named).
+        pub const INPUT_1_CLEAR: u32 = 1 << 6;
+    }
 }
 
 /// The table policy: what the PCD-driven platform flags select.
@@ -127,6 +165,18 @@ impl PlatformFlags {
             }
         })
     }
+
+    /// The flags WH's engine runs with in APIC mode `apic` and the vendor's
+    /// default inputs (CCX §1: 0x50 x2APIC, 0x60 otherwise).
+    pub const fn wh(apic: ApicMode) -> Self {
+        Self(
+            plat::wh::INPUT_1_CLEAR
+                | match apic {
+                    ApicMode::X2Apic => plat::wh::X2APIC,
+                    ApicMode::XApic | ApicMode::Compatibility => plat::wh::NOT_X2APIC,
+                },
+        )
+    }
 }
 
 /// One table record.
@@ -156,14 +206,37 @@ impl Record {
 
     pub const fn cpu(self, family: u32, revisions: u32) -> Self {
         Self {
-            cpu: Some(Guard { family, revisions }),
+            cpu: Some(Guard {
+                family,
+                revisions,
+                model: None,
+            }),
+            ..self
+        }
+    }
+
+    /// Narrow the CPU guard to logical-ID model `model` (WH). Needs a CPU
+    /// guard: a static table without one does not compile.
+    pub const fn model(self, model: u8) -> Self {
+        let Some(g) = self.cpu else {
+            panic!("model guard without a CPU guard");
+        };
+        Self {
+            cpu: Some(Guard {
+                model: Some(model),
+                ..g
+            }),
             ..self
         }
     }
 
     pub const fn core(self, family: u32, revisions: u32) -> Self {
         Self {
-            core: Some(Guard { family, revisions }),
+            core: Some(Guard {
+                family,
+                revisions,
+                model: None,
+            }),
             ..self
         }
     }
@@ -175,10 +248,17 @@ impl Record {
         }
     }
 
-    /// The guards pass for these IDs and flags (scope aside).
+    /// The guards pass for these IDs and flags (scope and [`MsrTest`]
+    /// aside).
     pub const fn applies(&self, ids: &LogicalId, flags: PlatformFlags) -> bool {
         let cpu = match self.cpu {
-            Some(g) => ids.cpu_is(g.family, g.revisions),
+            Some(g) => {
+                ids.cpu_is(g.family, g.revisions)
+                    && match g.model {
+                        Some(m) => ids.model_is(m),
+                        None => true,
+                    }
+            }
             None => true,
         };
         let core = match self.core {
@@ -196,12 +276,119 @@ impl Record {
     pub const fn update(&self, old: u64) -> u64 {
         (old & !self.clear) | self.set
     }
+
+    /// Run the record on `cpu` if its guards pass; the [`MsrTest`] MSR is
+    /// read last, only when the others passed.
+    fn run<M: MsrAccess + ?Sized>(
+        &self,
+        test: Option<&MsrTest>,
+        cpu: &M,
+        ids: &LogicalId,
+        flags: PlatformFlags,
+    ) {
+        if !self.applies(ids, flags) {
+            return;
+        }
+        if let Some(t) = test
+            && cpu.read(t.msr) & t.mask != t.value
+        {
+            return;
+        }
+        cpu.write(self.msr, self.update(cpu.read(self.msr)));
+    }
+}
+
+/// A [`Record`] with WH's MSR test (record type 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TestedRecord {
+    pub record: Record,
+    pub msr_test: Option<MsrTest>,
+}
+
+impl TestedRecord {
+    pub const fn new(scope: Scope, msr: u32, clear: u64, set: u64) -> Self {
+        Self {
+            record: Record::new(scope, msr, clear, set),
+            msr_test: None,
+        }
+    }
+
+    pub const fn cpu(self, family: u32, revisions: u32) -> Self {
+        Self {
+            record: self.record.cpu(family, revisions),
+            ..self
+        }
+    }
+
+    /// As [`Record::model`].
+    pub const fn model(self, model: u8) -> Self {
+        Self {
+            record: self.record.model(model),
+            ..self
+        }
+    }
+
+    pub const fn core(self, family: u32, revisions: u32) -> Self {
+        Self {
+            record: self.record.core(family, revisions),
+            ..self
+        }
+    }
+
+    pub const fn platform(self, platform: Platform) -> Self {
+        Self {
+            record: self.record.platform(platform),
+            ..self
+        }
+    }
+
+    /// Apply only if `rdmsr(msr) & mask == value` (WH record type 4).
+    pub const fn msr_test(self, msr: u32, mask: u64, value: u64) -> Self {
+        Self {
+            msr_test: Some(MsrTest { msr, mask, value }),
+            ..self
+        }
+    }
+}
+
+impl core::ops::Deref for TestedRecord {
+    type Target = Record;
+    fn deref(&self) -> &Record {
+        &self.record
+    }
+}
+
+/// A table entry the engine runs: a [`Record`], or a [`TestedRecord`].
+pub trait Entry {
+    fn record(&self) -> &Record;
+    fn msr_test(&self) -> Option<&MsrTest> {
+        None
+    }
+}
+
+impl Entry for Record {
+    fn record(&self) -> &Record {
+        self
+    }
+}
+
+impl Entry for TestedRecord {
+    fn record(&self) -> &Record {
+        &self.record
+    }
+    fn msr_test(&self) -> Option<&MsrTest> {
+        self.msr_test.as_ref()
+    }
+}
+
+fn run<E: Entry, M: MsrAccess + ?Sized>(e: &E, cpu: &M, ids: &LogicalId, flags: PlatformFlags) {
+    e.record().run(e.msr_test(), cpu, ids, flags);
 }
 
 /// The phase-1 table of `generation`, if its feature is built.
-pub fn apply<M: MsrAccess + ?Sized>(
+pub fn apply<E: Entry, M: MsrAccess + ?Sized>(
     cpu: &M,
-    table: &[Record],
+    table: &[E],
     thread: &Thread,
     ids: &LogicalId,
     flags: PlatformFlags,
@@ -211,18 +398,33 @@ pub fn apply<M: MsrAccess + ?Sized>(
 
 /// [`apply`] for a die whose threads are in a scope by `in_scope`.
 #[inline(always)]
-pub fn apply_scoped<M: MsrAccess + ?Sized>(
+pub fn apply_scoped<E: Entry, M: MsrAccess + ?Sized>(
     cpu: &M,
-    table: &[Record],
+    table: &[E],
     in_scope: impl Fn(Scope) -> bool,
     ids: &LogicalId,
     flags: PlatformFlags,
 ) {
     table
         .iter()
-        .take_while(|r| in_scope(r.scope))
-        .filter(|r| r.applies(ids, flags))
-        .for_each(|r| cpu.write(r.msr, r.update(cpu.read(r.msr))));
+        .take_while(|r| in_scope(r.record().scope))
+        .for_each(|r| run(r, cpu, ids, flags));
+}
+
+/// WH's engine: every record whose scope passes, in order; a failing
+/// scope skips its records only. A table's records are grouped by scope,
+/// so this is the vendor's per-table selection.
+pub fn apply_every_scope<E: Entry, M: MsrAccess + ?Sized>(
+    cpu: &M,
+    table: &[E],
+    in_scope: impl Fn(Scope) -> bool,
+    ids: &LogicalId,
+    flags: PlatformFlags,
+) {
+    table
+        .iter()
+        .filter(|r| in_scope(r.record().scope))
+        .for_each(|r| run(r, cpu, ids, flags));
 }
 
 #[cfg(test)]
@@ -230,7 +432,7 @@ mod tests {
     use super::*;
     use crate::ccx::logical::{gn, ssp};
     use crate::cpu::Revision;
-    use fstart_arch::x86::cpu::msr::testing::MsrSpace;
+    use fstart_arch::x86::cpu::msr::testing::{MsrModel, MsrSpace};
 
     const TABLE: &[Record] = &[
         Record::new(Scope::Thread, 0x10, 0xff, 0x01),
@@ -263,6 +465,66 @@ mod tests {
             sibling.writes.iter().map(|w| w.0).collect::<Vec<_>>(),
             [0x10, 0x11, 0x12]
         );
+    }
+
+    /// WH's engine: a failing scope skips its records only; the model and
+    /// MSR-test guards.
+    #[test]
+    fn wh_engine() {
+        const WH: &[TestedRecord] = &[
+            TestedRecord::new(Scope::Thread, 0x10, 0x1, 0x1),
+            TestedRecord::new(Scope::Core, 0x20, 0x1, 0x1),
+            TestedRecord::new(Scope::Complex, 0x30, 0x1, 0x1),
+            TestedRecord::new(Scope::Complex, 0x31, 0x1, 0x1)
+                .cpu(0x0f00_0000, 0x3)
+                .model(0),
+            TestedRecord::new(Scope::Complex, 0x32, 0x1, 0x1)
+                .cpu(0x0f00_0000, 0x3)
+                .model(8),
+            TestedRecord::new(Scope::Thread, 0x40, 0x2, 0x2)
+                .cpu(0x0f00_0000, 0x3)
+                .msr_test(0x41, 0xff00, 0x1200),
+            TestedRecord::new(Scope::Thread, 0x50, 0x2, 0x2).msr_test(0x51, 0xff00, 0x1200),
+        ];
+        // The other generations' records keep their size.
+        assert_eq!(size_of::<Record>(), 56);
+        let ids = LogicalId {
+            model: Some(0),
+            ..crate::ccx::wh::Revision::from_signature(0x00b5_0f00)
+                .unwrap()
+                .logical_id()
+                .unwrap()
+        };
+        let cpu = MsrSpace::new([(0x41, 0x12ff), (0x51, 0x1300)]);
+        let not_core = |s| s != Scope::Core;
+        apply_every_scope(&cpu, WH, not_core, &ids, PlatformFlags(0));
+        let regs = cpu.into_inner();
+        assert!(regs.written(0x10) && !regs.written(0x20));
+        assert!(regs.written(0x30), "the complex table still runs");
+        assert!(regs.written(0x31) && !regs.written(0x32), "model guard");
+        assert_eq!(regs.get(0x40), 0x2);
+        assert!(!regs.written(0x50), "MSR test failed");
+
+        // The SP3 engine stops at the failing scope.
+        let cpu = MsrSpace::new([]);
+        apply_scoped(&cpu, WH, not_core, &ids, PlatformFlags(0));
+        assert!(!cpu.into_inner().written(0x30));
+
+        // The MSR test is read only when the other guards pass.
+        struct Reads(std::vec::Vec<u32>);
+        impl MsrModel for Reads {
+            fn read(&mut self, index: u32) -> u64 {
+                self.0.push(index);
+                0x1200
+            }
+            fn write(&mut self, _: u32, _: u64) {}
+        }
+        let cpu = core::cell::RefCell::new(Reads(std::vec::Vec::new()));
+        let sp3 = LogicalId::of(Revision::GnB1);
+        apply_every_scope(&cpu, &WH[5..6], |_| true, &sp3, PlatformFlags(0));
+        assert!(cpu.borrow().0.is_empty());
+        apply_every_scope(&cpu, &WH[5..6], |_| true, &ids, PlatformFlags(0));
+        assert_eq!(cpu.into_inner().0, [0x41, 0x40]);
     }
 
     #[test]

@@ -14,6 +14,15 @@
 //! The PSP opens the service only for RasEinj ENABLE ([`RasEinj`]) from
 //! SMM, with the SMM flag set: from normal mode it answers status 11h, and
 //! `MP0_C2PMSG_31` reads all-ones until then.
+//!
+//! The WH PSP (Venice) runs the same service with its mailbox moved with
+//! the rest of its C2P registers ([`mailbox_offset`]: `PSP_BAR + 1097Ch`,
+//! Dell AmdPlatformRasWhDxe `0x1f570`) and a larger buffer ([`WhBuffer`]:
+//! the EINJv2 error types at `+0Ch`, the vendor error type extension at
+//! `+180h`), and an EINJ table of revision 2 with an eleventh action,
+//! EINJv2 GET_ERROR_TYPE ([`entries_wh`]; `ApeiEinjInstallBuffer`, Dell
+//! `0x1fa70`, template at `0xc06d0`). The vendor takes the buffer's
+//! address from the PSP without checking it against an APOB hole.
 
 use core::ops::Range;
 use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
@@ -42,6 +51,11 @@ register_bitfields![u32,
         /// The vendor-defined types of [`VendorExtension`] are supported.
         VENDOR OFFSET(31) NUMBITS(1) []
     ],
+    /// WH: EINJv2 GET_ERROR_TYPE's answer at `+0Ch`.
+    pub EINJV2_TYPES [
+        /// EINJv2 is supported: the action reads this register.
+        SUPPORTED OFFSET(31) NUMBITS(1) []
+    ],
     /// The command word BEGIN_OPERATION and the status actions use.
     pub COMMAND [
         BUSY OFFSET(0) NUMBITS(1) [],
@@ -58,6 +72,17 @@ register_bitfields![u32,
 
 /// `MP0_C2PMSG_31` in the PSP BAR (PSP_BASE + `1057Ch`, `ApeiEinjInstall`).
 pub const MAILBOX_OFFSET: u64 = 0x1_057c;
+/// WH `MP0_C2PMSG_31` in the PSP BAR (`psp_base + 0x1097c`, Dell
+/// AmdPlatformRasWhDxe `0x1f570`).
+pub const MAILBOX_OFFSET_WH: u64 = 0x1_097c;
+
+/// `MP0_C2PMSG_31` of the `generation` PSP in its BAR.
+pub const fn mailbox_offset(generation: Variant) -> u64 {
+    match generation {
+        Variant::Wh => MAILBOX_OFFSET_WH,
+        Variant::Zp | Variant::Rv | Variant::Ssp | Variant::Gn => MAILBOX_OFFSET,
+    }
+}
 /// EXECUTE_OPERATION's write: command 4, data 83h (the vendor template).
 pub const EXECUTE: u32 = 0x0004_0083;
 /// Commands 0..=3 return bits `16n..16n+16` of the buffer's address.
@@ -74,7 +99,8 @@ register_structs! {
         (0x004 => _reserved0),
         /// SET_ERROR_TYPE.
         (0x008 => pub error_type: MmioReadWrite<u32>),
-        (0x00c => _reserved1),
+        /// WH: EINJv2 GET_ERROR_TYPE (reserved on the RS PSP).
+        (0x00c => pub einj_v2_types: MmioReadOnly<u32, EINJV2_TYPES::Register>),
         /// BEGIN writes 1; CHECK_BUSY_STATUS and GET_COMMAND_STATUS read it.
         (0x010 => pub command: MmioReadWrite<u32, COMMAND::Register>),
         (0x014 => _reserved2),
@@ -120,6 +146,76 @@ register_structs! {
         (0x10 => pub psp: [MmioReadWrite<u32>; 2]),
         (0x18 => pub oem: [MmioReadWrite<u32>; 5]),
         (0x2c => @END),
+    },
+
+    /// The WH PSP's command buffer: the RS layout, then the vendor error
+    /// type extension at `+180h` (`ApeiEinjInstallBuffer`, Dell
+    /// `0x1fa70`), which the PSP's own vendor error section and logs
+    /// follow (`+190h` on) up to its length, 4 KiB from the start.
+    pub WhBuffer {
+        (0x000 => pub base: Buffer),
+        (0x108 => _reserved0),
+        (0x180 => pub vendor_extension: WhVendorExtension),
+        (0x190 => _psp),
+        (0x1000 => @END),
+    },
+
+    /// The head of the WH vendor error type extension, the fields the
+    /// vendor writes.
+    pub WhVendorExtension {
+        (0x00 => pub length: MmioReadWrite<u32>),
+        (0x04 => pub sbdf: MmioReadWrite<u32, SBDF::Register>),
+        (0x08 => pub vendor_id: MmioReadWrite<u16>),
+        (0x0a => pub device_id: MmioReadWrite<u16>),
+        (0x0c => pub revision: MmioReadWrite<u8>),
+        (0x0d => _reserved),
+        (0x10 => @END),
+    }
+}
+
+/// What the WH vendor writes into the extension when the PSP offers
+/// vendor types: its length (to the end of the 4 KiB buffer), 00:18.0,
+/// AMD's vendor ID, the device ID and revision it names (constants in
+/// `0x1fa70`; not compared with 00:18.0's own ID here).
+pub const WH_VENDOR_EXTENSION_LENGTH: u32 = 0xe80;
+pub const WH_VENDOR_DEVICE_ID: u16 = 0x12c8;
+pub const WH_VENDOR_REVISION: u8 = 0x10;
+
+/// GET_ERROR_TYPE's and EINJv2 GET_ERROR_TYPE's answers.
+pub type WhTypes = (
+    LocalRegisterCopy<u32, ERROR_TYPES::Register>,
+    LocalRegisterCopy<u32, EINJV2_TYPES::Register>,
+);
+
+impl WhBuffer {
+    /// The WH command buffer at `address`.
+    ///
+    /// # Safety
+    /// As [`Buffer::at`], for the 4 KiB of a [`WhBuffer`].
+    pub unsafe fn at(address: u64) -> &'static Self {
+        // SAFETY: the caller's contract.
+        unsafe { &*(address as *const Self) }
+    }
+
+    /// Lay the buffer out as `ApeiEinjInstallBuffer` leaves it: the RS
+    /// layout ([`Buffer::prepare`]), and with vendor types the extension
+    /// head and the parameters pointing at it. Returns the error types and
+    /// the EINJv2 types.
+    pub fn prepare(&self, trigger: &[u8]) -> Result<WhTypes, Error> {
+        let types = self.base.prepare(trigger)?;
+        if types.is_set(ERROR_TYPES::VENDOR) {
+            let e = &self.vendor_extension;
+            e.length.set(WH_VENDOR_EXTENSION_LENGTH);
+            e.sbdf.write(SBDF::DEVICE.val(0x18) + SBDF::FUNCTION.val(0));
+            e.vendor_id.set(0x1022);
+            e.device_id.set(WH_VENDOR_DEVICE_ID);
+            e.revision.set(WH_VENDOR_REVISION);
+            self.base.parameters.vendor_extension_offset.set(
+                (core::mem::offset_of!(WhBuffer, vendor_extension)
+                    - core::mem::offset_of!(Buffer, parameters)) as u32,
+            );
+        }
+        Ok((types, self.base.einj_v2_types.extract()))
     }
 }
 
@@ -206,8 +302,10 @@ impl RasEinj {
 impl Command for RasEinj {
     const ID: u8 = 0x41;
     const NAME: &'static str = "RasEinj";
+    /// WH: AmdPlatformRasWhSmm `PspMboxBiosRasEinj` (`0x5a0f0`, the same
+    /// 0Ch buffer and action, sent with the SMM flag).
     fn supported(generation: Variant) -> bool {
-        generation == Variant::Gn
+        matches!(generation, Variant::Gn | Variant::Wh)
     }
 }
 
@@ -234,14 +332,15 @@ pub struct Mailbox<R> {
 }
 
 impl Mailbox<&'static MmioReadWrite<u32, RAS_MBOX::Register>> {
-    /// The RAS mailbox of the PSP whose BAR is mapped at `bar`.
+    /// The RAS mailbox of the `generation` PSP whose BAR is mapped at
+    /// `bar` (the generation places it: [`mailbox_offset`]).
     ///
     /// # Safety
     /// `bar` is an enabled PSP BAR, identity mapped and uncached, and the
     /// caller is the only user of the RAS mailbox.
-    pub unsafe fn mmio(bar: u64) -> Self {
+    pub unsafe fn mmio(bar: u64, generation: Variant) -> Self {
         // SAFETY: the caller's contract; a dword-aligned MMIO register.
-        Self::new(unsafe { &*((bar + MAILBOX_OFFSET) as *const MmioReadWrite<u32, _>) })
+        Self::new(unsafe { &*((bar + mailbox_offset(generation)) as *const MmioReadWrite<u32, _>) })
     }
 }
 
@@ -288,14 +387,19 @@ where
     /// The command buffer, which must be in the ABL's `ReservedRasEinj`
     /// hole, all of it, and aligned as a [`Buffer`] ([`Buffer::at`]).
     pub fn buffer(&self, timer: &impl Timer, reserved: &Range<u64>) -> Result<u64, Error> {
+        self.buffer_of::<Buffer>(timer, reserved)
+    }
+
+    /// [`Self::buffer`] for a buffer laid out as `B` ([`WhBuffer`]).
+    pub fn buffer_of<B>(&self, timer: &impl Timer, reserved: &Range<u64>) -> Result<u64, Error> {
         let mut address = 0;
         for word in 0..ADDRESS_WORDS {
             address |= u64::from(self.request(timer, word, 0)?) << (16 * word);
         }
         if address < reserved.start
-            || !address.is_multiple_of(align_of::<Buffer>() as u64)
+            || !address.is_multiple_of(align_of::<B>() as u64)
             || address
-                .checked_add(size_of::<Buffer>() as u64)
+                .checked_add(size_of::<B>() as u64)
                 .is_none_or(|end| end > reserved.end)
         {
             return Err(Error::Placement(address));
@@ -387,6 +491,30 @@ pub fn entries(mailbox: u64, buffer: u64) -> [fstart_acpi::einj::Entry; 10] {
             u64::MAX,
         ),
     ]
+}
+
+/// The WH EINJ actions over the [`WhBuffer`] at `buffer` and the RAS
+/// mailbox at `mailbox`: [`entries`], then EINJv2 GET_ERROR_TYPE reading
+/// `+0Ch` if the PSP supports it (`v2`), a NOOP otherwise (the vendor
+/// template's eleventh entry, `0xc0840`). Publish them in a revision-2
+/// table (`fstart_acpi::einj::table_revision`).
+#[cfg(feature = "acpi")]
+pub fn entries_wh(mailbox: u64, buffer: u64, v2: bool) -> [fstart_acpi::einj::Entry; 11] {
+    use core::mem::offset_of;
+    use fstart_acpi::einj::{Action, Entry, Instruction, Register};
+    let common = entries(mailbox, buffer);
+    let einj_v2 = Entry::new(
+        Action::Einjv2GetErrorType,
+        if v2 {
+            Instruction::ReadRegister
+        } else {
+            Instruction::Noop
+        },
+        Register::memory(buffer + offset_of!(Buffer, einj_v2_types) as u64, 32),
+        0,
+        0xffff_ffff,
+    );
+    core::array::from_fn(|i| common.get(i).copied().unwrap_or(einj_v2))
 }
 
 /// The trigger action table's one entry, which firmware writes at
@@ -499,10 +627,66 @@ mod tests {
     }
 
     #[test]
+    fn wh_buffer_follows_the_vendor() {
+        use core::mem::offset_of;
+        assert_eq!(mailbox_offset(Variant::Wh), 0x1_097c);
+        assert_eq!(mailbox_offset(Variant::Gn), MAILBOX_OFFSET);
+        assert_eq!(offset_of!(Buffer, einj_v2_types), 0x0c);
+        assert_eq!(offset_of!(WhBuffer, vendor_extension), 0x180);
+        assert_eq!(size_of::<WhBuffer>(), 0x1000);
+
+        let mut memory = [0xa5a5_a5a5_a5a5_a5a5u64; 0x1000 / 8];
+        // Vendor types; EINJv2 offered.
+        memory[0] = 0x8000_01f8;
+        memory[1] = 0x8000_0001_0000_0000;
+        let base = memory.as_mut_ptr() as u64;
+        // SAFETY: host memory of the buffer's size and alignment.
+        let buffer = unsafe { WhBuffer::at(base) };
+        let (types, v2) = buffer.prepare(&[0x5a; 0x30]).unwrap();
+        assert!(types.is_set(ERROR_TYPES::VENDOR));
+        assert!(v2.is_set(EINJV2_TYPES::SUPPORTED));
+        let bytes: &[u8] = zerocopy::IntoBytes::as_bytes(&memory[..]);
+        let dword =
+            |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        // Parameters cleared but for the extension's offset, 150h.
+        assert_eq!(dword(0x34), 0x150);
+        assert_eq!([dword(0x30), dword(0x38), dword(0x50)], [0, 0, 0]);
+        assert_eq!(
+            [dword(0x180), dword(0x184), dword(0x188)],
+            [0xe80, 0xc000, 0x12c8_1022]
+        );
+        assert_eq!(bytes[0x18c], 0x10);
+        // The bytes after it stay the PSP's.
+        assert_eq!(bytes[0x18d], 0xa5);
+        assert_eq!(dword(0x190), 0xa5a5_a5a5);
+
+        // No vendor types: no extension.
+        let mut memory = [0u64; 0x1000 / 8];
+        let base = memory.as_mut_ptr() as u64;
+        // SAFETY: as above.
+        let (types, v2) = unsafe { WhBuffer::at(base) }.prepare(&[]).unwrap();
+        assert!(!types.is_set(ERROR_TYPES::VENDOR) && !v2.is_set(EINJV2_TYPES::SUPPORTED));
+        assert!(memory[0x180 / 8..].iter().all(|q| *q == 0));
+        assert_eq!(memory[0x30 / 8], 0);
+    }
+
+    #[cfg(feature = "acpi")]
+    #[test]
+    fn wh_actions_add_einj_v2() {
+        let e = entries_wh(0xd031_097c, 0x1000, true);
+        assert_eq!(e[5].bytes()[8..16], 0xd031_097cu64.to_le_bytes());
+        let v2 = e[10].bytes();
+        assert_eq!(v2[..8], [0x11, 0, 0, 0, 0, 32, 0, 3]);
+        assert_eq!(v2[8..16], 0x100cu64.to_le_bytes());
+        assert_eq!(entries_wh(0, 0x1000, false)[10].bytes()[1], 4, "NOOP");
+    }
+
+    #[test]
     fn ras_einj_is_a_twelve_byte_enable() {
         let buffer = super::super::C2pBuffer::new(RasEinj::ENABLE);
         assert_eq!(buffer.header.size, 12);
         assert!(RasEinj::supported(Variant::Gn));
+        assert!(RasEinj::supported(Variant::Wh));
         assert!(!RasEinj::supported(Variant::Ssp));
     }
 

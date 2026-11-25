@@ -54,6 +54,7 @@ pub mod topology;
 pub mod v2;
 pub mod v3;
 pub mod v4;
+pub mod wh;
 pub mod zp;
 pub use die::{Die, die_count, dies, root_bridges};
 pub use fabric::{Fabric, or_bits};

@@ -76,9 +76,14 @@ register_bitfields![u32,
         ENABLE OFFSET(31) NUMBITS(1) []
     ],
     pub NbProgDeviceRemap [DEVFN OFFSET(0) NUMBITS(8) []],
+    /// IOHC_BRIDGE_CNTL (`0x13B3_1004 + bridge * 0x400`, 32-bit).
     pub IohcBridgeCntl [
         BRIDGE_DIS OFFSET(0) NUMBITS(1) [],
         CFG_DIS OFFSET(2) NUMBITS(1) [],
+        /// WH: the MPIO port descriptor's byte `0x7B` bit 0
+        /// (`MpioControlPortsWh` `0xf66b80`); meaning unknown, reserved on
+        /// the older IOHCs, which leave it.
+        PORT_7B OFFSET(5) NUMBITS(1) [],
         CRS_ENABLE OFFSET(18) NUMBITS(1) []
     ],
     pub IohcRbBusRoute [

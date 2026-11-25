@@ -116,7 +116,8 @@ const USB2_TUNE2: UsbReg<Usb2Tune2::Register> = UsbReg::new(1, 0x11_c004);
 const USB3_1242D8: UsbReg<Usb3Word::Register> = UsbReg::new(2, 0x12_42d8);
 const USB3_12C064: UsbReg<Usb3Nibble::Register> = UsbReg::new(2, 0x12_c064);
 const USB3_13004C: UsbReg<Usb3Word::Register> = UsbReg::new(2, 0x13_004c);
-const USB3_TUNE: UsbReg<Usb3Tune::Register> = UsbReg::new(2, 0x12_0088);
+/// Songshan's USB3 PHY 4-field tuning register ([`Version::usb3_tune`]).
+const USB3_TUNE_SONGSHAN: u32 = 0x12_0088;
 pub const GUARD: SmnReg<Guard::Register> = SmnReg::new(0x0381_0a84);
 pub const VISIBILITY: [SmnReg<Visibility::Register>; 2] =
     [SmnReg::new(0x1033_4800), SmnReg::new(0x1013_4800)];
@@ -124,6 +125,32 @@ pub const VISIBILITY: [SmnReg<Visibility::Register>; 2] =
 /// IOS 2, as the vendor DXE of Siena (FchSongshanDxe) and Genoa
 /// (FchSongshanMultiFchDxe) and openSIL's `FchSNXhciIohcPmeDisable` set it.
 const PME_BANKS: [u32; 2] = [0, 0x20_0000];
+
+/// How the debug-pipe switch reaches the controllers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugPipe {
+    /// One operation `D0h` message, the switch in selector bit 0 (Songshan).
+    Single,
+    /// One operation `F5h` message per controller, its controller bit
+    /// inverted, the controller's switch in the low selector bits (Qilian:
+    /// `0xF5 << 24 | (!ctrl & 1) << 20 | DbgSC[ctrl]`).
+    PerController,
+}
+
+/// What a version of these xHCIs differs in; the messages, their order and
+/// the other registers are the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Version {
+    /// Offset (space 2) of the USB3 PHY's 4-field tuning register.
+    pub usb3_tune: u32,
+    pub debug_pipe: DebugPipe,
+}
+
+/// Songshan's.
+pub const SONGSHAN: Version = Version {
+    usb3_tune: USB3_TUNE_SONGSHAN,
+    debug_pipe: DebugPipe::Single,
+};
 
 /// Semantic tuning coefficients, not a packed vendor structure or pointer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,8 +204,13 @@ pub struct ColdBoot {
 }
 impl ColdBoot {
     /// Validate the complete message stream before the first hardware
-    /// access.
+    /// access (Songshan's).
     pub fn new(policy: &Policy) -> Result<Self, Error> {
+        Self::for_version(policy, &SONGSHAN)
+    }
+
+    /// [`Self::new`] for the xHCIs of `version`.
+    pub fn for_version(policy: &Policy, version: &Version) -> Result<Self, Error> {
         if !policy.enabled.iter().any(|&e| e) || policy.device_removable & !0x000f000f != 0 {
             return Err(Error::Policy);
         }
@@ -187,10 +219,24 @@ impl ColdBoot {
             enabled: policy.enabled,
             attempted: false,
         };
-        let selector = (Selector::OPERATION.val(0xd0)
-            + Selector::DEBUG_PIPE.val(policy.debug_pipe_switch.into()))
-        .modify(0);
-        this.push(0, 0, 0, selector, false)?;
+        let switch = Selector::DEBUG_PIPE.val(policy.debug_pipe_switch.into());
+        match version.debug_pipe {
+            DebugPipe::Single => this.push(
+                0,
+                0,
+                0,
+                (Selector::OPERATION.val(0xd0) + switch).modify(0),
+                false,
+            )?,
+            DebugPipe::PerController => {
+                for c in 0..2u32 {
+                    let selector =
+                        Selector::OPERATION.val(0xf5) + Selector::CONTROLLER.val(!c & 1) + switch;
+                    this.push(0, 0, 0, selector.modify(0), false)?;
+                }
+            }
+        }
+        let usb3_tune = UsbReg::<Usb3Tune::Register>::new(2, version.usb3_tune);
         for (c, &map) in policy.over_current.iter().enumerate() {
             this.update(c, OVER_CURRENT, OverCurrent::MAP.val(map.into()))?;
         }
@@ -264,7 +310,7 @@ impl ColdBoot {
                     this.update(c, USB3_13004C, Usb3Word::VALUE.val(t.word_13004c.into()))?;
                     this.update(
                         c,
-                        USB3_TUNE,
+                        usb3_tune,
                         Usb3Tune::A.val(t.low_120088.into())
                             + Usb3Tune::B.val(t.low_bit_120088.into())
                             + Usb3Tune::C.val(t.mid_120088.into())

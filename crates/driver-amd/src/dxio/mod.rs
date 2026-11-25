@@ -45,6 +45,7 @@ pub mod ports;
 pub mod rs;
 pub mod rv;
 pub mod ssp;
+pub mod wh;
 #[rustfmt::skip]
 pub mod tables;
 pub mod wire;

@@ -96,7 +96,7 @@ mod handler {
     use fstart_driver_amd::psp::Variant;
     use fstart_driver_amd::psp::command::SmmInfo;
     use fstart_driver_amd::psp::einj::RasEinj;
-    use fstart_driver_amd::psp::mailbox::{Mailbox, MmioTransport};
+    use fstart_driver_amd::psp::mailbox::Mailbox;
     use fstart_smm::SmmContext;
 
     /// CPU-local work on every CPU that enters SMM, before the
@@ -183,10 +183,7 @@ mod handler {
     #[inline(never)]
     fn psp(config: &Config, timer: &Tsc, report: *mut Report) {
         // SAFETY: the PSP BAR the boot flow mapped below 4 GiB.
-        let mailbox = Mailbox::new(
-            unsafe { MmioTransport::new(config.psp_bar.into()) },
-            Variant::Gn,
-        );
+        let mailbox = unsafe { Mailbox::mmio(config.psp_bar.into(), Variant::Gn) };
         let Some(registered) = smm_psp::register(&mailbox, timer, |info| SmmInfo {
             reserved: Default::default(),
             ..info

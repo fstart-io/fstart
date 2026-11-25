@@ -335,6 +335,18 @@ pub fn enable<H: super::FchHw>(fch: &H, config: &Config) {
     let acpi = fch.acpi();
     acpi.at(PM_ACPI_SMI_CMD).set(APM_CNT);
     set_route(acpi, source::SMI_CMD, Route::Smi);
+    route_sleep(acpi);
+    (0..source::GEVENTS)
+        .filter(|gevent| config.gevents & 1 << gevent != 0)
+        .for_each(|gevent| set_route(acpi, source::gevent(gevent), Route::Smi));
+    super::sx::acpi_mode(fch, &config.ports, false);
+    clear_all(acpi);
+    init(acpi);
+}
+
+/// The OS's SLP_TYP write to SMI, the FCH holding the sleep entry for
+/// the SMM handler (`Handler::sleep`), which takes it over.
+pub fn route_sleep<W: Window>(acpi: &W) {
     // SMI on SlpTyp requires sending SMI before completion response of
     // the I/O write; the SMM handler takes over the sleep entry.
     acpi.at(PM_PCI_CONTROL)
@@ -342,12 +354,6 @@ pub fn enable<H: super::FchHw>(fch: &H, config: &Config) {
     acpi.at(PM_RESET_CONTROL1)
         .modify(ResetControl1::SLP_TYPE_EN::CLEAR);
     set_route(acpi, source::SLP_TYP, Route::Smi);
-    (0..source::GEVENTS)
-        .filter(|gevent| config.gevents & 1 << gevent != 0)
-        .for_each(|gevent| set_route(acpi, source::gevent(gevent), Route::Smi));
-    super::sx::acpi_mode(fch, &config.ports, false);
-    clear_all(acpi);
-    init(acpi);
 }
 
 /// The SMI command port and the PSP's SMI ([`route_psp`]) only, for a

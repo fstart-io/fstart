@@ -13,8 +13,17 @@
 //! (sp5 `reports/PSP_SMM_ABI.md` §2). Neither the SPI NV, the RPMC nor
 //! the ARS service is implemented: they get the donors' RPMC answer,
 //! "unsupported".
+//!
+//! The WH PSP's handler (Dell AmdPspP2CmboxV2Mcm `0x1710`, check
+//! `0x1650`, dispatch `0x3df0`; decompiler) knows 0x81–0x86, 0x88–0x8b
+//! and 0x8d (0x8b an asynchronous request, sub-command 70h the runtime
+//! PPR, 0x8d a PPR entry update), takes a command buffer up to 1FF0h
+//! bytes and checks the PSP's checksum before it dispatches (2 if it is
+//! wrong); a service that fails answers 4 ([`answer_of`]).
 
 use fstart_core::mmio::{read8, read32, write32};
+
+use super::Variant;
 
 /// Dword indices of the buffer.
 pub const COMMAND: usize = 0;
@@ -36,6 +45,10 @@ pub const MAX_SIZE: u32 = super::command::P2C_BUFFER_SIZE as u32 - 8;
 pub const OK: u32 = 0;
 pub const INVALID: u32 = 1;
 pub const UNSUPPORTED: u32 = 4;
+/// WH: the PSP's checksum over the command buffer does not match.
+pub const CHECKSUM_MISMATCH: u32 = 2;
+/// WH: the largest command buffer its handler takes (`0x1650`).
+pub const MAX_SIZE_WH: u32 = 0x1ff0;
 
 /// Idle and ready, before SmmInfo registers the buffer.
 ///
@@ -77,23 +90,64 @@ pub unsafe fn ready(buffer: *mut u32) {
 #[inline(always)]
 pub unsafe fn answer(buffer: *mut u32, writeback: unsafe fn(), acknowledge: impl FnOnce()) -> u32 {
     // SAFETY: the caller's contract.
+    unsafe { answer_of(Variant::Gn, buffer, writeback, acknowledge) }
+}
+
+/// The byte sum of the command buffer's `size` bytes.
+///
+/// # Safety
+/// As [`ready`], `size` checked against the buffer.
+#[inline(always)]
+unsafe fn checksum(buffer: *mut u32, size: u32) -> u8 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        let bytes = buffer.add(SIZE).cast::<u8>();
+        (0..size as usize)
+            .map(|i| read8(bytes.add(i)))
+            .fold(0u8, u8::wrapping_add)
+    }
+}
+
+/// [`answer`] by the rules of the `generation` PSP's handler: WH's (see
+/// the module documentation), the others' as [`answer`].
+///
+/// # Safety
+/// As [`answer`].
+#[inline(always)]
+pub unsafe fn answer_of(
+    generation: Variant,
+    buffer: *mut u32,
+    writeback: unsafe fn(),
+    acknowledge: impl FnOnce(),
+) -> u32 {
+    // SAFETY: the caller's contract.
     unsafe {
         let flags = read32(buffer.add(FLAGS)) & !READY;
         write32(buffer.add(FLAGS), flags);
         let size = read32(buffer.add(SIZE));
         let command = read32(buffer.add(COMMAND));
-        let status = match command {
-            _ if size > MAX_SIZE => INVALID,
-            0x81 | 0x82 => OK,
-            0x83..=0x86 | 0x88..=0x8a => UNSUPPORTED,
-            _ => INVALID,
+        let status = match generation {
+            Variant::Wh => match command {
+                0x81..=0x86 | 0x88..=0x8b | 0x8d if size > MAX_SIZE_WH => INVALID,
+                0x81..=0x86 | 0x88..=0x8b | 0x8d
+                    if flags & CHECKSUM != 0 && checksum(buffer, size) != flags as u8 =>
+                {
+                    CHECKSUM_MISMATCH
+                }
+                0x81 | 0x82 => OK,
+                0x83..=0x86 | 0x88..=0x8b | 0x8d => UNSUPPORTED,
+                _ => INVALID,
+            },
+            Variant::Zp | Variant::Rv | Variant::Ssp | Variant::Gn => match command {
+                _ if size > MAX_SIZE => INVALID,
+                0x81 | 0x82 => OK,
+                0x83..=0x86 | 0x88..=0x8a => UNSUPPORTED,
+                _ => INVALID,
+            },
         };
         write32(buffer.add(STATUS), status);
         if status == OK && flags & CHECKSUM != 0 {
-            let bytes = buffer.add(SIZE).cast::<u8>();
-            let sum = (0..size as usize)
-                .map(|i| read8(bytes.add(i)))
-                .fold(0u8, u8::wrapping_add);
+            let sum = checksum(buffer, size);
             write32(buffer.add(FLAGS), flags & !0xff | u32::from(sum));
         }
         writeback();
@@ -258,6 +312,43 @@ mod tests {
         assert_eq!(psp.acpi.get(smi::TRIGGER0.offset, 4) & trigger, 0);
         assert_eq!(buffer[COMMAND], 0);
         assert_eq!(buffer[FLAGS] & READY, READY);
+    }
+
+    #[test]
+    fn wh_rules() {
+        let wh = |command, size, flags, data: u32| {
+            let mut buffer = [0u32; 16];
+            buffer[COMMAND] = command;
+            buffer[FLAGS] = READY | flags;
+            buffer[SIZE] = size;
+            buffer[4] = data;
+            unsafe { answer_of(Variant::Wh, buffer.as_mut_ptr(), cached, || {}) };
+            (buffer[STATUS], buffer[FLAGS])
+        };
+        // Known, its service not implemented: a failed service.
+        for command in [0x83, 0x8a, 0x8b, 0x8d] {
+            assert_eq!(wh(command, 12, 0, 0).0, UNSUPPORTED);
+        }
+        assert_eq!(wh(0x8c, 12, 0, 0).0, INVALID);
+        assert_eq!(wh(0x81, MAX_SIZE_WH + 1, 0, 0).0, INVALID);
+        assert_eq!(wh(0x81, MAX_SIZE_WH, 0, 0).0, OK);
+        // The PSP's checksum: size 12 = the size and status dwords and
+        // one data dword.
+        let sum = (12u32 + 0x0102_0304)
+            .to_le_bytes()
+            .iter()
+            .fold(0u8, |a, b| a.wrapping_add(*b));
+        assert_eq!(wh(0x82, 12, CHECKSUM | u32::from(sum), 0x0102_0304).0, OK);
+        assert_eq!(
+            wh(0x82, 12, CHECKSUM | u32::from(sum ^ 1), 0x0102_0304).0,
+            CHECKSUM_MISMATCH
+        );
+        // The older rules are unchanged: 8Bh is invalid there.
+        let mut buffer = [0u32; 16];
+        buffer[COMMAND] = 0x8b;
+        buffer[SIZE] = 8;
+        unsafe { answer(buffer.as_mut_ptr(), cached, || {}) };
+        assert_eq!(buffer[STATUS], INVALID);
     }
 
     #[test]

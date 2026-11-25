@@ -33,6 +33,8 @@ pub const ARGUMENTS: SmnReg = SmnReg::new(0x0c91_09cc);
 /// `MPIO_C2PMSG_DOORBELL_ADDRESS`): written to send the request. Turin
 /// uses 0x0C910954 instead; Genoa and Siena this one.
 pub const DOORBELL: SmnReg = SmnReg::new(0x0c91_0554);
+/// SMN 0x0C91_0954 (32-bit): MPIO doorbell on newer IODs (BRH and WH).
+pub const DOORBELL_V2: SmnReg = SmnReg::new(0x0c91_0954);
 pub const ARGUMENT_COUNT: usize = 6;
 
 pub mod msg {
@@ -149,6 +151,7 @@ pub enum Encoding {
 pub struct Mailbox {
     poll: Poll,
     encoding: Encoding,
+    doorbell: SmnReg,
     poisoned: bool,
 }
 impl Mailbox {
@@ -165,9 +168,21 @@ impl Mailbox {
     /// # Safety
     /// Caller verifies the selected firmware interface and owns the controller.
     pub const unsafe fn new_with_encoding(poll: Poll, encoding: Encoding) -> Self {
+        unsafe { Self::new_with_doorbell(poll, encoding, DOORBELL) }
+    }
+    /// Same ownership requirements as [`Self::new`], selecting a specific
+    /// doorbell register (e.g. [`DOORBELL_V2`] on BRH/WH IODs).
+    /// # Safety
+    /// Caller verifies the selected firmware interface and owns the controller.
+    pub const unsafe fn new_with_doorbell(
+        poll: Poll,
+        encoding: Encoding,
+        doorbell: SmnReg,
+    ) -> Self {
         Self {
             poll,
             encoding,
+            doorbell,
             poisoned: false,
         }
     }
@@ -220,7 +235,7 @@ impl Mailbox {
                 smn.reg(ARGUMENTS.offset(4 * i as u32)).set(value);
             }
             smn.reg(CONTROL).write(Control::REQUEST.val(wire.into()));
-            smn.reg(DOORBELL).set(u32::MAX);
+            smn.reg(self.doorbell).set(u32::MAX);
             let value = self.ready(smn, timer).map_err(|e| match e {
                 Error::ReadyTimeout => Error::CompletionTimeout,
                 e => e,
@@ -289,6 +304,7 @@ mod tests {
         model: Model,
         status: u32,
         busy: bool,
+        doorbell: SmnReg,
     }
     impl ConfigRegionAccess for Firmware {
         unsafe fn read(&self, a: PciAddress, off: u16) -> u32 {
@@ -297,7 +313,7 @@ mod tests {
         unsafe fn write(&self, a: PciAddress, off: u16, value: u32) {
             unsafe { self.model.write(a, off, value) };
             let mut state = self.model.0.borrow_mut();
-            if off == SMN_DATA && state.index[&a.bus()] == DOORBELL.address() {
+            if off == SMN_DATA && state.index[&a.bus()] == self.doorbell.address() {
                 state.smn.insert((a.bus(), CONTROL.address()), self.status);
                 for i in 0..6 {
                     state.smn.insert(
@@ -313,6 +329,7 @@ mod tests {
             model: Model::default(),
             status,
             busy: false,
+            doorbell: DOORBELL,
         };
         fw.model
             .0
@@ -399,6 +416,52 @@ mod tests {
         }
         assert_eq!(log[6], (0x80, CONTROL.address(), 0x30400));
         assert_eq!(log[7], (0x80, DOORBELL.address(), u32::MAX));
+    }
+
+    #[test]
+    fn v2_doorbell_preserves_control_before_doorbell_order() {
+        let fw = Firmware {
+            model: Model::default(),
+            status: 0x8000_0001,
+            busy: false,
+            doorbell: DOORBELL_V2,
+        };
+        fw.model
+            .0
+            .borrow_mut()
+            .smn
+            .insert((0x80, CONTROL.address()), 1 << 31);
+        let smn = unsafe { Smn::on_bus(fw.clone(), 0x80) };
+        let mut mailbox = unsafe {
+            Mailbox::new_with_doorbell(
+                Poll {
+                    reads: NonZeroU32::new(3).unwrap(),
+                    interval_us: NonZeroU32::new(2).unwrap(),
+                },
+                Encoding::Retained,
+                DOORBELL_V2,
+            )
+        };
+        let reply = unsafe {
+            mailbox.request(
+                &smn,
+                msg::SETUP_LINK,
+                [1, 2, 3, 4, 5, 6],
+                &ManualTimer::new(),
+            )
+        }
+        .unwrap();
+        assert_eq!(reply, [10, 11, 12, 13, 14, 15]);
+        let log = &fw.model.0.borrow().log;
+        assert_eq!(log.len(), 8);
+        for (i, &entry) in log[..6].iter().enumerate() {
+            assert_eq!(
+                entry,
+                (0x80, ARGUMENTS.offset(4 * i as u32).address(), i as u32 + 1)
+            );
+        }
+        assert_eq!(log[6], (0x80, CONTROL.address(), 0x30400));
+        assert_eq!(log[7], (0x80, DOORBELL_V2.address(), u32::MAX));
     }
 
     #[test]

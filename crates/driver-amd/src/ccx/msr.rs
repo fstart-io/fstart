@@ -51,6 +51,11 @@ register_bitfields![u64,
     ],
     /// Core::X86::Msr::TW_CFG.
     pub TwCfg [
+        /// Meaning not public. Zen 6: AmdCcxZen6Dxe sets it on every
+        /// thread with SMM_ADDR/SMM_MASK (`CcxInitTsegAp`, Dell `0xed00`)
+        /// and clears it after HWCR.SmmLock (`CcxSmmLockAp`, `0xe840`),
+        /// instruction-checked; AmdCcxZen6Pei's lock (`0xeec170`) the same.
+        SMM_SETUP OFFSET(27) NUMBITS(1) [],
         COMBINE_CR0_CD OFFSET(49) NUMBITS(1) []
     ],
     /// Core::X86::Msr::CSTATE_CONFIG.
@@ -60,7 +65,10 @@ register_bitfields![u64,
         CCR1_CC1DFSID OFFSET(8) NUMBITS(6) [],
         CCR1_CC6EN OFFSET(14) NUMBITS(1) [],
         CCR2_CC1DFSID OFFSET(16) NUMBITS(6) [],
-        CCR2_CC6EN OFFSET(22) NUMBITS(1) []
+        CCR2_CC6EN OFFSET(22) NUMBITS(1) [],
+        /// WH: openSIL Zen6CStateInit (`f526e0`) programs a fourth field.
+        CCR3_CC1DFSID OFFSET(24) NUMBITS(6) [],
+        CCR3_CC6EN OFFSET(30) NUMBITS(1) []
     ],
     /// Core::X86::Msr::CStateBaseAddr.
     pub CstateBaseAddr [
@@ -73,6 +81,26 @@ register_bitfields![u64,
         COUNT_SEL OFFSET(3) NUMBITS(4) [],
         /// Rome/Milan only (reserved on Raven and ZP).
         SEVERITY OFFSET(7) NUMBITS(3) []
+    ],
+    /// Core::X86::Msr::CPPC_CAPABILITY_1 (C001_02B0).
+    pub CppcCap1 [
+        LOWEST_PERF OFFSET(0) NUMBITS(8) [],
+        LOWEST_NONLINEAR_PERF OFFSET(8) NUMBITS(8) [],
+        NOMINAL_PERF OFFSET(16) NUMBITS(8) [],
+        HIGHEST_PERF OFFSET(24) NUMBITS(8) []
+    ],
+    /// Core::X86::Msr::CPPC_REQUEST (C001_02B3).
+    pub CppcRequest [
+        MAX_PERF OFFSET(0) NUMBITS(8) [],
+        MIN_PERF OFFSET(8) NUMBITS(8) [],
+        DES_PERF OFFSET(16) NUMBITS(8) [],
+        ENERGY_PERF_PREF OFFSET(24) NUMBITS(8) []
+    ],
+    /// C001_1004, the CPUID Fn0000_0001 feature override: EDX in \[31:0\],
+    /// ECX in \[63:32\].
+    pub CpuidFeatures [
+        /// CPUID Fn0000_0001_ECX\[21\].
+        X2APIC OFFSET(53) NUMBITS(1) []
     ],
     /// Core::X86::Msr::DPM_CFG.
     pub DpmCfg [
@@ -93,7 +121,20 @@ pub const CPU_WDT_CFG: Msr<CpuWdtCfg::Register> = Msr::new(0xc001_0074);
 pub const RMP_BASE: Msr = Msr::new(0xc001_0132);
 pub const RMP_END: Msr = Msr::new(0xc001_0133);
 pub const CSTATE_CONFIG: Msr<CstateConfig::Register> = Msr::new(0xc001_0296);
+/// Unnamed. WH's Zen6CStateInit (Dell SilVenicePei `f526e0`, instruction-
+/// checked) writes it right after CSTATE_CONFIG with the same four
+/// CC1DFSID/CC6EN fields, on core primaries.
+pub const C001_0298: Msr<CstateConfig::Register> = Msr::new(0xc001_0298);
+pub const CPPC_CAP1: Msr<CppcCap1::Register> = Msr::new(0xc001_02b0);
+/// Core::X86::Msr::CPPC_ENABLE (C001_02B1).
+pub const CPPC_ENABLE: Msr = Msr::new(0xc001_02b1);
+/// Core::X86::Msr::CPPC_CAPABILITY_2 (C001_02B2).
+pub const CPPC_CAP2: Msr = Msr::new(0xc001_02b2);
+pub const CPPC_REQUEST: Msr<CppcRequest::Register> = Msr::new(0xc001_02b3);
+/// Core::X86::Msr::CPPC_STATUS (C001_02B4).
+pub const CPPC_STATUS: Msr = Msr::new(0xc001_02b4);
 pub const MCODE_CTL: Msr = Msr::new(0xc001_1000);
+pub const CPUID_FEATURES: Msr<CpuidFeatures::Register> = Msr::new(0xc001_1004);
 pub const LS_CFG: Msr = Msr::new(0xc001_1020);
 pub const IC_CFG: Msr = Msr::new(0xc001_1021);
 pub const DC_CFG: Msr = Msr::new(0xc001_1022);
