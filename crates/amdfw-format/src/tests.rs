@@ -666,3 +666,363 @@ fn fletcher_reference_vectors() {
     assert_eq!(fletcher32(&[1, 0, 2, 0, 3, 0, 4, 0]), 0x0014_000a);
     assert_eq!(fletcher32(&[0xff; 1024]), 0xffff_ffff);
 }
+
+#[test]
+fn venice_ish_dual_origin_slots_and_reset_image_validate() {
+    use crate::directory::{
+        BIOS_LEVEL2_COOKIE, ImageSlotHeader, PSP_COOKIE, PSP_LEVEL2_COOKIE, bios, psp,
+    };
+
+    // Minimal 32 MiB flash layout mirroring Venice:
+    // - BIOS reset image (0x62) at file offset 0x0000_0000 (origin 0), size 0x4000
+    // - Mode-0 data blob at bank + 0x50000 (verifies bios_origin affects mode 1 only)
+    // - EFS bank at 0x0100_0000, EFS at 0x0102_0000 (+0x20000), bios3 = 0
+    // - $PSP L1 at 0x0103_0000 -> ISH A (0x48) at 0x0103_2000, ISH B (0x4A) at 0x0103_3000
+    // - $PL2 A at 0x0103_4000 -> type 0x49 (mode 2 +0x2000) -> $BL2 A at 0x0103_6000
+    // - $PL2 B at 0x0104_0000 -> type 0x49 (mode 2 +0x2000) -> $BL2 B at 0x0104_2000
+    let bank = 0x0100_0000usize;
+    let build_fixture = || {
+        let mut rom = vec![0xffu8; 0x0200_0000];
+        rom[0..0x4000].fill(0x90);
+        rom[bank + 0x50000..bank + 0x50400].fill(0x5a);
+
+        let mut efs = Efs::erased();
+        efs.new_psp_directory = 0x0003_0000u32.into();
+        efs.generation = 0xffff_fffcu32.into();
+        efs.bios3 = 0u32.into();
+        efs.rom_layout_selector = 1;
+        rom[bank + 0x20000..bank + 0x20000 + size_of::<Efs>()].copy_from_slice(efs.as_bytes());
+
+        put(
+            &mut rom,
+            bank + 0x30000,
+            PSP_COOKIE,
+            (1 << 31) | (2 << 24) | 1,
+            &[
+                PspEntry::new(psp::RECOVERY_A, 0, 0, 0, (1u64 << 62) | 0x32000),
+                PspEntry::new(psp::RECOVERY_B, 0, 0, 0, (1u64 << 62) | 0x33000),
+            ],
+        );
+        let ish_a = ImageSlotHeader::new(u32::MAX, 2, 0, 0x34000, 0xbf00_0000, u32::MAX);
+        let ish_b = ImageSlotHeader::new(2, 2, 0, 0x40000, 0xbf00_0000, u32::MAX);
+        rom[bank + 0x32000..bank + 0x32020].copy_from_slice(ish_a.as_bytes());
+        rom[bank + 0x33000..bank + 0x33020].copy_from_slice(ish_b.as_bytes());
+
+        for pl2_rel in [0x34000usize, 0x40000usize] {
+            put(
+                &mut rom,
+                bank + pl2_rel,
+                PSP_LEVEL2_COOKIE,
+                0,
+                &[PspEntry::new(
+                    psp::BIOS_TABLE,
+                    0,
+                    0,
+                    0x400,
+                    (2u64 << 62) | 0x2000,
+                )],
+            );
+            let bl2_entries = [
+                BiosEntry::new(bios::APOB, 0, 0, 0, 0, 0, 0x7700_0000),
+                BiosEntry::new(
+                    bios::RESET_IMAGE,
+                    0,
+                    0,
+                    BiosEntry::RESET | BiosEntry::COPY,
+                    0x4000,
+                    1u64 << 62,
+                    0x7000_0000,
+                ),
+                // Mode-0 entry relative to EFS bank physical base (ROM2_BASE + 0x50000).
+                BiosEntry::new(0x60, 0, 0, 0, 0x400, crate::ROM2_BASE + 0x50000, 0),
+            ];
+            put(
+                &mut rom,
+                bank + pl2_rel + 0x2000,
+                BIOS_LEVEL2_COOKIE,
+                0,
+                &bl2_entries,
+            );
+        }
+        rom
+    };
+
+    let rom = build_fixture();
+    let flash = Flash::region(&rom, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(0);
+
+    // Full validate_prefix succeeds even with efs.bios3 == 0.
+    flash
+        .validate_prefix(Profile::VENICE.bios, rom.len(), None)
+        .unwrap();
+
+    let (slots, count) = flash.ish_slots_checked().unwrap();
+    assert_eq!(count, 2);
+    let a = slots[0].unwrap();
+    let b = slots[1].unwrap();
+    assert_eq!(a.kind, psp::RECOVERY_A);
+    assert_eq!(a.header.psp_id.get(), 0xbf00_0000);
+    assert_eq!(a.psp_l2_offset, bank + 0x34000);
+    assert_eq!(a.bios_l2_offset, Some(bank + 0x36000));
+    assert_eq!(b.kind, psp::RECOVERY_B);
+    assert_eq!(b.psp_l2_offset, bank + 0x40000);
+    assert_eq!(b.bios_l2_offset, Some(bank + 0x42000));
+
+    // Omitting with_bios_origin derives 0 directly from EFS +0x58 selector 1.
+    let auto_flash = Flash::region(&rom, bank, crate::ROM2_BASE, Profile::VENICE);
+    assert_eq!(auto_flash.checked_bios_origin(), Ok(0));
+    auto_flash
+        .validate_prefix(Profile::VENICE.bios, rom.len(), None)
+        .unwrap();
+
+    // Mode-1 BIOS reset image resolves via bios_origin (0), while mode-0 resolves via flash.origin (bank).
+    let (_, bl2) = auto_flash.ish_slot_directories(&a).unwrap();
+    let bl2 = bl2.unwrap();
+    let reset = bl2
+        .entries
+        .iter()
+        .find(|e| e.kind == bios::RESET_IMAGE)
+        .unwrap();
+    assert_eq!(bl2.range(reset).unwrap(), 0..0x4000);
+    assert_eq!(reset.destination(), 0x7000_0000);
+    let apcb = bl2.entries.iter().find(|e| e.kind == 0x60).unwrap();
+    assert_eq!(bl2.range(apcb).unwrap(), bank + 0x50000..bank + 0x50400);
+
+    // Non-ISH profile rejects recovery entries.
+    let genoa = Flash::region(&rom, bank, crate::ROM2_BASE, Profile::GENOA);
+    assert_eq!(
+        genoa.ish_slots_checked(),
+        Err(Error::UnsupportedTopology(psp::RECOVERY_A))
+    );
+
+    // Corrupt ISH A checksum -> Error::Checksum in both ish_slots_checked and validate_prefix.
+    let mut bad_cksum = build_fixture();
+    bad_cksum[bank + 0x32008] ^= 1;
+    let f = Flash::region(&bad_cksum, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(0);
+    assert_eq!(f.ish_slots_checked(), Err(Error::Checksum(bank + 0x32000)));
+    assert_eq!(
+        f.validate_prefix(Profile::VENICE.bios, bad_cksum.len(), None),
+        Err(Error::Checksum(bank + 0x32000))
+    );
+
+    // Wrong ISH PSP ID -> Error::PspIdMismatch.
+    let mut bad_id = build_fixture();
+    let wrong_ish = ImageSlotHeader::new(u32::MAX, 2, 0, 0x34000, 0xbc0b_0d00, u32::MAX);
+    bad_id[bank + 0x32000..bank + 0x32020].copy_from_slice(wrong_ish.as_bytes());
+    let f = Flash::region(&bad_id, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(0);
+    assert_eq!(
+        f.ish_slots_checked(),
+        Err(Error::PspIdMismatch {
+            expected: 0xbf00_0000,
+            actual: 0xbc0b_0d00,
+        })
+    );
+    assert_eq!(
+        f.validate_prefix(Profile::VENICE.bios, bad_id.len(), None),
+        Err(Error::PspIdMismatch {
+            expected: 0xbf00_0000,
+            actual: 0xbc0b_0d00,
+        })
+    );
+
+    // Truncated $BL2 declared extent in $PL2 -> Error::Truncated.
+    let mut bad_extent = build_fixture();
+    put(
+        &mut bad_extent,
+        bank + 0x34000,
+        PSP_LEVEL2_COOKIE,
+        0,
+        &[PspEntry::new(
+            psp::BIOS_TABLE,
+            0,
+            0,
+            0x20, // smaller than $BL2 header + 3 entries
+            (2u64 << 62) | 0x2000,
+        )],
+    );
+    let f = Flash::region(&bad_extent, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(0);
+    assert_eq!(f.ish_slots_checked(), Err(Error::Truncated(bank + 0x36000)));
+    assert_eq!(
+        f.validate_prefix(Profile::VENICE.bios, bad_extent.len(), None),
+        Err(Error::Truncated(bank + 0x36000))
+    );
+
+    // Duplicate RECOVERY_A entry in L1 -> Error::DuplicateIshSlot.
+    let mut dup_ish = build_fixture();
+    put(
+        &mut dup_ish,
+        bank + 0x30000,
+        PSP_COOKIE,
+        1 << 29,
+        &[
+            PspEntry::new(psp::RECOVERY_A, 0, 0, 0, (1u64 << 62) | 0x32000),
+            PspEntry::new(psp::RECOVERY_A, 0, 0, 0, (1u64 << 62) | 0x33000),
+        ],
+    );
+    let f = Flash::region(&dup_ish, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(0);
+    assert_eq!(
+        f.ish_slots_checked(),
+        Err(Error::DuplicateIshSlot(psp::RECOVERY_A))
+    );
+    assert_eq!(
+        f.validate_prefix(Profile::VENICE.bios, dup_ish.len(), None),
+        Err(Error::DuplicateIshSlot(psp::RECOVERY_A))
+    );
+
+    // Duplicate 0x49 BIOS link in $PL2 -> Error::DuplicateLevel2.
+    let mut dup_bios = build_fixture();
+    put(
+        &mut dup_bios,
+        bank + 0x34000,
+        PSP_LEVEL2_COOKIE,
+        0,
+        &[
+            PspEntry::new(psp::BIOS_TABLE, 0, 0, 0x400, (2u64 << 62) | 0x2000),
+            PspEntry::new(psp::BIOS_TABLE, 0, 0, 0x400, (2u64 << 62) | 0x2000),
+        ],
+    );
+    let f = Flash::region(&dup_bios, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(0);
+    assert_eq!(f.ish_slots_checked(), Err(Error::DuplicateLevel2));
+    assert_eq!(
+        f.validate_prefix(Profile::VENICE.bios, dup_bios.len(), None),
+        Err(Error::DuplicateLevel2)
+    );
+
+    // Backup PSP root only (new_psp_directory == 0, psp_backup_directory set) is walked too.
+    let mut backup_only = build_fixture();
+    let mut efs_bak = Efs::erased();
+    efs_bak.psp_backup_directory = 0x0003_0000u32.into();
+    efs_bak.generation = 0xffff_fffcu32.into();
+    efs_bak.bios3 = 0u32.into();
+    efs_bak.rom_layout_selector = 1;
+    backup_only[bank + 0x20000..bank + 0x20000 + size_of::<Efs>()]
+        .copy_from_slice(efs_bak.as_bytes());
+    let f =
+        Flash::region(&backup_only, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(0);
+    assert_eq!(f.ish_slots_checked().unwrap().1, 2);
+    f.validate_prefix(Profile::VENICE.bios, backup_only.len(), None)
+        .unwrap();
+}
+
+#[test]
+fn venice_efs_rom_layout_selector_cases_and_rejection() {
+    use crate::directory::{
+        BIOS_LEVEL2_COOKIE, ImageSlotHeader, PSP_COOKIE, PSP_LEVEL2_COOKIE, bios, psp,
+    };
+
+    // Verify all four Venice layout selector cases match AmdDirectoryBaseLib.
+    let mut efs = Efs::erased();
+    assert_eq!(efs.venice_bios_origin(0x0100_0000), None);
+    for (sel, io, expected) in [
+        (0u8, 0x0000_0000u32, Some(0x0000_0000)),
+        (0, 0x0100_0000, Some(0x0100_0000)),
+        (0, 0x0300_0000, Some(0x0300_0000)),
+        (0, 0x0300_0001, None),
+        (1, 0x0100_0000, Some(0)),
+        (1, 0x0100_0001, None),
+        (1, 0x0200_0000, Some(0x0200_0000)),
+        (1, 0x0300_0000, Some(0x0200_0000)),
+        (2, 0x0000_0000, Some(0)),
+        (2, 0x0100_0000, None),
+        (2, 0x0300_0000, Some(0x0100_0000)),
+        (3, 0x0100_0000, Some(0)),
+        (3, 0x0300_0000, Some(0)),
+        (4, 0x0100_0000, None),
+        (0xff, 0x0100_0000, None),
+    ] {
+        efs.rom_layout_selector = sel;
+        assert_eq!(efs.venice_bios_origin(io), expected, "sel={sel} io={io:#x}");
+    }
+    assert_eq!(Efs::venice_layout_selector_for(0x0100_0000, 0), Some(1));
+    assert_eq!(
+        Efs::venice_layout_selector_for(0x0200_0000, 0x0200_0000),
+        Some(1)
+    );
+    assert_eq!(
+        Efs::venice_layout_selector_for(0x0100_0000, 0x0100_0000),
+        Some(0)
+    );
+    assert_eq!(
+        Efs::venice_layout_selector_for(0x0300_0000, 0x0100_0000),
+        Some(2)
+    );
+    assert_eq!(Efs::venice_layout_selector_for(0x0200_0000, 0), Some(3));
+    assert_eq!(Efs::venice_layout_selector_for(0x0400_0000, 0), None);
+
+    // Build a minimal ISH ROM with erased (+0x58 = 0xff) EFS selector: must be rejected.
+    let bank = 0x0100_0000usize;
+    let mut rom = vec![0xffu8; 0x0200_0000];
+    rom[0..0x2000].fill(0x90);
+    let mut bad_efs = Efs::erased();
+    bad_efs.new_psp_directory = 0x0003_0000u32.into();
+    bad_efs.generation = 0xffff_fffcu32.into();
+    bad_efs.bios3 = 0u32.into();
+    rom[bank + 0x20000..bank + 0x20000 + size_of::<Efs>()].copy_from_slice(bad_efs.as_bytes());
+    put(
+        &mut rom,
+        bank + 0x30000,
+        PSP_COOKIE,
+        (1 << 31) | (2 << 24) | 1,
+        &[PspEntry::new(
+            psp::RECOVERY_A,
+            0,
+            0,
+            0,
+            (1u64 << 62) | 0x32000,
+        )],
+    );
+    let ish_a = ImageSlotHeader::new(u32::MAX, 2, 0, 0x34000, 0xbf00_0000, u32::MAX);
+    rom[bank + 0x32000..bank + 0x32020].copy_from_slice(ish_a.as_bytes());
+    put(
+        &mut rom,
+        bank + 0x34000,
+        PSP_LEVEL2_COOKIE,
+        0,
+        &[PspEntry::new(
+            psp::BIOS_TABLE,
+            0,
+            0,
+            0x400,
+            (2u64 << 62) | 0x2000,
+        )],
+    );
+    put(
+        &mut rom,
+        bank + 0x36000,
+        BIOS_LEVEL2_COOKIE,
+        0,
+        &[
+            BiosEntry::new(bios::APOB, 0, 0, 0, 0, 0, 0x7700_0000),
+            BiosEntry::new(
+                bios::RESET_IMAGE,
+                0,
+                0,
+                BiosEntry::RESET | BiosEntry::COPY,
+                0x2000,
+                1u64 << 62,
+                0x7000_0000,
+            ),
+        ],
+    );
+
+    let flash = Flash::region(&rom, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(0);
+    assert_eq!(
+        flash.validate_prefix(Profile::VENICE.bios, rom.len(), None),
+        Err(Error::RomLayoutSelector(0xff))
+    );
+    assert_eq!(
+        flash.ish_slots_checked(),
+        Err(Error::RomLayoutSelector(0xff))
+    );
+
+    // Fix selector to 1: explicit mismatch must fail, matching or omitted must pass.
+    rom[bank + 0x20000 + 0x58] = 1;
+    let mismatch =
+        Flash::region(&rom, bank, crate::ROM2_BASE, Profile::VENICE).with_bios_origin(bank);
+    assert_eq!(
+        mismatch.validate_prefix(Profile::VENICE.bios, rom.len(), None),
+        Err(Error::RomLayoutSelector(1))
+    );
+    let ok = Flash::region(&rom, bank, crate::ROM2_BASE, Profile::VENICE);
+    ok.validate_prefix(Profile::VENICE.bios, rom.len(), None)
+        .unwrap();
+}

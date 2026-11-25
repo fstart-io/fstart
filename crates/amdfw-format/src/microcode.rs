@@ -11,15 +11,17 @@ const EQUIVALENCE_ID: usize = 0x18;
 /// patch format is not known here.
 pub const fn patch_size(equivalence_id: u16) -> Option<usize> {
     // Bits 15:12 are the extended family, 11:8 the extended model.
-    match equivalence_id >> 8 {
+    match equivalence_id {
         // Family 17h: Zeppelin, Raven/Picasso, Rome, ...
-        0x80..=0x8f => Some(0xc80),
-        // Family 19h models 00h-0Fh (Milan) and 10h-1Fh (Genoa).
-        // Genoa's installed flat A110 patch is also exactly 5568 bytes.
-        0xa0..=0xa1 => Some(0x15c0),
-        // Family 19h models A0h-AFh: Siena. NFX BIOS directory type 0x66
-        // instances 0..2 are each exactly 5568 bytes (A0 and A2 patches).
-        0xaa => Some(0x15c0),
+        0x8000..=0x8fff => Some(0xc80),
+        // Family 19h models 00h-0Fh (Milan), 10h-1Fh (Genoa), A0h-AFh (Siena).
+        // Genoa and Siena flat type 0x66 patches are each 5568 bytes.
+        0xa000..=0xa1ff | 0xaa00..=0xaaff => Some(0x15c0),
+        // Family 1Ah models 50h-5Fh (Venice Zen 6): A0 steppings (0xB500..=0xB50F)
+        // use 15296-byte (0x3bc0) patches; B0+ steppings (0xB510..=0xB5FF) and
+        // Zen 6c models C0h-CFh (0xBC00..=0xBCFF) use 16432-byte (0x4030) patches.
+        0xb500..=0xb50f => Some(0x3bc0),
+        0xb510..=0xb5ff | 0xbc00..=0xbcff => Some(0x4030),
         _ => None,
     }
 }
@@ -73,13 +75,22 @@ mod tests {
             patch(0xa011, 0x15c0),
             patch(0xa110, 0x15c0),
             patch(0xaa02, 0x15c0),
+            patch(0xb500, 0x3bc0),
+            patch(0xb50b, 0x3bc0),
+            patch(0xb510, 0x4030),
+            patch(0xbc00, 0x4030),
             patch(0x8012, 0xc80),
         ]
         .concat();
         let ids: Vec<_> = patches(&blob)
             .map(|p| equivalence_id(p.unwrap()).unwrap())
             .collect();
-        assert_eq!(ids, [0x8310, 0xa011, 0xa110, 0xaa02, 0x8012]);
+        assert_eq!(
+            ids,
+            [
+                0x8310, 0xa011, 0xa110, 0xaa02, 0xb500, 0xb50b, 0xb510, 0xbc00, 0x8012
+            ]
+        );
         assert!(patches(&[]).next().is_none());
     }
 
