@@ -52,6 +52,7 @@ pub enum LinkSpeed {
     Gen3,
     Gen4,
     Gen5,
+    Gen6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,13 +223,20 @@ pub fn translate(roots: &[u8], start: u8, end: u8) -> Result<Mapping, Error> {
 /// Build one ASK entry. Ancillary indices are explicitly supplied by the
 /// eventual ancillary-buffer owner; no virtual address is cast to firmware.
 pub fn build(roots: &[u8], port: &Port, ancillary_index: u16) -> Result<(Mapping, Ask), Error> {
+    let mapping = translate(roots, port.start, port.end)?;
+    let ask = build_mapped(mapping, port, ancillary_index)?;
+    Ok((mapping, ask))
+}
+
+/// Build one 52-byte ASK entry from an already-validated [`Mapping`] (used by
+/// both RS wrapper translation and WH dual-IOD direct lane mapping).
+pub fn build_mapped(mapping: Mapping, port: &Port, ancillary_index: u16) -> Result<Ask, Error> {
     if port.device > 31 || port.function > 7 {
         return Err(Error::DeviceFunction);
     }
     if port.hotplug > 7 {
         return Err(Error::Hotplug(port.hotplug));
     }
-    let mapping = translate(roots, port.start, port.end)?;
     let width = mapping.end - mapping.start + 1;
     if ![1, 2, 4, 8, 16].contains(&width) {
         return Err(Error::Width(width));
@@ -260,20 +268,17 @@ pub fn build(roots: &[u8], port: &Port, ancillary_index: u16) -> Result<(Mapping
                 port.target_speed as u32
             }),
     );
-    Ok((
-        mapping,
-        Ask {
-            lane: lane.get().into(),
-            handle: handle.get().into(),
-            device: device.get().into(),
-            link: link.get().into(),
-            phy: 0.into(),
-            transport: 0.into(),
-            reserved0: [0.into(); 2],
-            status: 0.into(),
-            reserved1: [0.into(); 4],
-        },
-    ))
+    Ok(Ask {
+        lane: lane.get().into(),
+        handle: handle.get().into(),
+        device: device.get().into(),
+        link: link.get().into(),
+        phy: 0.into(),
+        transport: 0.into(),
+        reserved0: [0.into(); 2],
+        status: 0.into(),
+        reserved1: [0.into(); 4],
+    })
 }
 
 #[cfg(test)]

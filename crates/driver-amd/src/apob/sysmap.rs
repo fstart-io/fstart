@@ -99,21 +99,11 @@ impl SystemMemoryMap<'_> {
 
     /// The holes sorted by base, none wrapping, below a nonzero top.
     pub fn sorted(&self) -> Result<MemoryMap, MapError> {
-        if self.top == 0 {
-            return Err(MapError::NoDram);
-        }
         let mut holes: Vec<Hole, MAX_HOLES> = Vec::new();
         for hole in self.holes() {
-            if hole.base.checked_add(hole.size).is_none() {
-                return Err(MapError::Wraps(hole));
-            }
             holes.push(hole).map_err(|_| MapError::TooManyHoles)?;
         }
-        holes.sort_unstable_by_key(|hole| hole.base);
-        Ok(MemoryMap {
-            top: self.top,
-            holes,
-        })
+        MemoryMap::from_parts(self.top, holes)
     }
 }
 
@@ -126,6 +116,20 @@ pub struct MemoryMap {
 }
 
 impl MemoryMap {
+    /// Construct a validated, sorted [`MemoryMap`] (rejects zero top or wrapping holes).
+    pub fn from_parts(top: u64, mut holes: Vec<Hole, MAX_HOLES>) -> Result<Self, MapError> {
+        if top == 0 {
+            return Err(MapError::NoDram);
+        }
+        for &hole in &holes {
+            if hole.base.checked_add(hole.size).is_none() {
+                return Err(MapError::Wraps(hole));
+            }
+        }
+        holes.sort_unstable_by_key(|h| h.base);
+        Ok(Self { top, holes })
+    }
+
     pub fn holes(&self) -> &[Hole] {
         &self.holes
     }
