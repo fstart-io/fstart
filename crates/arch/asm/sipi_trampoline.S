@@ -20,6 +20,8 @@
 .set CR0_NW, (1 << 29)
 .set CR0_CD, (1 << 30)
 .set CR4_PAE, (1 << 5)
+.set CR4_OSFXSR, (1 << 9)
+.set CR4_OSXMMEXCPT, (1 << 10)
 .set EFER_MSR, 0xc0000080
 .set EFER_LME, (1 << 8)
 .set CR0_PG, (1 << 31)
@@ -240,7 +242,7 @@ msr_replay_done:
 	jmp *%eax
 #else
 	movl %cr4, %eax
-	orl $CR4_PAE, %eax
+	orl $(CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT), %eax
 	movl %eax, %cr4
 
 	movl SIPI_BASE + fstart_sipi_cr3 - fstart_sipi_start, %eax

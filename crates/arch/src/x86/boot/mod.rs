@@ -114,6 +114,21 @@ macro_rules! imc_nem_model_branch {
             "\nje ",
             $target,
             "\n",
+            "cmpl $0x3c, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x45, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x46, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
             "cmpl $0x3e, ",
             $register,
             "\nje ",
@@ -503,7 +518,7 @@ core::arch::global_asm!(
     "jz 2f",
     // Only load if update revision is newer than the currently installed one.
     "cmpl 4(%esi), %edx",
-    "jge 9f",
+    "jae 9f",
     "leal 48(%esi), %eax",
     // Never issue an invalid update before an IDT exists. The packer aligns
     // microcode records to 16 bytes. POST 0xe6 makes rejection observable
@@ -576,6 +591,15 @@ macro_rules! postcar_uart_checkpoint {
 macro_rules! postcar_uart_checkpoint {
     ($code:literal) => {
         ""
+    };
+}
+
+// The CAR stack is gone and the MTRR prefix cannot be trusted: a normal
+// Rust reset helper cannot run. Drop the suspend well rather than retry S3.
+#[cfg(target_os = "none")]
+macro_rules! postcar_stash_reset {
+    () => {
+        "movw $0xcf9, %dx\nxorb %al, %al\noutb %al, %dx\nmovb ${full_reset}, %al\noutb %al, %dx"
     };
 }
 

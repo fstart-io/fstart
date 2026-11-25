@@ -18,10 +18,11 @@
 //! A phase that fails halts, or on an S3 resume resets cleanly instead of
 //! booting over retained state.
 
-use crate::{IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelPlatform};
+use crate::{
+    IntelBoard, IntelChipsetConfig, IntelEarlyPlatform, IntelPlatform, IntelPlatformConfig,
+};
 use core::marker::PhantomData;
 use fstart_core::layout::RegionKind;
-use fstart_core::services::memory_detect::MemoryDetector;
 use fstart_core::services::{ConsoleDevice, ServiceError};
 use fstart_driver_intel::{BootPath, IntelNorthbridgeDriver, IntelSouthbridgeDriver};
 use fstart_log::StaticConsole;
@@ -153,7 +154,14 @@ impl<B: IntelBoard> Bootblock<B, Early> {
         ) else {
             fstart_arch::x86::boot::halt()
         };
-        if northbridge.pre_console_init().is_err() || southbridge.pre_console_init().is_err() {
+        if cfg!(feature = "ehci-console")
+            && let Some(debug) = B::CONFIG.ehci_debug()
+        {
+            southbridge.set_ehci_debug(fstart_pci::devfn(debug.device, debug.function), debug.bar);
+        }
+        if northbridge.pre_console_init().is_err()
+            || southbridge.bootblock_pre_console_init().is_err()
+        {
             fstart_arch::x86::boot::halt()
         }
         Self {
@@ -211,6 +219,8 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             BootPath::Normal
         };
         self.northbridge.set_boot_path(self.boot_path);
+        self.southbridge
+            .set_resume(self.boot_path == BootPath::S3Resume);
         let windows = (|| {
             let postcar = self.geometry.region(RegionKind::BootstrapPostcar)?;
             let mainstage = self.geometry.region(RegionKind::BootstrapMainstage)?;
@@ -240,7 +250,10 @@ impl<B: IntelBoard> Bootblock<B, Console> {
     /// reachable on the southbridge's SMBus.
     pub fn train_memory(mut self) -> Bootblock<B, Trained> {
         fstart_timestamp::add(fstart_timestamp::id::INITRAM_START);
-        let prepared = self.southbridge.pre_raminit_init();
+        let prepared = self
+            .northbridge
+            .prepare_training()
+            .and_then(|()| self.southbridge.pre_raminit_init());
         self.check("pre-raminit init", prepared);
         fstart_log::info!("{}: initializing DRAM", B::Platform::NAME);
         let trained = self.dram_init();
@@ -348,7 +361,7 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
             .region(RegionKind::BootstrapRam)?
             .end()
             .ok_or(ServiceError::InvalidParam)?;
-        let ram_end = dram_end.min(self.northbridge.total_ram_bytes()?);
+        let ram_end = dram_end.min(self.northbridge.bootstrap_ram_end()?);
         let mut store =
             crate::store::bootblock(geometry, ram_end, boot_path == BootPath::S3Resume)?;
         crate::store::move_timestamps(&mut store, TIMESTAMP_CAPACITY);
@@ -427,7 +440,6 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
         fstart_timestamp::add(fstart_timestamp::id::LOAD_POSTCAR);
         let verified = crate::boot::load_stage_with_cache(
             &media,
-            fstart_resume::stage_cache::CachedStage::Postcar,
             postcar,
             postcar_window,
             &reserved,

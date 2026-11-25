@@ -93,6 +93,21 @@ impl embedded_hal::delay::DelayNs for Udelay {
     }
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl fstart_core::services::Timer for Udelay {
+    fn delay_us(&self, mut us: u64) {
+        while us > u64::from(u32::MAX) {
+            udelay(u32::MAX);
+            us -= u64::from(u32::MAX);
+        }
+        udelay(us as u32);
+    }
+
+    fn timestamp_us(&self) -> u64 {
+        timestamp_us()
+    }
+}
+
 /// Poll `done` until it holds or `timeout_us` microseconds have passed, and
 /// report whether it held: coreboot's `wait_us()`.
 ///
@@ -218,7 +233,7 @@ fn amd_tsc_frequency_hz() -> Option<u64> {
     cpu::amd::msr::tsc_mhz(&msr).map(|mhz| u64::from(mhz) * 1_000_000)
 }
 
-/// Nehalem through Ivy Bridge: the TSC runs at the maximum non-turbo ratio
+/// Nehalem through Haswell: the TSC runs at the maximum non-turbo ratio
 /// (`MSR_PLATFORM_INFO[15:8]`) times the base clock, 133 MHz before Sandy
 /// Bridge and 100 MHz after (coreboot `cpu/intel/common/fsb.c`).
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -229,7 +244,7 @@ fn platform_info_tsc_frequency_hz() -> Option<u64> {
     }
     let bclk_khz: u64 = match family_model() {
         (6, 0x1a | 0x1e | 0x1f | 0x2e | 0x25 | 0x2c | 0x2f) => 133_333,
-        (6, 0x2a | 0x2d | 0x3a | 0x3e) => 100_000,
+        (6, 0x2a | 0x2d | 0x3a | 0x3e | 0x3c | 0x45 | 0x46) => 100_000,
         _ => return None,
     };
     // SAFETY: every model selected above implements MSR_PLATFORM_INFO.

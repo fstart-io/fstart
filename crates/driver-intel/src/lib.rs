@@ -13,6 +13,7 @@ pub mod gm45;
 pub mod gm965;
 pub mod gma;
 pub mod gmch;
+pub mod haswell;
 mod host_bridge;
 pub mod i945;
 pub mod ibexpeak;
@@ -21,6 +22,7 @@ pub mod ich8;
 pub mod ich9;
 pub mod igd;
 pub mod ironlake;
+pub mod lynxpoint;
 pub mod pineview;
 pub use fstart_arch::x86::cpu::intel::microcode;
 pub mod southbridge;
@@ -135,8 +137,14 @@ pub trait IntelNorthbridgeDriver:
         Ok(())
     }
     /// Mainstage chipset init after the bus scan and before the southbridge
-    /// devices (coreboot `northbridge_init`), including DMA-remap windows.
+    /// devices (coreboot `pre_mp_init` / early `northbridge_init`).
     fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+    /// Complete northbridge init that must run after MP CPU C-state setup on
+    /// all cores (coreboot `northbridge_init`: topology, PAIR/SA clock gating,
+    /// `BIOS_RESET_CPL`, and post-CPL RAPL power limits).
+    fn post_mp_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
     fn stage_local_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
@@ -148,6 +156,23 @@ pub trait IntelNorthbridgeDriver:
         &mut self,
         _opregion: Option<u32>,
     ) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+
+    /// Upper bound for firmware destinations, including the persistent store.
+    /// Chipsets with a trained low-memory map exclude their top reservations.
+    fn bootstrap_ram_end(&self) -> Result<u64, fstart_core::services::ServiceError> {
+        self.total_ram_bytes()
+    }
+
+    /// Bootblock-only sampling (e.g. CPU replacement and DRAM power state)
+    /// before the southbridge starts its native PHY setup.
+    fn prepare_training(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+
+    /// Lock chipset resources before handoff after ACPI/SMM installation.
+    fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
 
@@ -204,6 +229,10 @@ pub trait IntelSouthbridgeDriver: Sized {
     ) -> Result<Self, fstart_core::services::ServiceError>;
     fn config(&self) -> &'static Self::Config;
     fn pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    /// Pre-console setup at reset, not when the ramstage rebinds LPC.
+    fn bootblock_pre_console_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        self.pre_console_init()
+    }
     fn early_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
     /// Bootblock-only setup right before DRAM training (coreboot romstage
     /// `early_pch_init()`), which the DRAM mainstage must not repeat.
@@ -220,9 +249,27 @@ pub trait IntelSouthbridgeDriver: Sized {
     fn program_subsystem_id(&self, device: fstart_pci::ecam::EcamDevice, id: u32) -> bool {
         device.set_subsystem(id)
     }
+    /// Whether unlisted onboard (bus-0) functions get coreboot's default
+    /// subsystem ID through [`Self::program_subsystem_id`] with `id = 0`:
+    /// only chipsets whose callback maps zero to the function's own VID/DID.
+    fn onboard_subsystem_fallback(&self) -> bool {
+        false
+    }
     /// Chipset-owned PCI BARs that generic resource allocation must preserve.
     fn fixed_pci_bars(&self) -> fstart_pci::PciFixedBars {
         fstart_pci::PciFixedBars::new()
+    }
+    /// Can the requested population be replayed over this cold ACPI snapshot?
+    /// Checked on resume before `chip_init` can disable or renumber ports.
+    fn matches_acpi_population(&self, _cold: &[u8]) -> bool {
+        true
+    }
+    /// Capture the live allocation on which persistent ACPI descriptions depend,
+    /// before any PCI functions are hidden. Empty for fully PCI-described devices.
+    fn acpi_bar_snapshot(
+        &mut self,
+    ) -> Result<alloc::vec::Vec<u8>, fstart_core::services::ServiceError> {
+        Ok(alloc::vec::Vec::new())
     }
     /// Stable southbridge identity for the platform's training-cache policy.
     fn training_identity(&self) -> Option<[u8; 5]> {
@@ -235,6 +282,10 @@ pub trait IntelSouthbridgeDriver: Sized {
     /// Tell the mainstage driver that this boot resumes from S3, so it leaves
     /// state the suspended OS still owns (such as its RTC wake alarm) alone.
     fn set_resume(&mut self, _resume: bool) {}
+    /// Notify the southbridge that the platform enabled the EHCI debug console
+    /// on bus-0 `devfn` at fixed MMIO `bar`, so USB initialization preserves
+    /// that controller's BAR, active state, and debug port routing.
+    fn set_ehci_debug(&mut self, _devfn: u8, _bar: u32) {}
     fn smbus_mut(&mut self) -> Option<&mut dyn fstart_core::services::SmBus> {
         None
     }
@@ -247,6 +298,12 @@ pub trait IntelSouthbridgeDriver: Sized {
         Ok(())
     }
     fn post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
+    /// Complete southbridge power-management init that must run after MP CPU
+    /// C-state setup and northbridge `BIOS_RESET_CPL` (e.g. Lynx Point-LP
+    /// PM_SYNC enable, dynamic clock gating, and `GEN_PMCON_2.DRAM_INIT`).
+    fn post_mp_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     fn finalize_init(&mut self) -> Result<(), fstart_core::services::ServiceError>;
 
     /// Reset the system through the generic x86 CF9 port. Southbridges with
@@ -283,5 +340,10 @@ mod option_tests {
     #[test]
     fn ironlake_and_ibex_peak_have_distinct_option_keys() {
         pair::<crate::ironlake::IntelIronlake, crate::ibexpeak::IntelIbexPeak>();
+    }
+
+    #[test]
+    fn haswell_and_lynx_point_have_distinct_option_keys() {
+        pair::<crate::haswell::Haswell, crate::lynxpoint::LynxPoint>();
     }
 }

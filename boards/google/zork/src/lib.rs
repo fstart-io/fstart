@@ -154,6 +154,7 @@ pub const SMBIOS: fstart_platform_amd::acpi::SmbiosIdentity<'static> =
 pub const EC: fstart_driver_chromeec::acpi::Ec = fstart_driver_chromeec::acpi::Ec {
     sci_gpe: 3,
     wake_gpe: Some(15),
+    mkbp: true,
     pd: true,
     tablet_mode: true,
     keyboard_backlight: true,

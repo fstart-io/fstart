@@ -54,8 +54,11 @@ pub(crate) const fn gtt_pte_encoding(cpu: Cpu) -> Option<GttPteEncoding> {
         | Cpu::PineviewM
         | Cpu::Ironlake
         | Cpu::Sandybridge
-        | Cpu::Ivybridge => Some(GttPteEncoding::Bits32),
-        // Haswell and later use 64-bit PTEs; not modelled here.
+        | Cpu::Ivybridge
+        | Cpu::Haswell
+        | Cpu::HaswellUlt
+        | Cpu::HaswellUlx => Some(GttPteEncoding::Bits32),
+        // Broadwell and later use 64-bit PTEs (libgfxinit Has_64bit_GTT := Broadwell_On).
         _ => None,
     }
 }
@@ -69,9 +72,14 @@ pub(crate) const fn gtt_pte_offset(cpu: Cpu) -> Option<usize> {
         // so the chipset driver must supply `gtt_pte_base`.
         Cpu::I945G | Cpu::I945GM | Cpu::Pineview | Cpu::PineviewM => None,
         Cpu::Gm965 => Some(0x0008_0000),
-        Cpu::G45 | Cpu::Gm45 | Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => {
-            Some(0x0020_0000)
-        }
+        Cpu::G45
+        | Cpu::Gm45
+        | Cpu::Ironlake
+        | Cpu::Sandybridge
+        | Cpu::Ivybridge
+        | Cpu::Haswell
+        | Cpu::HaswellUlt
+        | Cpu::HaswellUlx => Some(0x0020_0000),
         _ => None,
     }
 }
@@ -494,12 +502,27 @@ fn legacy_fence_regs(mmio: &Mmio, fence: usize) -> &'static LegacyFenceRegs {
     unsafe { mmio.reg_block::<LegacyFenceRegs>(FENCE_LEGACY_BASE + fence * 8) }
 }
 
+/// Gen6+ graphics/GTT flush control register offset (`GFX_FLSH_CNTL_GEN6`).
+pub(crate) const GFX_FLSH_CNTL_GEN6: usize = 0x10_1008;
+/// Gen6+ `GFX_FLSH_CNTL_EN` bit.
+pub(crate) const GFX_FLSH_CNTL_GEN6_EN: u32 = 1 << 0;
+
 /// Flush legacy graphics/GTT writes through GFX_FLSH_CNTL.
 pub(crate) fn flush_gfx(mmio: &Mmio) {
     // SAFETY: GFX_FLSH_CNTL is a fixed register in the decoded display MMIO BAR.
     let regs = unsafe { mmio.reg_block::<GfxFlushRegs>(GfxFlushRegs::OFFSET) };
     regs.control.write(GFX_FLSH_CNTL::RAW.val(0));
     let _ = regs.control.get();
+}
+
+/// Flush graphics/GTT writes for `cpu`, using `GFX_FLSH_CNTL_GEN6` on Haswell+.
+pub(crate) fn flush_gfx_for_cpu(mmio: &Mmio, cpu: Cpu) {
+    if cpu.is_haswell() {
+        mmio.write32(GFX_FLSH_CNTL_GEN6, GFX_FLSH_CNTL_GEN6_EN);
+        mmio.posting_read(GFX_FLSH_CNTL_GEN6);
+    } else {
+        flush_gfx(mmio);
+    }
 }
 
 #[cfg(test)]
@@ -622,7 +645,13 @@ mod tests {
         assert_eq!(gtt_pte_offset(Cpu::Pineview), None);
         assert_eq!(gtt_pte_offset(Cpu::Gm965), Some(0x0008_0000));
         assert_eq!(gtt_pte_offset(Cpu::G45), Some(0x0020_0000));
-        assert!(gtt_pte_offset(Cpu::Haswell).is_none());
+        for cpu in [Cpu::Haswell, Cpu::HaswellUlt, Cpu::HaswellUlx] {
+            assert_eq!(gtt_pte_encoding(cpu), Some(GttPteEncoding::Bits32));
+            assert_eq!(gtt_pte_offset(cpu), Some(0x0020_0000));
+        }
+        assert!(gtt_pte_encoding(Cpu::Broadwell).is_none());
+        assert!(gtt_pte_offset(Cpu::Broadwell).is_none());
+        assert!(gtt_pte_offset(Cpu::Skylake).is_none());
         assert_eq!(
             gtt_pte_encoding(Cpu::I945G),
             Some(GttPteEncoding::I945Simple)

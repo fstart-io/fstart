@@ -18,6 +18,7 @@ register_bitfields![u32,
 register_bitfields![u64,
     pub(super) FEATURE_CONTROL [
         LOCK OFFSET(0) NUMBITS(1) [],
+        VMX_INSIDE_SMX OFFSET(1) NUMBITS(1) [],
         VMX_OUTSIDE_SMX OFFSET(2) NUMBITS(1) [],
         SMRR_ENABLE OFFSET(3) NUMBITS(1) []
     ]
@@ -42,30 +43,44 @@ fn feature_control_available(features: u32, extra: u64) -> bool {
 /// capability, not merely a CPU model number.
 pub unsafe fn enable_and_lock(extra: u64) {
     let (_, _, ecx, _) = crate::x86::cpuid(1);
+    // SAFETY: configure checks CPUID or the caller's capability-backed SMRR
+    // bit before accessing IA32_FEATURE_CONTROL.
+    let cpu = unsafe { NativeMsr::new() };
+    configure(&cpu, ecx, extra);
+}
+
+pub(super) fn configure(cpu: &impl MsrAccess, ecx: u32, extra: u64) {
     if !feature_control_available(ecx, extra) {
         return;
     }
-    // SAFETY: CPUID or the caller's capability-backed SMRR bit establishes
-    // that IA32_FEATURE_CONTROL exists, before any attempt to read it.
-    let cpu = unsafe { NativeMsr::new() };
     let register = cpu.reg(Msr::<FEATURE_CONTROL::Register>::new(IA32_FEATURE_CONTROL));
-    let current = register.extract();
-    if current.is_set(FEATURE_CONTROL::LOCK) {
+    if register.is_set(FEATURE_CONTROL::LOCK) {
         return;
     }
-    let vmx = if LocalRegisterCopy::<u32, CPUID_1_ECX::Register>::new(ecx).is_set(CPUID_1_ECX::VMX)
-    {
+    let features = LocalRegisterCopy::<u32, CPUID_1_ECX::Register>::new(ecx);
+    let vmx = if features.is_set(CPUID_1_ECX::VMX) || features.is_set(CPUID_1_ECX::SMX) {
         FEATURE_CONTROL::VMX_OUTSIDE_SMX::SET.value
+            | FEATURE_CONTROL::VMX_INSIDE_SMX
+                .val(u64::from(features.is_set(CPUID_1_ECX::SMX)))
+                .value
     } else {
         0
     };
-    // The register is unlocked and the caller vouches for `extra`.
-    register.set(current.get() | vmx | extra | FEATURE_CONTROL::LOCK::SET.value);
+    // Unlocked bits are replaced cleanly so stale policy cannot survive locking.
+    register.set(vmx | extra | FEATURE_CONTROL::LOCK::SET.value);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unlocked_garbage_is_not_policy_and_lock_is_final() {
+        let cpu = crate::x86::cpu::msr::testing::MsrSpace::new([(IA32_FEATURE_CONTROL, !1)]);
+        configure(&cpu, 0x60, 0);
+        configure(&cpu, 0x20, 0);
+        assert_eq!(cpu.borrow().writes.as_slice(), &[(IA32_FEATURE_CONTROL, 7)]);
+    }
 
     #[test]
     fn feature_control_probe_requires_an_advertised_or_model_backed_capability() {

@@ -1,0 +1,761 @@
+//! Haswell native raminit (`reg_structs.h`). Indexed offsets are for
+//! channel, rank and byte zero. Signed fields use two’s-complement encoding.
+
+use tock_registers::register_bitfields;
+
+register_bitfields![u32,
+    /// Host bridge PCI 0xe4, 32 bits.
+    pub PCI_CAPID0_A [
+        DDR3L_EN OFFSET(0) NUMBITS(1) [],
+        DDR_WRTVREF OFFSET(1) NUMBITS(1) [],
+        OC_ENABLED_DSKU OFFSET(2) NUMBITS(1) [],
+        DDR_OVERCLOCK OFFSET(3) NUMBITS(1) [],
+        CRID OFFSET(4) NUMBITS(4) [],
+        CDID OFFSET(8) NUMBITS(2) [],
+        DIDOE OFFSET(10) NUMBITS(1) [],
+        IGD OFFSET(11) NUMBITS(1) [],
+        PDCD OFFSET(12) NUMBITS(1) [],
+        X2APIC_EN OFFSET(13) NUMBITS(1) [],
+        DDPCD OFFSET(14) NUMBITS(1) [],
+        CDD OFFSET(15) NUMBITS(1) [],
+        FUFRD OFFSET(16) NUMBITS(1) [],
+        D1NM OFFSET(17) NUMBITS(1) [],
+        PCIE_RATIO_DIS OFFSET(18) NUMBITS(1) [],
+        DDRSZ OFFSET(19) NUMBITS(2) [],
+        PEGG2DIS OFFSET(21) NUMBITS(1) [],
+        DMIG2DIS OFFSET(22) NUMBITS(1) [],
+        VTDD OFFSET(23) NUMBITS(1) [],
+        FDEE OFFSET(24) NUMBITS(1) [],
+        ECCDIS OFFSET(25) NUMBITS(1) [],
+        DW OFFSET(26) NUMBITS(1) [],
+        PELWUD OFFSET(27) NUMBITS(1) [],
+        PEG10D OFFSET(28) NUMBITS(1) [],
+        PEG11D OFFSET(29) NUMBITS(1) [],
+        PEG12D OFFSET(30) NUMBITS(1) [],
+        DHDAD OFFSET(31) NUMBITS(1) []
+    ],
+    /// Host bridge PCI 0xe8, 32 bits.
+    pub PCI_CAPID0_B [
+        SPEGFX1 OFFSET(0) NUMBITS(1) [],
+        DPEGFX1 OFFSET(1) NUMBITS(1) [],
+        DMFC OFFSET(4) NUMBITS(3) [],
+        DDD OFFSET(7) NUMBITS(1) [],
+        HDCPD OFFSET(11) NUMBITS(1) [],
+        PEGX16D OFFSET(16) NUMBITS(1) [],
+        ADDGFXCAP OFFSET(17) NUMBITS(1) [],
+        ADDGFXEN OFFSET(18) NUMBITS(1) [],
+        PKGTYP OFFSET(19) NUMBITS(1) [],
+        PEGG3_DIS OFFSET(20) NUMBITS(1) [],
+        PLL_REF100_CFG OFFSET(21) NUMBITS(3) [],
+        SOFTBIN OFFSET(24) NUMBITS(1) [],
+        CACHESZ OFFSET(25) NUMBITS(3) [],
+        SMT OFFSET(28) NUMBITS(1) [],
+        OC_ENABLED_SSKU OFFSET(29) NUMBITS(1) [],
+        OC_CTL_DSKU_DIS OFFSET(30) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x5e00, 32 bits: memory PLL request and reference selection.
+    pub(crate) MC_BIOS_REQ [
+        MULTIPLIER OFFSET(0) NUMBITS(4) [],
+        REF100 OFFSET(4) NUMBITS(1) [],
+        RUN_BUSY OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x5e04, 32 bits: locked memory PLL multiplier (zero if unlocked).
+    pub(crate) MC_BIOS_DATA [ MULTIPLIER OFFSET(0) NUMBITS(4) [] ],
+    /// MCHBAR 0x0000, 32 bits.
+    pub DDR_DATA_RX_TRAIN_RANK [
+        RCVEN OFFSET(0) NUMBITS(9) [],
+        DQS_P OFFSET(9) NUMBITS(6) [],
+        RX_EQ OFFSET(15) NUMBITS(5) [],
+        DQS_N OFFSET(20) NUMBITS(6) [],
+        /// Signed.
+        VREF OFFSET(26) NUMBITS(6) []
+    ],
+    /// MCHBAR 0x0020, 32 bits.
+    pub DDR_DATA_TX_TRAIN_RANK [
+        DQ_DELAY OFFSET(0) NUMBITS(9) [],
+        DQS_DELAY OFFSET(9) NUMBITS(9) [],
+        TX_EQ OFFSET(20) NUMBITS(6) []
+    ],
+    /// MCHBAR 0x005c, 32 bits.
+    pub DDR_DATA_OFFSET_COMP [
+        /// Signed.
+        DRV_UP OFFSET(0) NUMBITS(6) [],
+        /// Signed.
+        DRV_DOWN OFFSET(6) NUMBITS(6) [],
+        /// Signed.
+        ODT_UP OFFSET(12) NUMBITS(5) [],
+        /// Signed.
+        ODT_DOWN OFFSET(17) NUMBITS(5) [],
+        /// Signed.
+        T_CLK_OUT OFFSET(22) NUMBITS(5) [],
+        /// Signed.
+        SLEW_RATE OFFSET(27) NUMBITS(5) []
+    ],
+    /// MCHBAR 0x0070, 32 bits.
+    pub DDR_DATA_OFFSET_TRAIN [
+        /// Signed.
+        RCVEN OFFSET(0) NUMBITS(6) [],
+        /// Signed.
+        RX_DQS OFFSET(6) NUMBITS(6) [],
+        /// Signed.
+        TX_DQ OFFSET(12) NUMBITS(6) [],
+        /// Signed.
+        TX_DQS OFFSET(18) NUMBITS(6) [],
+        /// Signed.
+        VREF OFFSET(24) NUMBITS(7) []
+    ],
+    /// MCHBAR 0x0074, 32 bits.
+    pub DDR_DATA_CONTROL_0 [
+        RX_TRAINING_MODE OFFSET(0) NUMBITS(1) [],
+        WL_TRAINING_MODE OFFSET(1) NUMBITS(1) [],
+        RL_TRAINING_MODE OFFSET(2) NUMBITS(1) [],
+        SAMP_TRAIN_MODE OFFSET(3) NUMBITS(1) [],
+        TX_ON OFFSET(4) NUMBITS(1) [],
+        RF_ON OFFSET(5) NUMBITS(1) [],
+        RX_PI_ON OFFSET(6) NUMBITS(1) [],
+        TX_PI_ON OFFSET(7) NUMBITS(1) [],
+        INTERNAL_CLOCKS_ON OFFSET(8) NUMBITS(1) [],
+        REPEATER_CLOCKS_ON OFFSET(9) NUMBITS(1) [],
+        TX_DISABLE OFFSET(10) NUMBITS(1) [],
+        RX_DISABLE OFFSET(11) NUMBITS(1) [],
+        TX_LONG OFFSET(12) NUMBITS(1) [],
+        RX_DQS_CTLE OFFSET(13) NUMBITS(2) [],
+        RX_READ_POINTER OFFSET(15) NUMBITS(3) [],
+        DRIVER_SEGMENT_ENABLE OFFSET(18) NUMBITS(1) [],
+        DATA_VCCDDQ_HI OFFSET(19) NUMBITS(1) [],
+        READ_RF_RD OFFSET(20) NUMBITS(1) [],
+        READ_RF_WR OFFSET(21) NUMBITS(1) [],
+        READ_RF_RANK OFFSET(22) NUMBITS(2) [],
+        FORCE_ODT_ON OFFSET(24) NUMBITS(1) [],
+        ODT_SAMP_OFF OFFSET(25) NUMBITS(1) [],
+        DISABLE_ODT_STATIC OFFSET(26) NUMBITS(1) [],
+        DDR_CR_FORCE_ODT_ON OFFSET(27) NUMBITS(1) [],
+        LPDDR_MODE OFFSET(28) NUMBITS(1) [],
+        EN_READ_PREAMBLE OFFSET(29) NUMBITS(1) [],
+        ODT_SAMP_EXTEND_EN OFFSET(30) NUMBITS(1) [],
+        EARLY_RLEAK_EN OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x0060, 32 bits.
+    pub DDR_DATA_CONTROL_1 [
+        /// Signed.
+        REF_PI OFFSET(0) NUMBITS(4) [],
+        DLL_MASK OFFSET(4) NUMBITS(2) [],
+        DLL_WEAKLOCK OFFSET(6) NUMBITS(1) [],
+        SDLL_SEGMENT_DISABLE OFFSET(7) NUMBITS(3) [],
+        RX_BIAS_CTL OFFSET(10) NUMBITS(3) [],
+        /// Signed.
+        ODT_DELAY OFFSET(13) NUMBITS(4) [],
+        ODT_DURATION OFFSET(17) NUMBITS(3) [],
+        /// Signed.
+        SENSE_AMP_DELAY OFFSET(20) NUMBITS(4) [],
+        SENSE_AMP_DURATION OFFSET(24) NUMBITS(3) [],
+        BURST_END_ODT_DELAY OFFSET(27) NUMBITS(3) [],
+        LPDDR_LONG_ODT_EN OFFSET(30) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x0064, 32 bits.
+    pub DDR_DATA_CONTROL_2 [
+        RX_STAGGER_CTL OFFSET(0) NUMBITS(5) [],
+        FORCE_BIAS_ON OFFSET(5) NUMBITS(1) [],
+        FORCE_RX_ON OFFSET(6) NUMBITS(1) [],
+        LEAKER_COMP OFFSET(7) NUMBITS(2) [],
+        RX_DQS_AMP_OFFSET OFFSET(9) NUMBITS(4) [],
+        RX_CLK_STG_NUM OFFSET(13) NUMBITS(5) [],
+        WL_LONG_DELAY OFFSET(18) NUMBITS(1) [],
+        ENABLE_VREF_PWRDN OFFSET(19) NUMBITS(1) [],
+        DDR4_MODE OFFSET(20) NUMBITS(1) [],
+        EN_VDDQ_ODT OFFSET(21) NUMBITS(1) [],
+        EN_VTT_ODT OFFSET(22) NUMBITS(1) [],
+        EN_CONST_Z_EQ_TX OFFSET(23) NUMBITS(1) [],
+        TX_EQ_DIS OFFSET(24) NUMBITS(1) [],
+        RX_VREF_PROG_MFC OFFSET(25) NUMBITS(1) [],
+        CBEN OFFSET(26) NUMBITS(3) [],
+        TX_DESKEW_DISABLE OFFSET(29) NUMBITS(1) [],
+        RX_DESKEW_DISABLE OFFSET(30) NUMBITS(1) [],
+        DQ_SLEW_DLY_BYP OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x3a00, 32 bits.
+    pub DDR_DATA_COMP_0 [
+        RCOMP_DRV_UP OFFSET(0) NUMBITS(6) [],
+        RCOMP_DRV_DOWN OFFSET(9) NUMBITS(6) [],
+        VT_COMP OFFSET(15) NUMBITS(5) [],
+        TCO_COMP OFFSET(20) NUMBITS(6) [],
+        SLEW_RATE_COMP OFFSET(26) NUMBITS(5) []
+    ],
+    /// MCHBAR 0x3a04, 32 bits.
+    pub DDR_DATA_COMP_1 [
+        RCOMP_ODT_UP OFFSET(0) NUMBITS(6) [],
+        RCOMP_ODT_DOWN OFFSET(9) NUMBITS(6) [],
+        PANIC_DRV_DOWN OFFSET(16) NUMBITS(6) [],
+        PANIC_DRV_UP OFFSET(22) NUMBITS(6) [],
+        LS_COMP OFFSET(28) NUMBITS(3) []
+    ],
+    /// MCHBAR 0x3a08, 32 bits.
+    pub DDR_COMP_CMD_COMP [
+        SLEW_RATE_COMP OFFSET(0) NUMBITS(6) [],
+        TCO_COMP OFFSET(6) NUMBITS(6) [],
+        RCOMP_DRV_UP OFFSET(12) NUMBITS(6) [],
+        RCOMP_DRV_DOWN OFFSET(18) NUMBITS(6) [],
+        LS_COMP OFFSET(24) NUMBITS(3) []
+    ],
+    /// MCHBAR 0x3a0c, 32 bits.
+    pub DDR_COMP_CTL_COMP [
+        SLEW_RATE_COMP OFFSET(0) NUMBITS(6) [],
+        TCO_COMP OFFSET(6) NUMBITS(6) [],
+        RCOMP_DRV_UP OFFSET(12) NUMBITS(6) [],
+        RCOMP_DRV_DOWN OFFSET(18) NUMBITS(6) [],
+        LS_COMP OFFSET(24) NUMBITS(4) []
+    ],
+    /// MCHBAR 0x3a10, 32 bits.
+    pub DDR_COMP_CLK_COMP [
+        SLEW_RATE_COMP OFFSET(0) NUMBITS(5) [],
+        TCO_COMP OFFSET(5) NUMBITS(6) [],
+        RCOMP_DRV_UP OFFSET(11) NUMBITS(6) [],
+        RCOMP_DRV_DOWN OFFSET(17) NUMBITS(6) [],
+        LS_COMP OFFSET(23) NUMBITS(4) []
+    ],
+    /// MCHBAR 0x3a14, 32 bits.
+    pub DDR_COMP_CTL_0 [
+        DISABLE_ODT_STATIC OFFSET(3) NUMBITS(1) [],
+        ODT_UP_DOWN_OFF OFFSET(4) NUMBITS(6) [],
+        FIXED_ODT_OFFSET OFFSET(10) NUMBITS(1) [],
+        /// Signed.
+        DQ_DRV_VREF OFFSET(11) NUMBITS(4) [],
+        /// Signed.
+        DQ_ODT_VREF OFFSET(15) NUMBITS(5) [],
+        /// Signed.
+        CMD_DRV_VREF OFFSET(20) NUMBITS(4) [],
+        /// Signed.
+        CTL_DRV_VREF OFFSET(24) NUMBITS(4) [],
+        /// Signed.
+        CLK_DRV_VREF OFFSET(28) NUMBITS(4) []
+    ],
+    /// MCHBAR 0x3a18, 32 bits.
+    pub DDR_COMP_CTL_1 [
+        DQ_SCOMP OFFSET(0) NUMBITS(5) [],
+        CMD_SCOMP OFFSET(5) NUMBITS(5) [],
+        CTL_SCOMP OFFSET(10) NUMBITS(5) [],
+        CLK_SCOMP OFFSET(15) NUMBITS(5) [],
+        TCO_CMD_OFFSET OFFSET(20) NUMBITS(4) [],
+        COMP_CLK_ON OFFSET(24) NUMBITS(1) [],
+        VCCDDQ_HI OFFSET(25) NUMBITS(1) [],
+        DIS_QUICK_COMP OFFSET(29) NUMBITS(1) [],
+        SIN_STEP OFFSET(30) NUMBITS(1) [],
+        SIN_STEP_ADV OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x0078, 32 bits.
+    pub DDR_DATA_VREF_ADJUST [
+        /// Signed.
+        VREF_CA_CTRL OFFSET(0) NUMBITS(7) [],
+        /// Signed.
+        VREF_DQ_CH1_CTRL OFFSET(7) NUMBITS(7) [],
+        /// Signed.
+        VREF_DQ_CH0_CTRL OFFSET(14) NUMBITS(7) [],
+        EN_DIMM_VREF_CA OFFSET(21) NUMBITS(1) [],
+        EN_DIMM_VREF_CH1 OFFSET(22) NUMBITS(1) [],
+        EN_DIMM_VREF_CH0 OFFSET(23) NUMBITS(1) [],
+        HI_Z_TIMER_CTRL OFFSET(24) NUMBITS(2) [],
+        VCCDDQ_HI_QNNN_H OFFSET(26) NUMBITS(1) [],
+        CA_SLOW_BW OFFSET(29) NUMBITS(1) [],
+        CH0_SLOW_BW OFFSET(30) NUMBITS(1) [],
+        CH1_SLOW_BW OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x0f68 (ULT) or 0x0f6c (traditional), 32 bits (channel 1, byte 7).
+    pub DDR_DATA_VREF_CONTROL [
+        HI_BW_DIVIDER OFFSET(0) NUMBITS(2) [],
+        LO_BW_DIVIDER OFFSET(2) NUMBITS(2) [],
+        SAMPLE_DIVIDER OFFSET(4) NUMBITS(3) [],
+        OPEN_LOOP OFFSET(7) NUMBITS(1) [],
+        SLOW_BW_ERROR OFFSET(8) NUMBITS(2) [],
+        HI_BW_ENABLE OFFSET(10) NUMBITS(1) [],
+        VT_SLOPE_B OFFSET(12) NUMBITS(3) [],
+        VT_SLOPE_A OFFSET(15) NUMBITS(3) [],
+        VT_OFFSET OFFSET(18) NUMBITS(3) [],
+        SEL_CODE OFFSET(21) NUMBITS(3) [],
+        OUTPUT_CODE OFFSET(24) NUMBITS(8) []
+    ],
+    /// MCHBAR 0x3a1c, 32 bits.
+    pub DDR_COMP_VSSHI [
+        PANIC_DRV_DOWN_VREF OFFSET(0) NUMBITS(6) [],
+        PANIC_DRV_UP_VREF OFFSET(6) NUMBITS(6) [],
+        VT_OFFSET OFFSET(12) NUMBITS(5) [],
+        VT_SLOPE_A OFFSET(17) NUMBITS(3) [],
+        VT_SLOPE_B OFFSET(20) NUMBITS(3) []
+    ],
+    /// MCHBAR 0x3a24, 32 bits.
+    pub DDR_COMP_VSSHI_CONTROL [
+        VSSHI_TARGET OFFSET(0) NUMBITS(6) [],
+        HI_BW_DIVIDER OFFSET(6) NUMBITS(2) [],
+        LO_BW_DIVIDER OFFSET(8) NUMBITS(2) [],
+        SAMPLE_DIVIDER OFFSET(10) NUMBITS(3) [],
+        OPEN_LOOP OFFSET(13) NUMBITS(1) [],
+        BW_ERROR OFFSET(14) NUMBITS(2) [],
+        PANIC_DRIVER_EN OFFSET(16) NUMBITS(1) [],
+        PANIC_VOLTAGE OFFSET(18) NUMBITS(4) [],
+        GAIN_BOOST OFFSET(22) NUMBITS(1) [],
+        SEL_CODE OFFSET(23) NUMBITS(1) [],
+        OUTPUT_CODE OFFSET(24) NUMBITS(8) []
+    ],
+    /// MCHBAR 0x180c, 32 bits.
+    pub CLK_PI_CODE [
+        PI_0 OFFSET(0) NUMBITS(7) [],
+        PI_1 OFFSET(7) NUMBITS(7) [],
+        PI_2 OFFSET(14) NUMBITS(7) [],
+        PI_3 OFFSET(21) NUMBITS(7) []
+    ],
+    /// MCHBAR 0x1218, 0x1c18, 32 bits.
+    pub CTL_PI_CODE [
+        PI_0 OFFSET(0) NUMBITS(7) [],
+        PI_1 OFFSET(7) NUMBITS(7) [],
+        PI_2 OFFSET(14) NUMBITS(7) [],
+        PI_3 OFFSET(21) NUMBITS(7) [],
+        XOVER_EN OFFSET(28) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x1208, 0x1408, 0x1a08, 32 bits.
+    pub CMD_PI_CODE [
+        PI_0 OFFSET(0) NUMBITS(7) [],
+        PI_1 OFFSET(7) NUMBITS(7) []
+    ],
+    /// MCHBAR 0x1810, 32 bits.
+    pub DDR_CLK_CONTROLS [
+        REF_PI OFFSET(0) NUMBITS(4) [],
+        DLL_MASK OFFSET(4) NUMBITS(2) [],
+        TX_ON OFFSET(7) NUMBITS(1) [],
+        INTERNAL_CLOCKS_ON OFFSET(8) NUMBITS(1) [],
+        REPEATER_CLOCKS_ON OFFSET(9) NUMBITS(1) [],
+        IO_LB_CTL OFFSET(10) NUMBITS(2) [],
+        ODT_MODE OFFSET(12) NUMBITS(1) [],
+        RX_VREF OFFSET(21) NUMBITS(6) [],
+        VCCDDQ_HI OFFSET(27) NUMBITS(1) [],
+        DLL_WEAKLOCK OFFSET(28) NUMBITS(1) [],
+        LPDDR_MODE OFFSET(29) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x140c, 0x1a0c, 32 bits.
+    pub DDR_CMD_CONTROLS [
+        /// Signed.
+        REF_PI OFFSET(0) NUMBITS(4) [],
+        DLL_MASK OFFSET(4) NUMBITS(2) [],
+        TX_ON OFFSET(7) NUMBITS(1) [],
+        INTERNAL_CLOCKS_ON OFFSET(8) NUMBITS(1) [],
+        REPEATER_CLOCKS_ON OFFSET(9) NUMBITS(1) [],
+        IO_LB_CTL OFFSET(10) NUMBITS(2) [],
+        ODT_MODE OFFSET(12) NUMBITS(1) [],
+        CMD_TX_EQ OFFSET(13) NUMBITS(2) [],
+        EARLY_WEAK_DRIVE OFFSET(15) NUMBITS(2) [],
+        /// Signed.
+        RX_VREF OFFSET(21) NUMBITS(6) [],
+        VCCDDQ_HI OFFSET(27) NUMBITS(1) [],
+        DLL_WEAKLOCK OFFSET(28) NUMBITS(1) [],
+        LPDDR_MODE OFFSET(29) NUMBITS(1) [],
+        LPDDR_CA_A_DIS OFFSET(30) NUMBITS(1) [],
+        LPDDR_CA_B_DIS OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x121c, 0x1c1c, 32 bits.
+    pub DDR_CKE_CTL_CONTROLS [
+        /// Signed.
+        REF_PI OFFSET(0) NUMBITS(4) [],
+        DLL_MASK OFFSET(4) NUMBITS(2) [],
+        TX_ON OFFSET(7) NUMBITS(1) [],
+        INTERNAL_CLOCKS_ON OFFSET(8) NUMBITS(1) [],
+        REPEATER_CLOCKS_ON OFFSET(9) NUMBITS(1) [],
+        IO_LB_CTL OFFSET(10) NUMBITS(2) [],
+        ODT_MODE OFFSET(12) NUMBITS(1) [],
+        CMD_TX_EQ OFFSET(13) NUMBITS(2) [],
+        EARLY_WEAK_DRIVE OFFSET(15) NUMBITS(2) [],
+        CTL_TX_EQ OFFSET(17) NUMBITS(2) [],
+        CTL_SR_DRV OFFSET(19) NUMBITS(2) [],
+        /// Signed.
+        RX_VREF OFFSET(21) NUMBITS(6) [],
+        VCCDDQ_HI OFFSET(27) NUMBITS(1) [],
+        DLL_WEAKLOCK OFFSET(28) NUMBITS(1) [],
+        LPDDR_MODE OFFSET(29) NUMBITS(1) [],
+        LA_DRV_EN_OVRD OFFSET(30) NUMBITS(1) [],
+        LPDDR_CA_A_DIS OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x2000, 32 bits.
+    pub DDR_SCRAMBLE [
+        SCRAM_EN OFFSET(0) NUMBITS(1) [],
+        SCRAM_KEY OFFSET(1) NUMBITS(16) [],
+        CLK_GATE_AB OFFSET(17) NUMBITS(2) [],
+        CLK_GATE_C OFFSET(19) NUMBITS(2) [],
+        EN_DBI_AB OFFSET(21) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x2008, 32 bits.
+    pub DDR_SCRAM_MISC_CONTROL [
+        WL_WAKE_CYCLES OFFSET(0) NUMBITS(2) [],
+        WL_SLEEP_CYCLES OFFSET(2) NUMBITS(3) [],
+        FORCE_COMP_UPDATE OFFSET(5) NUMBITS(1) [],
+        WEAKLOCK_LATENCY OFFSET(6) NUMBITS(4) [],
+        DDR_NO_CH_INTERLEAVE OFFSET(10) NUMBITS(1) [],
+        LPDDR_MODE OFFSET(11) NUMBITS(1) [],
+        CKE_MAPPING_CH0 OFFSET(12) NUMBITS(4) [],
+        CKE_MAPPING_CH1 OFFSET(16) NUMBITS(4) []
+    ],
+    /// MCHBAR 0x4024, 32 bits.
+    pub SC_ROUNDT_LAT [
+        R0D0 OFFSET(0) NUMBITS(6) [],
+        R1D0 OFFSET(8) NUMBITS(6) [],
+        R0D1 OFFSET(16) NUMBITS(6) [],
+        R1D1 OFFSET(24) NUMBITS(6) []
+    ],
+    /// MCHBAR 0x4028, 32 bits.
+    pub SC_IO_LATENCY [
+        IOLAT_RANK0 OFFSET(0) NUMBITS(4) [],
+        IOLAT_RANK1 OFFSET(4) NUMBITS(4) [],
+        IOLAT_RANK2 OFFSET(8) NUMBITS(4) [],
+        IOLAT_RANK3 OFFSET(12) NUMBITS(4) [],
+        RT_IOCOMP OFFSET(16) NUMBITS(6) [],
+        DIS_RT_CLK_GATE OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x4c20, 32 bits.
+    pub MCSCHEDS_CBIT [
+        DIS_OPP_CAS OFFSET(0) NUMBITS(1) [],
+        DIS_OPP_IS_CAS OFFSET(1) NUMBITS(1) [],
+        DIS_OPP_RAS OFFSET(2) NUMBITS(1) [],
+        DIS_OPP_IS_RAS OFFSET(3) NUMBITS(1) [],
+        DIS_1C_BYP OFFSET(4) NUMBITS(1) [],
+        DIS_2C_BYP OFFSET(5) NUMBITS(1) [],
+        DIS_DEPRD_OPT OFFSET(6) NUMBITS(1) [],
+        DIS_PT_IT OFFSET(7) NUMBITS(1) [],
+        DIS_PRCNT_RING OFFSET(8) NUMBITS(1) [],
+        DIS_PRCNT_SA OFFSET(9) NUMBITS(1) [],
+        DIS_BLKR_PH OFFSET(10) NUMBITS(1) [],
+        DIS_BLKR_PE OFFSET(11) NUMBITS(1) [],
+        DIS_BLKR_PM OFFSET(12) NUMBITS(1) [],
+        DIS_ODT OFFSET(13) NUMBITS(1) [],
+        OE_ALWAYS_OFF OFFSET(14) NUMBITS(1) [],
+        DIS_AOM OFFSET(16) NUMBITS(1) [],
+        BLOCK_RPQ OFFSET(17) NUMBITS(1) [],
+        BLOCK_WPQ OFFSET(18) NUMBITS(1) [],
+        INVERT_ALIGN OFFSET(19) NUMBITS(1) [],
+        DIS_WRITE_GAP OFFSET(20) NUMBITS(1) [],
+        DIS_ZQ OFFSET(21) NUMBITS(1) [],
+        DIS_TT OFFSET(22) NUMBITS(1) [],
+        DIS_OPP_REF OFFSET(23) NUMBITS(1) [],
+        LONG_ZQ OFFSET(24) NUMBITS(1) [],
+        DIS_SRX_ZQ OFFSET(25) NUMBITS(1) [],
+        SERIALIZE_ZQ OFFSET(26) NUMBITS(1) [],
+        ZQ_FAST_EXEC OFFSET(27) NUMBITS(1) [],
+        DIS_DRIVE_NOP OFFSET(28) NUMBITS(1) [],
+        PRES_WDB_ENT OFFSET(29) NUMBITS(1) [],
+        DIS_CLK_GATE OFFSET(30) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x4078, 0x41b0, 32 bits.
+    pub REUT_PAT_CL_MUX_LMN [
+        L_DATA_SELECT OFFSET(0) NUMBITS(1) [],
+        EN_SWEEP_FREQ OFFSET(1) NUMBITS(1) [],
+        L_COUNTER OFFSET(8) NUMBITS(8) [],
+        M_COUNTER OFFSET(16) NUMBITS(8) [],
+        N_COUNTER OFFSET(24) NUMBITS(8) []
+    ],
+    /// MCHBAR 0x4098, 32 bits.
+    pub REUT_ERR_CTL [
+        STOP_ON_NTH_ERROR OFFSET(0) NUMBITS(6) [],
+        STOP_ON_ERROR_CONTROL OFFSET(12) NUMBITS(2) [],
+        SELECTIVE_ERR_ENABLE_CHUNK OFFSET(16) NUMBITS(8) [],
+        SELECTIVE_ERR_ENABLE_CACHELINE OFFSET(24) NUMBITS(8) []
+    ],
+    /// MCHBAR 0x41a0, 32 bits.
+    pub REUT_PAT_CADB_MUX_CTRL [
+        MUX_0_CTRL OFFSET(0) NUMBITS(2) [],
+        MUX_1_CTRL OFFSET(4) NUMBITS(2) [],
+        MUX_2_CTRL OFFSET(8) NUMBITS(2) [],
+        SEL_MUX_0_CTRL OFFSET(16) NUMBITS(2) [],
+        SEL_MUX_1_CTRL OFFSET(20) NUMBITS(2) [],
+        SEL_MUX_2_CTRL OFFSET(24) NUMBITS(2) []
+    ],
+    /// MCHBAR 0x4040, 32 bits.
+    pub REUT_PAT_WDB_CL_MUX_CFG [
+        MUX_0_CONTROL OFFSET(0) NUMBITS(2) [],
+        MUX_1_CONTROL OFFSET(3) NUMBITS(2) [],
+        MUX_2_CONTROL OFFSET(6) NUMBITS(2) [],
+        ECC_REPLACE_BYTE_CTL OFFSET(14) NUMBITS(1) [],
+        ECC_DATA_SOURCE_SEL OFFSET(15) NUMBITS(1) [],
+        SAVE_LFSR_SEED_RATE OFFSET(16) NUMBITS(6) [],
+        RELOAD_LFSR_SEED_RATE OFFSET(24) NUMBITS(3) []
+    ],
+    /// MCHBAR 0x4200, 32 bits.
+    pub REUT_PAT_WDB_CL_CTRL [
+        INC_RATE OFFSET(0) NUMBITS(5) [],
+        INC_SCALE OFFSET(5) NUMBITS(1) [],
+        START_PTR OFFSET(8) NUMBITS(6) [],
+        END_PTR OFFSET(16) NUMBITS(6) []
+    ],
+    /// MCHBAR 0x419c, 32 bits.
+    pub REUT_PAT_CADB_MRS [
+        DELAY_GAP OFFSET(0) NUMBITS(3) [],
+        START_PTR OFFSET(8) NUMBITS(3) [],
+        END_PTR OFFSET(16) NUMBITS(3) [],
+        CURR_PTR OFFSET(24) NUMBITS(3) []
+    ],
+    /// MCHBAR 0x4808, 32 bits.
+    pub REUT_SUBSEQ_CTL [
+        NUM_CACHELINES_WITH_SCALE OFFSET(0) NUMBITS(8) [],
+        SUBSEQ_WAIT OFFSET(8) NUMBITS(14) [],
+        SUBSEQ_TYPE OFFSET(22) NUMBITS(4) [],
+        SAVE_CURR_BASE_ADDR_TO_START OFFSET(26) NUMBITS(1) [],
+        RESET_CURR_BASE_ADDR_TO_START OFFSET(27) NUMBITS(1) [],
+        DATA_AND_ECC_ADDR_INVERSION OFFSET(28) NUMBITS(2) [],
+        INVERT_DATA_AND_ECC OFFSET(30) NUMBITS(1) [],
+        STOP_BASE_SUBSEQ_ON_WRAP_TRIGGER OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x4908, 32 bits.
+    pub REUT_SEQ_MISC_CTL [
+        COL_ADDR_ORDER OFFSET(0) NUMBITS(2) [],
+        ROW_ADDR_ORDER OFFSET(2) NUMBITS(2) [],
+        BANK_ADDR_ORDER OFFSET(4) NUMBITS(2) [],
+        RANK_ADDR_ORDER OFFSET(6) NUMBITS(2) [],
+        ADDR_INVERT_RATE OFFSET(13) NUMBITS(3) [],
+        COL_ADDR_INVERT_EN OFFSET(20) NUMBITS(1) [],
+        ROW_ADDR_INVERT_EN OFFSET(21) NUMBITS(1) [],
+        BANK_ADDR_INVERT_EN OFFSET(22) NUMBITS(1) [],
+        RANK_ADDR_INVERT_EN OFFSET(23) NUMBITS(1) [],
+        COL_WRAP_TRIGGER_EN OFFSET(24) NUMBITS(1) [],
+        ROW_WRAP_TRIGGER_EN OFFSET(25) NUMBITS(1) [],
+        BANK_WRAP_TRIGGER_EN OFFSET(26) NUMBITS(1) [],
+        RANK_WRAP_TRIGGER_EN OFFSET(27) NUMBITS(1) [],
+        COL_WRAP_CARRY_EN OFFSET(28) NUMBITS(1) [],
+        ROW_WRAP_CARRY_EN OFFSET(29) NUMBITS(1) [],
+        BANK_WRAP_CARRY_EN OFFSET(30) NUMBITS(1) [],
+        RANK_WRAP_CARRY_EN OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x48b8, 0x4800, 32 bits.
+    pub REUT_SEQ_CTL [
+        START_TEST OFFSET(0) NUMBITS(1) [],
+        STOP_TEST OFFSET(1) NUMBITS(1) [],
+        CLEAR_ERRORS OFFSET(2) NUMBITS(1) [],
+        STOP_ON_ERROR OFFSET(4) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x4804, 32 bits.
+    pub REUT_GLOBAL_ERR [
+        CH_ERROR OFFSET(0) NUMBITS(2) [],
+        CH_TEST_DONE OFFSET(16) NUMBITS(2) []
+    ],
+    /// MCHBAR 0x4190, 32 bits.
+    pub REUT_MISC_CKE_CTRL [
+        CKE_OVERRIDE OFFSET(0) NUMBITS(4) [],
+        CKE_EN_START_TEST_SYNC OFFSET(8) NUMBITS(1) [],
+        CKE_ON OFFSET(16) NUMBITS(4) []
+    ],
+    /// MCHBAR 0x4194, 32 bits.
+    pub REUT_MISC_ODT_CTRL [
+        ODT_OVERRIDE OFFSET(0) NUMBITS(4) [],
+        ODT_ON OFFSET(16) NUMBITS(4) [],
+        MPR_TRAIN_DDR_ON OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x42d0, 32 bits.
+    pub LDAT_PDAT [
+        FAST_ADDR OFFSET(0) NUMBITS(12) [],
+        ADDR_EN OFFSET(16) NUMBITS(1) [],
+        SEQ_EN OFFSET(17) NUMBITS(1) [],
+        POL_0 OFFSET(18) NUMBITS(1) [],
+        POL_1 OFFSET(19) NUMBITS(1) [],
+        CMD_A OFFSET(20) NUMBITS(4) [],
+        CMD_B OFFSET(24) NUMBITS(4) [],
+        CMD_C OFFSET(28) NUMBITS(4) []
+    ],
+    /// MCHBAR 0x42d4, 32 bits.
+    pub LDAT_SDAT [
+        BANK_SEL OFFSET(0) NUMBITS(4) [],
+        ARRAY_SEL OFFSET(5) NUMBITS(5) [],
+        CMP OFFSET(10) NUMBITS(1) [],
+        REPLICATE OFFSET(11) NUMBITS(1) [],
+        DWORD OFFSET(12) NUMBITS(4) [],
+        MODE OFFSET(16) NUMBITS(2) [],
+        MPMAP OFFSET(18) NUMBITS(6) [],
+        MPB_OFFSET OFFSET(24) NUMBITS(4) [],
+        STAGE_EN OFFSET(28) NUMBITS(1) [],
+        SHADOW OFFSET(29) NUMBITS(2) []
+    ],
+    /// MCHBAR 0x4c30, 32 bits.
+    pub MCSCHEDS_DFT_MISC [
+        WDAR OFFSET(0) NUMBITS(1) [],
+        SAFE_MASK_SEL OFFSET(1) NUMBITS(3) [],
+        FORCE_RCV_EN OFFSET(4) NUMBITS(1) [],
+        DDR_QUALIFIER OFFSET(8) NUMBITS(2) [],
+        QUALIFIER_LENGTH OFFSET(10) NUMBITS(2) [],
+        WDB_BLOCK_EN OFFSET(12) NUMBITS(1) [],
+        RT_DFT_READ_PTR OFFSET(13) NUMBITS(4) [],
+        RT_DFT_READ_ENABLE OFFSET(17) NUMBITS(1) [],
+        RT_DFT_READ_SEL_ADDR OFFSET(18) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x4000, 32 bits.
+    pub TC_BANK [
+        TRCD OFFSET(0) NUMBITS(5) [],
+        TRP OFFSET(5) NUMBITS(5) [],
+        TRAS OFFSET(10) NUMBITS(6) [],
+        TRDPRE OFFSET(16) NUMBITS(4) [],
+        TWRPRE OFFSET(20) NUMBITS(6) [],
+        TRRD OFFSET(26) NUMBITS(4) [],
+        TRPAB_EXT OFFSET(30) NUMBITS(2) []
+    ],
+    /// MCHBAR 0x4004, 32 bits.
+    pub TC_BANK_RANK_A [
+        TCKE OFFSET(0) NUMBITS(4) [],
+        TFAW OFFSET(4) NUMBITS(8) [],
+        TRDRD_SR OFFSET(12) NUMBITS(3) [],
+        TRDRD_DR OFFSET(15) NUMBITS(4) [],
+        TRDRD_DD OFFSET(19) NUMBITS(4) [],
+        TRDPDEN OFFSET(23) NUMBITS(5) [],
+        CMD_3ST_DIS OFFSET(29) NUMBITS(1) [],
+        CMD_STRETCH OFFSET(30) NUMBITS(2) []
+    ],
+    /// MCHBAR 0x4008, 32 bits.
+    pub TC_BANK_RANK_B [
+        TWRRD_SR OFFSET(0) NUMBITS(6) [],
+        TWRRD_DR OFFSET(6) NUMBITS(4) [],
+        TWRRD_DD OFFSET(10) NUMBITS(4) [],
+        TWRWR_SR OFFSET(14) NUMBITS(3) [],
+        TWRWR_DR OFFSET(17) NUMBITS(4) [],
+        TWRWR_DD OFFSET(21) NUMBITS(4) [],
+        TWRPDEN OFFSET(25) NUMBITS(6) [],
+        DEC_WRD OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x400c, 32 bits.
+    pub TC_BANK_RANK_C [
+        TXPDLL OFFSET(0) NUMBITS(6) [],
+        TXP OFFSET(6) NUMBITS(4) [],
+        TAONPD OFFSET(10) NUMBITS(4) [],
+        TRDWR_SR OFFSET(14) NUMBITS(5) [],
+        TRDWR_DR OFFSET(19) NUMBITS(5) [],
+        TRDWR_DD OFFSET(24) NUMBITS(5) []
+    ],
+    /// MCHBAR 0x4014, 32 bits.
+    pub TC_BANK_RANK_D [
+        TAA OFFSET(0) NUMBITS(5) [],
+        TCWL OFFSET(5) NUMBITS(5) [],
+        TCPDED OFFSET(10) NUMBITS(2) [],
+        TPRPDEN OFFSET(12) NUMBITS(2) [],
+        ODT_READ_DELAY OFFSET(14) NUMBITS(3) [],
+        ODT_READ_DURATION OFFSET(17) NUMBITS(2) [],
+        ODT_WRITE_DURATION OFFSET(19) NUMBITS(3) [],
+        ODT_WRITE_DELAY OFFSET(22) NUMBITS(3) [],
+        ODT_ALWAYS_RANK_0 OFFSET(25) NUMBITS(1) [],
+        CMD_DELAY OFFSET(26) NUMBITS(2) []
+    ],
+    /// MCHBAR 0x4298, 32 bits.
+    pub TC_RFTP [
+        TREFI OFFSET(0) NUMBITS(16) [],
+        TRFC OFFSET(16) NUMBITS(9) [],
+        TREFIX9 OFFSET(25) NUMBITS(7) []
+    ],
+    /// MCHBAR 0x42a4, 32 bits.
+    pub TC_SRFTP [
+        TXSDLL OFFSET(0) NUMBITS(12) [],
+        TXS_OFFSET OFFSET(12) NUMBITS(4) [],
+        TZQOPER OFFSET(16) NUMBITS(10) [],
+        TMOD OFFSET(28) NUMBITS(4) []
+    ],
+    /// MCHBAR 0x429c, 32 bits.
+    pub TC_MR2_SHADOW [
+        MR2_SHADOW_LOW OFFSET(0) NUMBITS(6) [],
+        SRT_AVAILABLE OFFSET(6) NUMBITS(2) [],
+        MR2_SHADOW_HIGH OFFSET(8) NUMBITS(3) [],
+        ADDR_BIT_SWIZZLE OFFSET(14) NUMBITS(2) []
+    ],
+    /// MCHBAR 0x4010, 32 bits.
+    pub MCMAIN_COMMAND_RATE_LIMIT [
+        ENABLE_CMD_LIMIT OFFSET(0) NUMBITS(1) [],
+        CMD_RATE_LIMIT OFFSET(1) NUMBITS(3) [],
+        RESET_ON_COMMAND OFFSET(4) NUMBITS(4) [],
+        RESET_DELAY OFFSET(8) NUMBITS(4) [],
+        CK_TO_CKE_DELAY OFFSET(12) NUMBITS(2) [],
+        INIT_MRW_2N_CS OFFSET(31) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x5000, 32 bits.
+    pub MAD_CHNL [
+        CH_A OFFSET(0) NUMBITS(2) [],
+        CH_B OFFSET(2) NUMBITS(2) [],
+        CH_C OFFSET(4) NUMBITS(2) [],
+        STACKED_MODE OFFSET(6) NUMBITS(1) [],
+        STKD_MODE_BITS OFFSET(7) NUMBITS(3) [],
+        LPDDR_MODE OFFSET(10) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x5004, 32 bits.
+    pub MAD_DIMM [
+        DIMM_A_SIZE OFFSET(0) NUMBITS(8) [],
+        DIMM_B_SIZE OFFSET(8) NUMBITS(8) [],
+        DIMM_A_SEL OFFSET(16) NUMBITS(1) [],
+        DIMM_A_RANKS OFFSET(17) NUMBITS(1) [],
+        DIMM_B_RANKS OFFSET(18) NUMBITS(1) [],
+        DIMM_A_WIDTH OFFSET(19) NUMBITS(1) [],
+        DIMM_B_WIDTH OFFSET(20) NUMBITS(1) [],
+        RANK_INTERLEAVE OFFSET(21) NUMBITS(1) [],
+        ENH_INTERLEAVE OFFSET(22) NUMBITS(1) [],
+        ECC_IO_ON OFFSET(24) NUMBITS(1) [],
+        ECC_LOGIC_ON OFFSET(25) NUMBITS(1) [],
+        HORI_MODE OFFSET(26) NUMBITS(1) [],
+        HORI_ADDRESS OFFSET(27) NUMBITS(3) []
+    ],
+    /// MCHBAR 0x5014, 32 bits.
+    pub MAD_ZR [
+        CH_B_DOUBLE OFFSET(16) NUMBITS(8) [],
+        CH_B_SINGLE OFFSET(24) NUMBITS(8) []
+    ],
+    /// MCHBAR 0x5024, 32 bits.
+    pub CHANNEL_HASH [
+        ADDR_MASK OFFSET(0) NUMBITS(14) [],
+        LSB_MASK_BIT OFFSET(21) NUMBITS(2) [],
+        ENABLE OFFSET(23) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x5030, 32 bits.
+    pub MC_INIT_STATE_G [
+        PU_MRC_DONE OFFSET(0) NUMBITS(1) [],
+        DDR_NOT_RESET OFFSET(1) NUMBITS(1) [],
+        REFRESH_ENABLE OFFSET(3) NUMBITS(1) [],
+        MC_INIT_DONE_ACK OFFSET(5) NUMBITS(1) [],
+        MRC_DONE OFFSET(7) NUMBITS(1) [],
+        SAFE_SELF_REFRESH OFFSET(8) NUMBITS(1) [],
+        HVM_GATE_DDR_RESET OFFSET(10) NUMBITS(1) [],
+        DCLK_ENABLE OFFSET(22) NUMBITS(1) [],
+        RESET_IO OFFSET(23) NUMBITS(1) []
+    ],
+    /// MCHBAR 0x5f08, 32 bits.
+    pub PCU_COMP [
+        COMP_DISABLE OFFSET(0) NUMBITS(1) [],
+        COMP_INTERVAL OFFSET(1) NUMBITS(4) [],
+        COMP_FORCE OFFSET(8) NUMBITS(1) []
+    ]
+];
+
+register_bitfields![u64,
+    /// MCHBAR 0x41c0, 64 bits.
+    pub REUT_PAT_CADB_PROG [
+        ADDR OFFSET(0) NUMBITS(16) [],
+        BANK OFFSET(24) NUMBITS(3) [],
+        CS OFFSET(32) NUMBITS(4) [],
+        CMD OFFSET(40) NUMBITS(3) [],
+        ODT OFFSET(48) NUMBITS(4) [],
+        CKE OFFSET(56) NUMBITS(4) []
+    ],
+    /// MCHBAR 0x48a8, 64 bits.
+    pub REUT_SEQ_CFG [
+        STOP_BASE_SEQ_ON_WRAP_TRIGGER OFFSET(3) NUMBITS(1) [],
+        ADDRESS_UPDATE_RATE_MODE OFFSET(5) NUMBITS(1) [],
+        ENABLE_DUMMY_READS OFFSET(7) NUMBITS(1) [],
+        ENABLE_CONSTANT_WRITE_STROBE OFFSET(10) NUMBITS(1) [],
+        GLOBAL_CONTROL OFFSET(11) NUMBITS(1) [],
+        INITIALIZATION_MODE OFFSET(12) NUMBITS(2) [],
+        EARLY_STEPPINGS_LOOP_COUNT OFFSET(16) NUMBITS(5) [],
+        SUBSEQUENCE_START_POINTER OFFSET(24) NUMBITS(3) [],
+        SUBSEQUENCE_END_POINTER OFFSET(28) NUMBITS(3) [],
+        START_TEST_DELAY OFFSET(32) NUMBITS(10) []
+    ],
+    /// MCHBAR 0x48d8, 0x48e8, 0x48f8, 64 bits.
+    pub REUT_SEQ_BASE_ADDR [
+        COL_ADDR OFFSET(3) NUMBITS(8) [],
+        ROW_ADDR OFFSET(24) NUMBITS(16) [],
+        BANK_ADDR OFFSET(48) NUMBITS(3) [],
+        RANK_ADDR OFFSET(56) NUMBITS(3) []
+    ],
+    /// MCHBAR 0x4910, 64 bits.
+    pub REUT_SEQ_ADDR_INC_CTL [
+        COL_ADDR_INCREMENT OFFSET(3) NUMBITS(8) [],
+        COL_ADDR_UPDATE OFFSET(12) NUMBITS(8) [],
+        ROW_ADDR_INCREMENT OFFSET(20) NUMBITS(12) [],
+        ROW_ADDR_UPDATE OFFSET(32) NUMBITS(6) [],
+        BANK_ADDR_INCREMENT OFFSET(38) NUMBITS(3) [],
+        BANK_ADDR_UPDATE OFFSET(44) NUMBITS(8) [],
+        RANK_ADDR_INCREMENT OFFSET(52) NUMBITS(3) [],
+        RANK_ADDR_UPDATE OFFSET(56) NUMBITS(8) []
+    ]
+];

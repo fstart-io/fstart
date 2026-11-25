@@ -73,6 +73,8 @@ pub const fn soc(pmbase: u16, legacy: bool) -> SocAcpi {
             duty_offset: 0,
             duty_width: 0,
             pm2_cnt_offset: None,
+            pm1_evt_word_access: false,
+            gpe0_byte_access: false,
         },
         bridges: &BRIDGES,
         fch_intx_gsi: None,

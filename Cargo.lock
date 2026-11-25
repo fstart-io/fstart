@@ -262,13 +262,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "crabefi-bounds"
+version = "0.1.0"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
+
+[[package]]
 name = "crabefi-core"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=b26754578ae23bdd7a2397047489530d2fb28140#b26754578ae23bdd7a2397047489530d2fb28140"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.10.0",
+ "crabefi-bounds",
  "crabefi-efi-types",
+ "crabefi-memmap",
  "crabefi-pkcs7",
  "crabefi-runtime-abi",
  "crabefi-runtime-bundle",
@@ -281,7 +288,7 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "mem-barrier",
- "object 0.40.0",
+ "object 0.41.0",
  "pci_types",
  "r-efi 7.1.0",
  "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=4fb9d6270972d5ba04b5e22671b3416aaaaf6328)",
@@ -298,7 +305,7 @@ dependencies = [
 [[package]]
 name = "crabefi-efi-types"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=b26754578ae23bdd7a2397047489530d2fb28140#b26754578ae23bdd7a2397047489530d2fb28140"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
 dependencies = [
  "zerocopy",
 ]
@@ -306,16 +313,27 @@ dependencies = [
 [[package]]
 name = "crabefi-hw"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=b26754578ae23bdd7a2397047489530d2fb28140#b26754578ae23bdd7a2397047489530d2fb28140"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
 dependencies = [
  "embedded-hal",
  "tock-registers",
 ]
 
 [[package]]
+name = "crabefi-memmap"
+version = "0.1.0"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
+dependencies = [
+ "crabefi-runtime-abi",
+ "heapless 0.9.3",
+ "log",
+ "r-efi 7.1.0",
+]
+
+[[package]]
 name = "crabefi-pkcs7"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=b26754578ae23bdd7a2397047489530d2fb28140#b26754578ae23bdd7a2397047489530d2fb28140"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -323,17 +341,17 @@ dependencies = [
 [[package]]
 name = "crabefi-runtime-abi"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=b26754578ae23bdd7a2397047489530d2fb28140#b26754578ae23bdd7a2397047489530d2fb28140"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
 
 [[package]]
 name = "crabefi-runtime-bundle"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=b26754578ae23bdd7a2397047489530d2fb28140#b26754578ae23bdd7a2397047489530d2fb28140"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
 
 [[package]]
 name = "crabefi-ui"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=b26754578ae23bdd7a2397047489530d2fb28140#b26754578ae23bdd7a2397047489530d2fb28140"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=c6682553189cfb30e451b90351fae01fe7140433#c6682553189cfb30e451b90351fae01fe7140433"
 dependencies = [
  "heapless 0.9.3",
  "log",
@@ -882,6 +900,24 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-log",
  "fstart-platform-aspeed",
+]
+
+[[package]]
+name = "fstart-board-google-peppy"
+version = "0.1.0"
+dependencies = [
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-chromeec",
+ "fstart-driver-intel",
+ "fstart-driver-tpm",
+ "fstart-log",
+ "fstart-options",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "ufmt",
 ]
 
 [[package]]
@@ -1712,13 +1748,14 @@ name = "fstart-platform-intel"
 version = "0.1.0"
 dependencies = [
  "fstart-acpi",
+ "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
  "fstart-coreboot",
  "fstart-driver-flash-console",
  "fstart-driver-intel",
  "fstart-driver-rtc",
- "fstart-driver-uart",
+ "fstart-driver-tpm",
  "fstart-driver-usbdebug",
  "fstart-driver-vbios",
  "fstart-ffs",
@@ -1830,6 +1867,7 @@ name = "fstart-smm"
 version = "0.1.0"
 dependencies = [
  "fstart-core",
+ "fstart-pci",
  "zerocopy",
 ]
 
@@ -2234,9 +2272,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.40.0"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+checksum = "11dbdb66876026054e4ffc8d757d862bdf5df5aebd5c0b95a41f17832a94f7d2"
 dependencies = [
  "memchr",
 ]

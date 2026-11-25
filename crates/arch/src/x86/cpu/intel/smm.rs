@@ -59,12 +59,48 @@ pub trait SmiControl {
 }
 
 /// CPU-model facts needed to install SMM, supplied by the CPU model driver.
-pub trait SmmCpu {
+pub trait SmmCpu: Sync {
     /// State-save layout this CPU writes on SMI entry.
     fn smm_save_state_format(&self) -> X86SaveStateFormat;
     /// SMRR register pair to use when this CPU supports it, or `None` for
     /// models without a pair. Older revisions lacking SMRR still boot.
     fn smrr_pair(&self) -> Option<SmrrPair>;
+    /// Required for families that lock SMM instruction fetches to SMRR.
+    fn requires_smrr(&self) -> bool {
+        false
+    }
+    /// Chipset debug memory at the top of TSEG, covered by the full SMRR
+    /// but unavailable to the SMM image allocator.
+    fn ied_bytes() -> u32
+    where
+        Self: Sized,
+    {
+        0
+    }
+    /// Initialize the IED area at the top of open SMRAM.
+    ///
+    /// # Safety
+    ///
+    /// `base` must address `Self::ied_bytes()` exclusively owned bytes in open SMRAM.
+    unsafe fn initialize_ied(_base: u32)
+    where
+        Self: Sized,
+    {
+    }
+    /// Write IED save-state/PRMRR fields during the serialized relocation SMI.
+    ///
+    /// # Safety
+    ///
+    /// Must run during the serialized relocation SMI with `base` pointing at
+    /// the initialized IED area and `state` referencing the current save state.
+    unsafe fn relocate_ied(_state: fstart_smm::X86SaveState, _base: u32) -> bool
+    where
+        Self: Sized,
+    {
+        true
+    }
+    /// Best-effort model work in normal mode after successful relocation.
+    fn after_relocation(&self) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +175,16 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
     /// Install, relocate and lock the permanent handler using the
     /// already-initialized MP subsystem.
     pub fn install(&self, mp: &MpHandle, image: &[u8]) -> Result<(), IntelSmmError> {
+        self.relocate(mp, image)?.activate(mp)
+    }
+
+    /// Relocate all CPUs and close and lock SMRAM. Event sources remain
+    /// quiesced while the platform finishes model initialization.
+    pub fn relocate(
+        &self,
+        mp: &MpHandle,
+        image: &[u8],
+    ) -> Result<RelocatedSmm<'a, SB>, IntelSmmError> {
         let (smram_base, smram_size) = self
             .smram
             .tseg()
@@ -165,19 +211,11 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         if result.is_err() {
             self.smram.smram_close();
         }
-        result?;
-
-        // Exercise every CPU's permanent entry once, as a boot-time smoke
-        // test: a broken stub or handler stops the boot here instead of at the
-        // first OS SMI. Nothing outside SMRAM can observe more than the return.
-        mp.scope(|scope| scope.scatter(&|_| send_smi_self()));
-        fstart_log::info!(
-            "{} {} {} CPUs",
-            self.name,
-            crate::messages::SMI_RETURNED,
-            num_cpus
-        );
-        Ok(())
+        Ok(RelocatedSmm {
+            smi: self.smi,
+            name: self.name,
+            previous: result?,
+        })
     }
 
     fn install_open(
@@ -188,20 +226,40 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         smram_size: u32,
         num_cpus: u16,
         layouts: &mut [fstart_smm::CpuSmmLayout; MAX_CPUS],
-    ) -> Result<(), IntelSmmError> {
+    ) -> Result<SB::EnableState, IntelSmmError> {
         let format = self.cpu.smm_save_state_format();
         // SMRR is optional hardware, not a prerequisite for legacy CPUs to
         // boot. Do not validate or access SMRR registers when absent.
         let model_pair = self.cpu.smrr_pair();
         let supported = model_pair.is_some_and(|pair| pair.supported_on_current_cpu());
+        if self.cpu.requires_smrr() && !supported {
+            fstart_log::error!("{} SMM: required SMRR capability missing", self.name);
+            return Err(IntelSmmError::SmrrSetupFailed);
+        }
         let smrr = configured_smrr(model_pair, supported, smram_base, smram_size)?;
+        let handler_size = smram_size
+            .checked_sub(C::ied_bytes())
+            .filter(|size| *size != 0)
+            .ok_or(IntelSmmError::InstallFailed)?;
+        let ied = if C::ied_bytes() != 0 {
+            let base = u32::try_from(smram_base + u64::from(handler_size))
+                .map_err(|_| IntelSmmError::InstallFailed)?;
+            if !base.is_multiple_of(C::ied_bytes()) {
+                return Err(IntelSmmError::InstallFailed);
+            }
+            // SAFETY: `base` addresses `C::ied_bytes()` inside open SMRAM.
+            unsafe { C::initialize_ied(base) };
+            base
+        } else {
+            0
+        };
         let handler_config = self.smi.smm_handler_config();
         let installed = unsafe {
             fstart_smm::install_pic_image(
                 image,
                 fstart_smm::InstallConfig {
                     smram_base,
-                    smram_size: u64::from(smram_size),
+                    smram_size: u64::from(handler_size),
                     num_cpus,
                     save_state_size: SAVE_STATE_SIZE,
                     handler_config: &handler_config,
@@ -212,6 +270,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         .map_err(|_| IntelSmmError::InstallFailed)?;
 
         RELOCATION_BRIDGE.prepare(format, smrr.map(|(_, range)| range))?;
+        RELOCATION_BRIDGE.ied_base.store(ied, Ordering::Release);
         let relocation = &RELOCATION_BRIDGE;
         let relocation_cr3 =
             unsafe { fstart_smm::build_relocation_identity_tables(SMM_DEFAULT_SMBASE) };
@@ -227,7 +286,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
                 fstart_smm::DefaultRelocationCallbackConfig {
                     default_smbase: SMM_DEFAULT_SMBASE,
                     cr3: relocation_cr3,
-                    callback: default_smm_relocation_handler as *const () as usize as u64,
+                    callback: default_smm_relocation_handler::<C> as *const () as usize as u64,
                     callback_arg: core::ptr::from_ref(relocation) as u64,
                     stack_top: SMM_DEFAULT_ENTRY_STACK_TOP,
                 },
@@ -248,6 +307,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
             format.name()
         );
 
+        let model = self.cpu;
         let smrr_programmed = AtomicU32::new(0);
         mp.scope(|scope| {
             scope.scatter(&|cpu| {
@@ -258,7 +318,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
                 let result = if pair.is_some_and(|pair| !pair.usable_on_current_cpu()) {
                     Err(IntelSmmError::SmrrSetupFailed)
                 } else {
-                    relocate_one(relocation, target, pair)
+                    relocate_one(relocation, target, pair).map(|_| model.after_relocation())
                 };
                 match result {
                     Ok(()) if pair.is_some() => {
@@ -292,6 +352,9 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         );
         let programmed = smrr_programmed.load(Ordering::Acquire);
         if model_pair.is_some() && programmed != u32::from(num_cpus) {
+            if self.cpu.requires_smrr() {
+                return Err(IntelSmmError::SmrrSetupFailed);
+            }
             fstart_log::warn!(
                 "{} SMM: SMRR programmed on {}/{} CPUs; continuing without SMRR protection on the others",
                 self.name,
@@ -316,12 +379,37 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         if !self.smram.smram_lock() {
             return Err(IntelSmmError::SmramLockFailed);
         }
-        self.smi.enable_permanent_smi(previous_smi_enables);
+        fstart_log::info!("{} {}", self.name, crate::messages::SMRAM_LOCKED);
+        Ok(previous_smi_enables)
+    }
+}
+
+/// A closed, locked handler whose permanent SMI sources are still quiesced.
+#[must_use]
+pub struct RelocatedSmm<'a, SB: SmiControl> {
+    name: &'static str,
+    smi: &'a SB,
+    previous: SB::EnableState,
+}
+
+impl<SB: SmiControl> RelocatedSmm<'_, SB> {
+    /// Enable and lock permanent SMI sources and smoke-test every CPU's entry.
+    pub fn activate(self, mp: &MpHandle) -> Result<(), IntelSmmError> {
+        self.smi.enable_permanent_smi(self.previous);
         if !self.smi.lock_permanent_smi() {
             return Err(IntelSmmError::SmiLockFailed);
         }
-        fstart_log::info!("{} {}", self.name, crate::messages::SMRAM_LOCKED);
         fstart_log::info!("{} {}", self.name, crate::messages::SMI_ENABLE_LOCKED);
+        // Exercise every CPU's permanent entry once, as a boot-time smoke
+        // test: a broken stub or handler stops the boot here instead of at the
+        // first OS SMI. Nothing outside SMRAM can observe more than the return.
+        mp.scope(|scope| scope.scatter(&|_| send_smi_self()));
+        fstart_log::info!(
+            "{} {} {} CPUs",
+            self.name,
+            crate::messages::SMI_RETURNED,
+            mp.num_cpus()
+        );
         Ok(())
     }
 }
@@ -357,6 +445,7 @@ const RESULT_UNEXPECTED_CPU: u32 = 3;
 const RESULT_SMRR: u32 = 4;
 
 struct RelocationState {
+    ied_base: AtomicU32,
     phase: AtomicU32,
     format: AtomicU16,
     target_smbase: AtomicU64,
@@ -375,6 +464,7 @@ struct RelocationState {
 impl RelocationState {
     const fn new() -> Self {
         Self {
+            ied_base: AtomicU32::new(0),
             phase: AtomicU32::new(RELOCATION_UNLOCKED),
             format: AtomicU16::new(0),
             target_smbase: AtomicU64::new(0),
@@ -522,7 +612,9 @@ fn send_smi_self() {
 ///
 /// `params` must point to the live default-SMBASE entry parameters installed
 /// by `install_default_relocation_callback_stub`.
-pub unsafe extern "C" fn default_smm_relocation_handler(params: *mut fstart_smm::SmmEntryParams) {
+pub unsafe extern "C" fn default_smm_relocation_handler<C: SmmCpu>(
+    params: *mut fstart_smm::SmmEntryParams,
+) {
     if params.is_null() {
         return;
     }
@@ -562,6 +654,11 @@ pub unsafe extern "C" fn default_smm_relocation_handler(params: *mut fstart_smm:
         if unsafe { pair.program(range) }.is_err() {
             return finish(RESULT_SMRR);
         }
+    }
+    if C::ied_bytes() != 0
+        && !unsafe { C::relocate_ied(save_state, state.ied_base.load(Ordering::Acquire)) }
+    {
+        return finish(RESULT_SAVE_STATE);
     }
     finish(RESULT_OK)
 }

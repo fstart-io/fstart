@@ -155,6 +155,21 @@ impl X86SaveState {
         Ok(())
     }
 
+    /// Write the Haswell EM64T101 `IEDBASE` dword (12 bytes below `SMBASE`).
+    #[inline(always)]
+    pub fn write_iedbase(self, base: u32) -> Result<(), SaveStateError> {
+        let rev = self.revision()?;
+        if self.format != X86SaveStateFormat::IntelEm64t || rev != 0x30101 {
+            return Err(SaveStateError::RevisionMismatch {
+                expected: X86SaveStateFormat::IntelEm64t,
+                actual: rev,
+            });
+        }
+        // SAFETY: `from_top` guarantees a live, writable save-state window.
+        unsafe { write_u32(self.top.sub(0x114), base) };
+        Ok(())
+    }
+
     /// Write the relocated SMBASE after validating the hardware revision.
     /// Exactly one field is modified.
     #[inline(always)]
@@ -234,6 +249,33 @@ mod tests {
             &0x5678_0000u32.to_le_bytes()
         );
         assert_eq!(&amd64[0x200 - 0x108..0x200 - 0x104], &[0xa5; 4]);
+    }
+
+    #[test]
+    fn iedbase_only_changes_the_em64t101_field() {
+        let mut memory = [0x5au8; 0x400];
+        put_u32(&mut memory, 0x400 - 0x104, 0x30100);
+        let before = memory;
+        let state = unsafe {
+            X86SaveState::from_top(
+                memory.as_mut_ptr().add(0x400),
+                X86SaveStateFormat::IntelEm64t,
+            )
+        };
+        assert!(state.write_iedbase(0x7fc0_0000).is_err());
+        assert_eq!(memory, before);
+
+        put_u32(&mut memory, 0x400 - 0x104, 0x30101);
+        let mut expected = memory;
+        put_u32(&mut expected, 0x400 - 0x114, 0x7fc0_0000);
+        let state = unsafe {
+            X86SaveState::from_top(
+                memory.as_mut_ptr().add(0x400),
+                X86SaveStateFormat::IntelEm64t,
+            )
+        };
+        state.write_iedbase(0x7fc0_0000).unwrap();
+        assert_eq!(memory, expected);
     }
 
     #[test]

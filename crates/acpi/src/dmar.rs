@@ -1,7 +1,8 @@
 //! DMAR (DMA Remapping) table builder, Intel VT-d specification.
 //!
-//! Covers the remapping hardware units (DRHD) and their PCI endpoint scopes,
-//! as coreboot's `acpi_create_dmar()`/`acpi_create_dmar_drhd_4k()` emit them.
+//! Covers the remapping hardware units (DRHD), their PCI endpoint and
+//! interrupt-remapping scopes (IOAPIC/HPET), and reserved memory regions
+//! (RMRR).
 
 use acpi_tables::sdt::Sdt;
 use alloc::vec::Vec;
@@ -30,6 +31,18 @@ struct DrhdHeader {
     base: U64<LE>,
 }
 
+/// RMRR remapping-structure header.
+#[repr(C)]
+#[derive(IntoBytes, Immutable)]
+struct RmrrHeader {
+    kind: U16<LE>,
+    length: U16<LE>,
+    _reserved: U16<LE>,
+    segment: U16<LE>,
+    base: U64<LE>,
+    limit: U64<LE>,
+}
+
 /// Device scope with a single-level PCI path.
 #[repr(C)]
 #[derive(IntoBytes, Immutable)]
@@ -44,8 +57,11 @@ struct EndpointScope {
 }
 
 const DRHD: u16 = 0;
+const RMRR: u16 = 1;
 const DRHD_INCLUDE_PCI_ALL: u8 = 1;
 const SCOPE_PCI_ENDPOINT: u8 = 1;
+const SCOPE_IOAPIC: u8 = 3;
+const SCOPE_MSI_CAPABLE_HPET: u8 = 4;
 
 /// One remapping unit with a 4 KiB register set.
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +72,21 @@ pub struct Drhd<'a> {
     pub base: u64,
     /// PCI endpoints as `(bus, device, function)`.
     pub endpoints: &'a [(u8, u8, u8)],
+}
+
+/// A fixed interrupt source remapped by one DRHD in its PCI segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptSource {
+    IoApic(u8),
+    Hpet(u8),
+}
+
+/// Interrupt-remapping scope attached to a specific DRHD base address.
+#[derive(Debug, Clone, Copy)]
+pub struct InterruptScope {
+    pub unit_base: u64,
+    pub source: InterruptSource,
+    pub bdf: (u8, u8, u8),
 }
 
 /// Reserved memory requiring identity mapping for these PCI endpoints.
@@ -69,15 +100,20 @@ pub struct Rmrr<'a> {
     pub endpoints: &'a [(u8, u8, u8)],
 }
 
-#[repr(C)]
-#[derive(IntoBytes, Immutable)]
-struct RmrrHeader {
-    kind: U16<LE>,
-    length: U16<LE>,
-    reserved: U16<LE>,
-    segment: U16<LE>,
-    base: U64<LE>,
-    limit: U64<LE>,
+fn append_scope(table: &mut Sdt, kind: u8, enumeration_id: u8, (bus, dev, func): (u8, u8, u8)) {
+    assert!(dev < 32 && func < 8);
+    table.append_slice(
+        EndpointScope {
+            kind,
+            length: core::mem::size_of::<EndpointScope>() as u8,
+            _reserved: 0.into(),
+            enumeration_id,
+            start_bus: bus,
+            device: dev,
+            function: func,
+        }
+        .as_bytes(),
+    );
 }
 
 /// Build a DMAR table. `host_address_width` is the DMA physical address
@@ -95,6 +131,18 @@ pub fn dmar_with_reserved(
     units: &[Drhd<'_>],
     reserved: &[Rmrr<'_>],
 ) -> Vec<u8> {
+    dmar_with_interrupts(host_address_width, units, &[], reserved)
+}
+
+/// Build a DMAR table including interrupt-remapping scopes and RMRRs.
+/// All DRHD hardware units precede RMRR entries, as required by the VT-d spec.
+#[must_use]
+pub fn dmar_with_interrupts(
+    host_address_width: u8,
+    units: &[Drhd<'_>],
+    interrupts: &[InterruptScope],
+    reserved: &[Rmrr<'_>],
+) -> Vec<u8> {
     assert!((31..=63).contains(&host_address_width));
     let mut table = Sdt::new(
         *b"DMAR",
@@ -107,14 +155,19 @@ pub fn dmar_with_reserved(
     table.append_slice(
         DmarHeader {
             host_address_width,
-            flags: 0,
+            flags: u8::from(!interrupts.is_empty()),
             _reserved: [0; 10],
         }
         .as_bytes(),
     );
+    let scope_len = core::mem::size_of::<EndpointScope>();
     for unit in units {
-        let scope_len = core::mem::size_of::<EndpointScope>();
-        let length = core::mem::size_of::<DrhdHeader>() + unit.endpoints.len() * scope_len;
+        let intr_count = interrupts
+            .iter()
+            .filter(|s| s.unit_base == unit.base)
+            .count();
+        let length =
+            core::mem::size_of::<DrhdHeader>() + (unit.endpoints.len() + intr_count) * scope_len;
         table.append_slice(
             DrhdHeader {
                 kind: DRHD.into(),
@@ -130,19 +183,15 @@ pub fn dmar_with_reserved(
             }
             .as_bytes(),
         );
-        for &(bus, device, function) in unit.endpoints {
-            table.append_slice(
-                EndpointScope {
-                    kind: SCOPE_PCI_ENDPOINT,
-                    length: scope_len as u8,
-                    _reserved: 0.into(),
-                    enumeration_id: 0,
-                    start_bus: bus,
-                    device,
-                    function,
-                }
-                .as_bytes(),
-            );
+        for &bdf in unit.endpoints {
+            append_scope(&mut table, SCOPE_PCI_ENDPOINT, 0, bdf);
+        }
+        for scope in interrupts.iter().filter(|s| s.unit_base == unit.base) {
+            let (kind, id) = match scope.source {
+                InterruptSource::IoApic(id) => (SCOPE_IOAPIC, id),
+                InterruptSource::Hpet(id) => (SCOPE_MSI_CAPABLE_HPET, id),
+            };
+            append_scope(&mut table, kind, id, scope.bdf);
         }
     }
     for region in reserved {
@@ -153,33 +202,20 @@ pub fn dmar_with_reserved(
                 && !region.endpoints.is_empty(),
             "invalid reserved DMA range"
         );
-        let scope_len = core::mem::size_of::<EndpointScope>();
         let length = core::mem::size_of::<RmrrHeader>() + region.endpoints.len() * scope_len;
         table.append_slice(
             RmrrHeader {
-                kind: 1.into(),
+                kind: RMRR.into(),
                 length: u16::try_from(length).expect("RMRR length").into(),
-                reserved: 0.into(),
+                _reserved: 0.into(),
                 segment: region.segment.into(),
                 base: region.base.into(),
                 limit: region.limit.into(),
             }
             .as_bytes(),
         );
-        for &(bus, device, function) in region.endpoints {
-            assert!(device < 32 && function < 8);
-            table.append_slice(
-                EndpointScope {
-                    kind: SCOPE_PCI_ENDPOINT,
-                    length: scope_len as u8,
-                    _reserved: 0.into(),
-                    enumeration_id: 0,
-                    start_bus: bus,
-                    device,
-                    function,
-                }
-                .as_bytes(),
-            );
+        for &bdf in region.endpoints {
+            append_scope(&mut table, SCOPE_PCI_ENDPOINT, 0, bdf);
         }
     }
     table.as_slice().to_vec()
@@ -251,5 +287,45 @@ mod tests {
         assert_eq!(&table[88..96], &[1, 8, 0, 0, 0, 0, 2, 0]);
         assert_eq!(table[37], 0); // no invented interrupt-remapping support
         assert_eq!(table.iter().fold(0u8, |s, b| s.wrapping_add(*b)), 0);
+    }
+
+    #[test]
+    fn dmar_with_interrupts_and_rmrr_encodes_scopes_and_flags() {
+        let table = dmar_with_interrupts(
+            38,
+            &[Drhd {
+                include_pci_all: true,
+                segment: 0,
+                base: 0xfed9_1000,
+                endpoints: &[],
+            }],
+            &[
+                InterruptScope {
+                    unit_base: 0xfed9_1000,
+                    source: InterruptSource::IoApic(2),
+                    bdf: (0xfa, 0x1f, 0),
+                },
+                InterruptScope {
+                    unit_base: 0xfed9_1000,
+                    source: InterruptSource::Hpet(0),
+                    bdf: (0xfa, 0x0f, 0),
+                },
+            ],
+            &[Rmrr {
+                segment: 0,
+                base: 0x7b80_0000,
+                limit: 0x7f9f_ffff,
+                endpoints: &[(0, 2, 0)],
+            }],
+        );
+        assert_eq!(table[37], 1, "INTR_REMAP flag set");
+        assert_eq!(
+            table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)),
+            0
+        );
+        // DRHD(16 + 16) + RMRR(24 + 8) = 64 bytes after 48-byte header
+        assert_eq!(table.len(), 48 + 32 + 32);
+        // RMRR starts at offset 80 with type=1, len=32.
+        assert_eq!(&table[80..84], &[1, 0, 32, 0]);
     }
 }

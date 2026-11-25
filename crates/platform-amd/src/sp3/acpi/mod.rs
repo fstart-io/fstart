@@ -59,6 +59,8 @@ const fn soc(generation: Generation) -> SocAcpi {
             duty_offset: 0,
             duty_width: 0,
             pm2_cnt_offset: None,
+            pm1_evt_word_access: false,
+            gpe0_byte_access: false,
         },
         bridges: if naples {
             &prt::BRIDGES_ZP

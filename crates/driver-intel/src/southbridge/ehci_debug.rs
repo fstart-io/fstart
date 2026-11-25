@@ -33,11 +33,22 @@ impl EhciController {
 }
 
 /// The debug console on bus-0 `devfn` at [`EHCI_DEBUG_BAR`], or `None` when
-/// that BAR would overlap ECAM or one of the chipset's relocatable
-/// `decodes` (base, size).
+/// that BAR would overlap a 256 MiB ECAM window or one of the chipset's
+/// relocatable `decodes` (base, size).
 pub fn config(devfn: u8, ecam_base: usize, decodes: &[(u64, u64)]) -> Option<Config> {
+    config_with_ecam_size(devfn, ecam_base, ECAM_SIZE, decodes)
+}
+
+/// [`config`] for a chipset whose ECAM window is `ecam_size` bytes (for
+/// example Haswell's 64 MiB window at `0xf000_0000`).
+pub fn config_with_ecam_size(
+    devfn: u8,
+    ecam_base: usize,
+    ecam_size: u64,
+    decodes: &[(u64, u64)],
+) -> Option<Config> {
     let bar = u64::from(EHCI_DEBUG_BAR);
-    let ecam = (ecam_base as u64, ECAM_SIZE);
+    let ecam = (ecam_base as u64, ecam_size);
     if decodes
         .iter()
         .chain([&ecam])
@@ -87,5 +98,11 @@ mod tests {
         assert_eq!((debug.device, debug.function), (0x1a, 7));
         assert!(config(0xd7, 0xe000_0000, &[(0xfef0_0000, 0x4000)]).is_none());
         assert!(config(0xd7, 0xf000_0000, &[]).is_none());
+        let narrow =
+            config_with_ecam_size(0xe8, 0xf000_0000, 64 << 20, &[(0xfed1_c000, 0x4000)]).unwrap();
+        assert_eq!(
+            (narrow.device, narrow.function, narrow.bar),
+            (0x1d, 0, EHCI_DEBUG_BAR)
+        );
     }
 }

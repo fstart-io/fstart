@@ -121,6 +121,7 @@ const fn require_spd_addresses(addresses: [u8; 4]) {
 pub mod baytrail;
 pub mod gm45;
 pub mod gm965;
+pub mod haswell;
 pub mod i945;
 pub mod ironlake;
 pub mod layout;
@@ -130,6 +131,8 @@ pub mod pineview;
 /// Shared IGD display bring-up types used by board display policy.
 pub use fstart_driver_intel::igd;
 
+#[cfg(any(test, feature = "ramstage"))]
+mod acpi_bars;
 #[cfg(feature = "stage")]
 mod boot;
 #[cfg(feature = "stage")]
@@ -144,6 +147,8 @@ pub mod postcar;
 pub mod ramstage;
 #[cfg(feature = "stage")]
 mod store;
+#[cfg(any(test, feature = "ramstage"))]
+pub mod tpm;
 
 #[cfg(feature = "stage")]
 pub use fstart_driver_intel::{
@@ -181,6 +186,15 @@ pub trait IntelEarlyPlatform:
     /// Chipsets whose OS display driver restores the screen leave this false
     /// so resume skips the modeset flicker.
     const RESUME_DISPLAY_INIT: bool;
+    /// Haswell loads microcode a second time after SMBASE relocation, before
+    /// general model setup. Older CPUs enable alternative SMRR during setup.
+    const RELOCATE_BEFORE_CPU_INIT: bool = false;
+    /// GSI0, rather than LAPIC LINT0, delivers the 8259 output.
+    const IOAPIC_VIRTUAL_WIRE: bool = false;
+    /// Reset from postcar, where chipset objects have not been constructed.
+    fn reset_failed_postcar_resume() -> ! {
+        fstart_arch::x86::boot::system_reset(true)
+    }
     /// Take platform-owned CAR scratch once for cached input and new training.
     /// A cache-capable platform supplies its own workspace; the common flow
     /// only borrows slices and never selects or allocates a payload size.

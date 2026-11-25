@@ -16,6 +16,11 @@ use std::process::Command;
 /// The PCI root every Intel northbridge names.
 const PCI_ROOT: AcpiPath = AcpiPath::SB.child("PCI0");
 
+// One fixture binds a simulated bus to the stage-global ECAM base.
+static ECAM: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[path = "fixtures/haswell.rs"]
+mod haswell;
+
 /// Disassemble `aml` as the DSDT `iasl` would see it on a booted machine.
 fn iasl_round_trip(chipset: &str, aml: &[u8]) -> String {
     let dsdt = fstart_acpi::platform::build_dsdt(aml);
@@ -37,6 +42,15 @@ fn iasl_round_trip(chipset: &str, aml: &[u8]) -> String {
         !diagnostics.contains("Error"),
         "iasl reported errors in the {chipset} DSDT:\n{diagnostics}"
     );
+    if chipset.starts_with("haswell") {
+        let result = run_iasl(&dir, &["-p", "roundtrip", "input.dsl"]);
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
     std::fs::read_to_string(dir.join("input.dsl")).expect("read disassembled DSDT")
 }
 
@@ -67,6 +81,7 @@ fn run_iasl(dir: &Path, args: &[&str]) -> std::process::Output {
 
 #[test]
 fn ich7_dsdt_disassembles() {
+    let _guard = ECAM.lock().unwrap();
     static CONFIG: IntelIch7Config = IntelIch7Config::new();
     let south = IntelIch7::new_from_config(&CONFIG).expect("ICH7 config is valid");
     let aml = south.dsdt_aml(&CONFIG, &PCI_ROOT);
@@ -75,6 +90,7 @@ fn ich7_dsdt_disassembles() {
 
 #[test]
 fn ich8_dsdt_disassembles() {
+    let _guard = ECAM.lock().unwrap();
     static CONFIG: IntelIch8Config = IntelIch8Config::new();
     let south = IntelIch8::new_from_config(&CONFIG).expect("ICH8 config is valid");
     let aml = south.dsdt_aml(&CONFIG, &PCI_ROOT);
@@ -82,7 +98,57 @@ fn ich8_dsdt_disassembles() {
 }
 
 #[test]
+fn haswell_ult_dsdt_and_gpe_geometry() {
+    let _guard = self::ECAM.lock().unwrap();
+    use fstart_acpi::{device::AcpiDevice, platform::X86PlatformProvider};
+    use fstart_driver_intel::{
+        IntelNorthbridgeDriver,
+        haswell::*,
+        lynxpoint::{gpio::*, *},
+        namespace::pci_root_resources,
+    };
+    static PADS: PadTable = [Pad::new(Mode::Native); 95];
+    static SB: LynxPointConfig = LynxPointConfig::new(Gpios::Lp(&PADS));
+    static NB: HaswellConfig = HaswellConfig::new(true);
+    let nb = Haswell::new_from_config(&NB).unwrap();
+    let mut sb = LynxPoint::new_from_config(&SB).unwrap();
+    let root = nb.pci_root().unwrap();
+    // The LP GPIO ACPI device owns all 95 pad pairs. Forward its ports,
+    // but neither allocate PCI I/O over them nor claim them in PDRC.
+    let gpio = |r: &fstart_pci::PciWindow| {
+        r.kind == fstart_pci::PciWindowKind::Io && r.base < 0x1800 && r.end() > 0x1400
+    };
+    assert!(root.forwarded().iter().any(gpio));
+    assert!(!root.allocatable().iter().any(gpio));
+    assert!(!root.motherboard().iter().any(gpio));
+    let mut aml = nb.dsdt_aml(&NB);
+    aml.extend(pci_root_resources::<Haswell>(&root).unwrap());
+    aml.extend(sb.dsdt_aml(&SB, &PCI_ROOT));
+    let dsl = iasl_round_trip("haswell-ult", &aml);
+    assert_legacy_resources(&aml, &dsl);
+    for node in [
+        "Device (MCHC)",
+        "Device (C000)",
+        "_CST",
+        "_PSS",
+        "INT33C7",
+        "Device (LPCB)",
+    ] {
+        assert!(dsl.contains(node), "{node} missing: {dsl}");
+    }
+    assert!(!dsl.contains("Name (_S3"));
+    sb.set_s3_enabled(true);
+    assert!(sb.dsdt_aml(&SB, &PCI_ROOT).windows(4).any(|s| s == b"_S3_"));
+    let cfg = sb.x86_platform_config(4);
+    assert_eq!(
+        (cfg.pmbase, cfg.gpe0_offset, cfg.gpe0_length),
+        (0x1000, 0x80, 32)
+    );
+}
+
+#[test]
 fn baytrail_dsdt_disassembles() {
+    let _guard = ECAM.lock().unwrap();
     use fstart_acpi::device::AcpiDevice;
     use fstart_driver_intel::IntelNorthbridgeDriver;
     use fstart_driver_intel::baytrail::{BaytrailNorth, BaytrailSouth, NorthConfig, SouthConfig};

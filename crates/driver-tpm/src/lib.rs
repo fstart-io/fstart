@@ -63,13 +63,37 @@ pub enum Family {
 /// already-started response is accepted. Other failures must prevent an
 /// OS resume with an unrestored TPM.
 pub fn resume<T: Transport + ?Sized>(tpm: &mut T, family: Family) -> Result<(), Error> {
+    startup(tpm, family, true)
+}
+
+/// Firmware owns startup on both cold and retained paths. CLEAR is never used
+/// as a fallback for a failed STATE command. Both relinquish locality.
+pub fn startup<T: Transport + ?Sized>(
+    tpm: &mut T,
+    family: Family,
+    resume: bool,
+) -> Result<(), Error> {
     let (result, already_started) = match family {
         Family::Tpm12 => (
-            tpm12::startup(tpm, tpm12::StartupType::State),
+            tpm12::startup(
+                tpm,
+                if resume {
+                    tpm12::StartupType::State
+                } else {
+                    tpm12::StartupType::Clear
+                },
+            ),
             tpm12::rc::INVALID_POSTINIT,
         ),
         Family::Tpm20 => (
-            tpm20::startup(tpm, tpm20::StartupType::State),
+            tpm20::startup(
+                tpm,
+                if resume {
+                    tpm20::StartupType::State
+                } else {
+                    tpm20::StartupType::Clear
+                },
+            ),
             tpm20::rc::INITIALIZE,
         ),
     };
@@ -235,6 +259,17 @@ mod resume_tests {
             let mut tpm = Tpm::new(Ok(()));
             assert_eq!(resume(&mut tpm, family), Ok(()));
             assert_eq!(tpm.command, command);
+            assert_eq!(tpm.commands, 1);
+            assert!(tpm.released);
+        }
+    }
+
+    #[test]
+    fn cold_startup_sends_clear_and_releases_locality() {
+        for (family, typ) in [(Family::Tpm12, 1), (Family::Tpm20, 0)] {
+            let mut tpm = Tpm::new(Ok(()));
+            startup(&mut tpm, family, false).unwrap();
+            assert_eq!(&tpm.command[10..], &[0, typ]);
             assert_eq!(tpm.commands, 1);
             assert!(tpm.released);
         }

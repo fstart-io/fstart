@@ -12,13 +12,35 @@ use alloc::vec::Vec;
 use fstart_acpi::pci_root::adr;
 use fstart_acpi_macros::acpi_dsl;
 
+/// Chipset-specific `LDRC` (PNP0C02) I/O resource windows behind LPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyLdrc {
+    /// ICH7..ICH10 and 5 Series PCH: 0x0800 (16 B), PMBASE (128 B), GPIOBASE (64 B).
+    Ich { pm1_base: u16, gpio_base: u16 },
+    /// 8 Series PCH (Lynx Point): PMBASE (255 B, coreboot `lpc.asl`), plus
+    /// GPIOBASE (64 B) on non-LP SKUs (LP exposes GPIO via its SerialIO node).
+    LynxPoint {
+        pm_base: u16,
+        gpio_base: Option<u16>,
+    },
+}
+
 /// Legacy ISA devices behind the LPC bridge (coreboot `i82801gx/acpi/lpc.asl`).
 ///
 /// Only the decoded PM1 and GPIO windows differ between ICH generations, so
 /// the chipset passes its own; the rest is coreboot's descriptor set.
 #[must_use]
 pub fn legacy_isa_children(pm1_base: u16, gpio_base: u16) -> Vec<u8> {
-    acpi_dsl! {
+    legacy_devices(LegacyLdrc::Ich {
+        pm1_base,
+        gpio_base,
+    })
+}
+
+/// Standard ISA nodes with chipset-selected `LDRC` legacy I/O windows.
+#[must_use]
+pub fn legacy_devices(ldrc: LegacyLdrc) -> Vec<u8> {
+    let mut aml: Vec<u8> = acpi_dsl! {
         Device("DMAC") {
             Name("_HID", EisaId("PNP0200"));
             Name("_CRS", ResourceTemplate {
@@ -75,26 +97,83 @@ pub fn legacy_isa_children(pm1_base: u16, gpio_base: u16) -> Vec<u8> {
                 IRQ(Edge, ActiveHigh, Exclusive, 13u32);
             });
         }
+    }
+    .into();
 
-        Device("LDRC") {
-            Name("_HID", EisaId("PNP0C02"));
-            Name("_UID", 2u32);
-            Name("_CRS", ResourceTemplate {
-                IO(0x002Eu16, 0x002Eu16, 0x01u8, 0x02u8);
-                IO(0x004Eu16, 0x004Eu16, 0x01u8, 0x02u8);
-                IO(0x0061u16, 0x0061u16, 0x01u8, 0x01u8);
-                IO(0x0063u16, 0x0063u16, 0x01u8, 0x01u8);
-                IO(0x0065u16, 0x0065u16, 0x01u8, 0x01u8);
-                IO(0x0067u16, 0x0067u16, 0x01u8, 0x01u8);
-                IO(0x0080u16, 0x0080u16, 0x01u8, 0x01u8);
-                IO(0x0092u16, 0x0092u16, 0x01u8, 0x01u8);
-                IO(0x00B2u16, 0x00B2u16, 0x01u8, 0x02u8);
-                IO(0x0800u16, 0x0800u16, 0x01u8, 0x10u8);
-                IO(#{word pm1_base}, #{word pm1_base}, 0x01u8, 0x80u8);
-                IO(#{word gpio_base}, #{word gpio_base}, 0x01u8, 0x40u8);
-            });
+    let ldrc_node: Vec<u8> = match ldrc {
+        LegacyLdrc::Ich {
+            pm1_base,
+            gpio_base,
+        } => acpi_dsl! {
+            Device("LDRC") {
+                Name("_HID", EisaId("PNP0C02"));
+                Name("_UID", 2u32);
+                Name("_CRS", ResourceTemplate {
+                    IO(0x002Eu16, 0x002Eu16, 0x01u8, 0x02u8);
+                    IO(0x004Eu16, 0x004Eu16, 0x01u8, 0x02u8);
+                    IO(0x0061u16, 0x0061u16, 0x01u8, 0x01u8);
+                    IO(0x0063u16, 0x0063u16, 0x01u8, 0x01u8);
+                    IO(0x0065u16, 0x0065u16, 0x01u8, 0x01u8);
+                    IO(0x0067u16, 0x0067u16, 0x01u8, 0x01u8);
+                    IO(0x0080u16, 0x0080u16, 0x01u8, 0x01u8);
+                    IO(0x0092u16, 0x0092u16, 0x01u8, 0x01u8);
+                    IO(0x00B2u16, 0x00B2u16, 0x01u8, 0x02u8);
+                    IO(0x0800u16, 0x0800u16, 0x01u8, 0x10u8);
+                    IO(#{word pm1_base}, #{word pm1_base}, 0x01u8, 0x80u8);
+                    IO(#{word gpio_base}, #{word gpio_base}, 0x01u8, 0x40u8);
+                });
+            }
         }
+        .into(),
+        LegacyLdrc::LynxPoint {
+            pm_base,
+            gpio_base: Some(gpio_base),
+        } => acpi_dsl! {
+            Device("LDRC") {
+                Name("_HID", EisaId("PNP0C02"));
+                Name("_UID", 2u32);
+                Name("_CRS", ResourceTemplate {
+                    IO(0x002Eu16, 0x002Eu16, 0x01u8, 0x02u8);
+                    IO(0x004Eu16, 0x004Eu16, 0x01u8, 0x02u8);
+                    IO(0x0061u16, 0x0061u16, 0x01u8, 0x01u8);
+                    IO(0x0063u16, 0x0063u16, 0x01u8, 0x01u8);
+                    IO(0x0065u16, 0x0065u16, 0x01u8, 0x01u8);
+                    IO(0x0067u16, 0x0067u16, 0x01u8, 0x01u8);
+                    IO(0x0080u16, 0x0080u16, 0x01u8, 0x01u8);
+                    IO(0x0092u16, 0x0092u16, 0x01u8, 0x01u8);
+                    IO(0x00B2u16, 0x00B2u16, 0x01u8, 0x02u8);
+                    IO(#{word pm_base}, #{word pm_base}, 0x01u8, 0xFFu8);
+                    IO(#{word gpio_base}, #{word gpio_base}, 0x01u8, 0x40u8);
+                });
+            }
+        }
+        .into(),
+        LegacyLdrc::LynxPoint {
+            pm_base,
+            gpio_base: None,
+        } => acpi_dsl! {
+            Device("LDRC") {
+                Name("_HID", EisaId("PNP0C02"));
+                Name("_UID", 2u32);
+                Name("_CRS", ResourceTemplate {
+                    IO(0x002Eu16, 0x002Eu16, 0x01u8, 0x02u8);
+                    IO(0x004Eu16, 0x004Eu16, 0x01u8, 0x02u8);
+                    IO(0x0061u16, 0x0061u16, 0x01u8, 0x01u8);
+                    IO(0x0063u16, 0x0063u16, 0x01u8, 0x01u8);
+                    IO(0x0065u16, 0x0065u16, 0x01u8, 0x01u8);
+                    IO(0x0067u16, 0x0067u16, 0x01u8, 0x01u8);
+                    IO(0x0080u16, 0x0080u16, 0x01u8, 0x01u8);
+                    IO(0x0092u16, 0x0092u16, 0x01u8, 0x01u8);
+                    IO(0x00B2u16, 0x00B2u16, 0x01u8, 0x02u8);
+                    IO(#{word pm_base}, #{word pm_base}, 0x01u8, 0xFFu8);
+                });
+            }
+        }
+        .into(),
+    };
+    aml.extend_from_slice(&ldrc_node);
 
+    aml.extend_from_slice(&acpi_dsl! {
         Device("RTC_") {
             Name("_HID", EisaId("PNP0B00"));
             Name("_CRS", ResourceTemplate {
@@ -111,8 +190,8 @@ pub fn legacy_isa_children(pm1_base: u16, gpio_base: u16) -> Vec<u8> {
                 IRQ(Edge, ActiveHigh, Exclusive, 0u32);
             });
         }
-    }
-    .into()
+    });
+    aml
 }
 
 /// PIRQ link devices `LNKA`-`LNKH`.
@@ -240,11 +319,17 @@ pub fn pci_irq_links(pirq_routing: &[u8; 8]) -> Vec<u8> {
 /// HD Audio controller node.
 #[must_use]
 pub fn hda_node(devfn: u8) -> Vec<u8> {
+    hda_wake_node(devfn, 5, 4)
+}
+
+/// HD Audio controller node with chipset-specific `_PRW` GPE and deepest state.
+#[must_use]
+pub fn hda_wake_node(devfn: u8, gpe: u32, deepest: u32) -> Vec<u8> {
     let adr = adr(devfn);
     acpi_dsl! {
         Device("HDEF") {
             Name("_ADR", #{dword adr});
-            Name("_PRW", Package(5u32, 4u32));
+            Name("_PRW", Package(#{dword gpe}, #{dword deepest}));
         }
     }
     .into()
@@ -270,10 +355,22 @@ pub fn uhci_node(name: &str, devfn: u8, wake_gpe: u32) -> Vec<u8> {
 /// One EHCI controller node, optionally with its root hub port children.
 #[must_use]
 pub fn ehci_node(name: &str, devfn: u8, wake_gpe: u32, root_ports: u8) -> Vec<u8> {
+    ehci_wake_node(name, devfn, wake_gpe, 4, root_ports)
+}
+
+/// One EHCI controller node with chipset-specific `_PRW` GPE and deepest state.
+#[must_use]
+pub fn ehci_wake_node(
+    name: &str,
+    devfn: u8,
+    wake_gpe: u32,
+    deepest: u32,
+    root_ports: u8,
+) -> Vec<u8> {
     let adr = adr(devfn);
     let mut body: Vec<u8> = acpi_dsl! {
         Name("_ADR", #{dword adr});
-        Name("_PRW", Package(#{dword wake_gpe}, 4u32));
+        Name("_PRW", Package(#{dword wake_gpe}, #{dword deepest}));
         Method("_S3D", 0, NotSerialized) { Return(2u32); }
         Method("_S4D", 0, NotSerialized) { Return(2u32); }
     }
@@ -400,10 +497,19 @@ pub fn pci_bridge_node(devfn: u8, routing: &super::pirq::PirqRouting) -> Vec<u8>
 /// `hotplug` adds the config-space `RPCS` region the hotplug fields live in.
 #[must_use]
 pub fn pcie_root_port(name: &str, devfn: u8, port: u8, hotplug: bool) -> Vec<u8> {
-    let adr = adr(devfn);
     let base = u32::from((port - 1) % 4);
     let gsi = |offset: u32| 16 + (base + offset) % 4;
-    let (a, b, c, d) = (gsi(0), gsi(1), gsi(2), gsi(3));
+    pcie_root_port_with_irqs(name, devfn, [gsi(0), gsi(1), gsi(2), gsi(3)], hotplug)
+}
+
+/// One PCIe root port with an explicit APIC-mode `_PRT` `[INTA, INTB, INTC, INTD]`.
+///
+/// Used by chipsets whose `D28IR` routing can swizzle root-port INTx away from
+/// the default `16 + (port - 1 + pin) % 4` identity map.
+#[must_use]
+pub fn pcie_root_port_with_irqs(name: &str, devfn: u8, gsis: [u32; 4], hotplug: bool) -> Vec<u8> {
+    let adr = adr(devfn);
+    let [a, b, c, d] = gsis;
 
     let mut body: Vec<u8> = acpi_dsl! {
         Name("_ADR", #{dword adr});

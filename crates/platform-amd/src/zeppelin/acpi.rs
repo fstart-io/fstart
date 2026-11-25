@@ -28,6 +28,8 @@ pub const ACPI: SocAcpi = SocAcpi {
         duty_offset: 0,
         duty_width: 0,
         pm2_cnt_offset: None,
+        pm1_evt_word_access: false,
+        gpe0_byte_access: false,
     },
     bridges: &prt::BRIDGES_ZP,
     fch_intx_gsi: Some([16, 17, 18, 19]),

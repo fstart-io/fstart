@@ -1,0 +1,42 @@
+[package]
+name = "fstart-board-google-peppy"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+board = "google-peppy"
+name = "Acer C720 Chromebook (Peppy)"
+arch = "x86_64"
+build-profile = { dependency = "fstart-platform-intel" }
+
+[dependencies]
+fstart-core = { workspace = true, features = ["pci"] }
+fstart-platform-intel = { workspace = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-driver-intel = { workspace = true }
+fstart-driver-chromeec = { workspace = true }
+fstart-driver-tpm = { workspace = true }
+fstart-log = { workspace = true }
+fstart-options = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { workspace = true, optional = true }
+# Required at the crate root wherever fstart_log macros expand
+# (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
+ufmt = { workspace = true }
+
+[dev-dependencies]
+fstart-pci = { workspace = true }
+
+[features]
+# Host tests and tools see the whole board. fbuild builds every stage with
+# --no-default-features and adds `acpi` to the ramstage only.
+default = ["acpi"]
+# The ACPI and SMBIOS tables (`src/acpi.rs`), which need the ramstage heap.
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-chromeec/acpi"]
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-intel/bundle-smm"]
+
+[lints]
+workspace = true

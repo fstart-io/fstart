@@ -506,6 +506,8 @@ core::arch::global_asm!(
     "cmpl $0x54534350, (%rsi)", // POSTCAR_STASH_MAGIC ("PCST")
     "jne _postcar_stash_fail",
     "movl 4(%rsi), %r15d",
+    "testl %r15d, %r15d",
+    "jz _postcar_stash_fail",
     // Cap the entry count: programming past the valid variable-MTRR pairs
     // would hit reserved MSRs and #GP. The writer never emits more than 8.
     "cmpl $8, %r15d",
@@ -576,14 +578,16 @@ core::arch::global_asm!(
     "4:",
     "hlt",
     "jmp 4b",
-    // Stash validation failed: POST 0xee and halt (no stack to trust).
+    // Stash validation failed: POST 0xee and reset (no stack to trust).
     "_postcar_stash_fail:",
     postcar_uart_checkpoint!("0x21"), // !
     "movb $0xee, %al",
     "outb %al, $0x80",
+    postcar_stash_reset!(),
     "5:",
     "hlt",
     "jmp 5b",
+    full_reset = const super::CF9_FULL,
     postcar_stash = const super::car_teardown::POSTCAR_STASH_ADDR,
     options(att_syntax),
 );

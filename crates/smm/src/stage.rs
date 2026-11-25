@@ -93,8 +93,17 @@ pub unsafe fn handle<C: Copy>(
         return;
     }
 
+    // The interrupted OS may be between its CF8 selector write and CFC access.
+    #[cfg(all(not(test), any(target_arch = "x86", target_arch = "x86_64")))]
+    // SAFETY: SMM owns the CPU and this dispatch; CF8 is a plain I/O register.
+    let cf8 = unsafe { fstart_core::pio::inl(fstart_pci::cf8::ADDRESS_PORT) };
     if let Some(config) = config {
         handler(&mut ctx, config);
+    }
+    #[cfg(all(not(test), any(target_arch = "x86", target_arch = "x86_64")))]
+    // SAFETY: restore before releasing rendezvous so the interrupted OS resumes cleanly.
+    unsafe {
+        fstart_core::pio::outl(fstart_pci::cf8::ADDRESS_PORT, cf8);
     }
     unsafe {
         #[cfg(all(not(test), feature = "debugcon"))]

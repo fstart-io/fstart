@@ -22,6 +22,8 @@ pub struct Options {
     pub sata_mode: Option<SataMode>,
     /// Let SERR# and IOCHK# raise NMIs.
     pub nmi: bool,
+    /// Hide the management-engine PCI interface (Lynx Point).
+    pub me_disable: bool,
 }
 
 impl Options {
@@ -32,6 +34,7 @@ impl Options {
             power_on_after_fail,
             sata_mode,
             nmi: false,
+            me_disable: false,
         }
     }
 }
@@ -84,6 +87,18 @@ pub const SATA_MODE: Knob<Options> = Knob::new(
     Some(_) => Availability::Editable,
     None => Availability::Inactive("this board has no SATA controller"),
 });
+
+/// Hide the Intel Management Engine PCI interface from the payload.
+pub const ME_DISABLE: Knob<Options> = Knob::new(
+    Meta::bool(
+        "me_disable",
+        "Advanced",
+        "Hide ME interface",
+        "Hide MEI1 from the payload after firmware initialization.",
+    ),
+    |o: &Options| o.me_disable.into(),
+    |o: &mut Options, v| o.me_disable = v != 0,
+);
 
 /// NMIs on SERR# and IOCHK#.
 pub const NMI: Knob<Options> = Knob::new(

@@ -1,6 +1,31 @@
 //! Host-clean board facts and chipset identity shared by build and firmware.
 use fstart_core::FlashLayout;
 
+/// Physical base addresses of the DRAM stage and firmware-store windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageWindows {
+    pub postcar: u64,
+    pub ramstage: u64,
+    pub store: u64,
+}
+
+impl StageWindows {
+    /// Default layout below 96 MiB for legacy platforms with small RAM ceilings.
+    pub const LEGACY: Self = Self {
+        postcar: 0x100_0000,
+        ramstage: 0x400_0000,
+        store: 0x500_0000,
+    };
+
+    /// High layout at 128 MiB so `[16 MiB, 128 MiB)` stays contiguous
+    /// conventional RAM for bootloaders loading Linux bzImages at `0x1000000`.
+    pub const ABOVE_128M: Self = Self {
+        postcar: 0x800_0000,
+        ramstage: 0x840_0000,
+        store: 0x940_0000,
+    };
+}
+
 /// A supported hardware binding, selected once in board Rust. Legacy chipset
 /// markers carry an independent CPU-package parameter; integrated platforms
 /// can own CPU policy directly. Both supply host and runtime associations.
@@ -15,6 +40,8 @@ pub trait IntelPlatform: 'static {
     /// The CPU loads microcode from an Intel FIT before the reset vector,
     /// instead of the bootblock's pre-CAR loader.
     const FIT: bool = false;
+    /// DRAM addresses for postcar, ramstage, and the firmware store.
+    const STAGE_WINDOWS: StageWindows = StageWindows::LEGACY;
     const MICROCODE_SIGNATURES: &'static [&'static str];
 }
 

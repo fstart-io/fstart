@@ -521,6 +521,9 @@ pub struct HdaVerbTable {
     pub vendor_id: u32,
     /// Subsystem ID to write to the codec.
     pub subsystem_id: u32,
+    /// Raw codec-addressed commands that must precede subsystem and pin setup
+    /// (e.g. Realtek's double Function Reset).
+    pub pre_verbs: &'static [u32],
     /// Per-pin configurations. Expanded into SET_CONFIGURATION_DEFAULT
     /// verbs at setup time.
     pub pins: ConstVec<PinConfig, 16>,
@@ -566,6 +569,7 @@ impl HdaVerbTable {
         Self {
             vendor_id,
             subsystem_id,
+            pre_verbs: &[],
             pins: ConstVec::new(pin_not_connected(0, 0)),
             extra_verbs: ConstVec::new(0),
         }
@@ -649,6 +653,17 @@ pub struct HdaController {
 unsafe impl Send for HdaController {}
 unsafe impl Sync for HdaController {}
 
+fn deliver(mut verbs: impl Iterator<Item = u32>, mut send: impl FnMut(u32) -> bool) -> bool {
+    verbs.all(|v| {
+        if send(v) {
+            true
+        } else {
+            fstart_log::warn!("HDA verb {:#010x} timed out: table not programmed", v);
+            false
+        }
+    })
+}
+
 impl HdaController {
     /// Construct from the MMIO base address (BAR0 with low bits masked).
     pub const fn new(base: usize) -> Self {
@@ -670,13 +685,28 @@ impl HdaController {
     /// Enter reset (clear CRST, active-low).
     pub fn enter_reset(&self) -> bool {
         self.regs().control.modify(GCTL::CRST::CLEAR);
-        fstart_arch::wait_us(50_000, || !self.regs().control.is_set(GCTL::CRST))
+        self.wait_reset(false)
     }
 
     /// Exit reset (set CRST).
     pub fn exit_reset(&self) -> bool {
         self.regs().control.modify(GCTL::CRST::SET);
-        fstart_arch::wait_us(50_000, || self.regs().control.is_set(GCTL::CRST))
+        self.wait_reset(true)
+    }
+
+    fn wait_reset(&self, running: bool) -> bool {
+        for _ in 0..50 {
+            fstart_arch::udelay(1000);
+            if self.regs().control.is_set(GCTL::CRST) == running {
+                if running {
+                    // Codecs have up to 25 frames at 48 kHz to request an address
+                    // (HDA 1.0a, 4.3 "Codec Discovery").
+                    fstart_arch::udelay(521);
+                }
+                return true;
+            }
+        }
+        false
     }
 
     // ---- Codec detection ----
@@ -686,10 +716,20 @@ impl HdaController {
     /// Performs a full reset cycle and returns a bitmask of detected
     /// codec addresses (bits [14:0]).
     pub fn detect_codecs(&self) -> u16 {
+        self.detect_sdins(0x7fff)
+    }
+
+    /// Detect codecs on a caller-specified bitmask of SDI lines.
+    pub(crate) fn detect_sdins(&self, sdins: u16) -> u16 {
+        if !self.exit_reset() {
+            self.enter_reset();
+            fstart_log::warn!("HDA: initial link reset timeout");
+            return 0;
+        }
         let regs = self.regs();
         let gcap = regs.capabilities.get();
         regs.capabilities.set(gcap);
-        regs.codec_status.write(STATESTS::CODECS.val(0x7fff));
+        regs.codec_status.write(STATESTS::CODECS.val(sdins));
 
         if !self.enter_reset() {
             fstart_log::error!("hda: enter reset timeout");
@@ -701,11 +741,7 @@ impl HdaController {
             return 0;
         }
 
-        // Codecs have up to 25 frames at 48 kHz to request an address
-        // (HDA 1.0a, 4.3 "Codec Discovery").
-        fstart_arch::x86::udelay(521);
-
-        let mask = regs.codec_status.read(STATESTS::CODECS);
+        let mask = regs.codec_status.read(STATESTS::CODECS) & sdins;
         if mask == 0 {
             self.enter_reset();
             fstart_log::info!("hda: no codecs detected");
@@ -718,23 +754,32 @@ impl HdaController {
     /// Send a single verb and return the response. Returns `None` on timeout.
     pub fn send_verb(&self, verb: u32) -> Option<u32> {
         let regs = self.regs();
-        // 50 us, like Linux and coreboot.
-        if !fstart_arch::wait_us(50, || !regs.command_status.is_set(ICS::BUSY)) {
+        if !fstart_arch::wait_us(10_000, || !regs.command_status.is_set(ICS::BUSY)) {
+            regs.command_status.modify(ICS::BUSY::CLEAR);
             return None;
         }
 
         regs.command.set(verb);
         let mut status = regs.command_status.extract();
-        // Preserve the existing VALID acknowledgement while starting BUSY.
-        status.modify(ICS::BUSY::SET);
+        // VALID is W1C. Discard any stale response before starting this verb.
+        status.modify(ICS::VALID::SET + ICS::BUSY::SET);
         regs.command_status.set(status.get());
 
-        // A working codec answers well within coreboot's 1 ms.
-        fstart_arch::wait_us(1000, || {
+        if fstart_arch::wait_us(10_000, || {
             let status = regs.command_status.extract();
-            status.is_set(ICS::VALID) || !status.is_set(ICS::BUSY)
-        })
-        .then(|| regs.response.get())
+            status.is_set(ICS::VALID) && !status.is_set(ICS::BUSY)
+        }) {
+            Some(regs.response.get())
+        } else {
+            regs.command_status.modify(ICS::BUSY::CLEAR);
+            None
+        }
+    }
+
+    /// Program a controller-dedicated codec's literal command list: no ID probe
+    /// and no synthesized subsystem-ID writes.
+    pub(crate) fn program_list(&self, verbs: impl Iterator<Item = u32>) -> bool {
+        deliver(verbs, |v| self.send_verb(v).is_some())
     }
 
     /// Read a codec's vendor/device ID.
@@ -748,7 +793,7 @@ impl HdaController {
     ///
     /// For each codec address set in `codec_mask`, reads the vendor/device
     /// ID and searches `config.verbs` for a matching [`HdaVerbTable`].
-    /// Sends the subsystem ID, pin configs (expanded from [`PinConfig`]),
+    /// Sends pre-verbs, subsystem ID, pin configs (expanded from [`PinConfig`]),
     /// and any extra raw verbs.
     pub fn program_verb_tables(&self, config: &HdaConfig, codec_mask: u16) -> u8 {
         let mut programmed = 0u8;
@@ -777,30 +822,19 @@ impl HdaController {
                         table.extra_verbs.len() as u32,
                     );
 
-                    // 1. Set subsystem ID.
-                    let sub = hda_subvendor(addr as u32, table.subsystem_id);
-                    for &v in &sub {
-                        self.send_verb(v);
-                    }
-
-                    // 2. Program pin configs from typed descriptors.
-                    for pin in table.pins.as_slice() {
-                        let verbs = hda_pin_cfg(addr as u32, pin.nid as u32, pin.encode());
-                        for &v in &verbs {
-                            if self.send_verb(v).is_none() {
-                                fstart_log::error!("hda: pin {:#x} verb timeout", pin.nid);
-                            }
-                        }
-                    }
-
-                    // 3. Send extra raw verbs (amp gains, power states, etc.)
-                    for &verb in table.extra_verbs.as_slice() {
-                        if self.send_verb(verb).is_none() {
-                            fstart_log::error!("hda: extra verb {:#010x} timeout", verb);
-                        }
-                    }
-
-                    programmed += 1;
+                    let verbs =
+                        table
+                            .pre_verbs
+                            .iter()
+                            .copied()
+                            .chain(hda_subvendor(addr.into(), table.subsystem_id))
+                            .chain(
+                                table.pins.as_slice().iter().flat_map(|p| {
+                                    hda_pin_cfg(addr.into(), p.nid.into(), p.encode())
+                                }),
+                            )
+                            .chain(table.extra_verbs.as_slice().iter().copied());
+                    programmed += u8::from(self.program_list(verbs));
                     found = true;
                     break;
                 }
@@ -974,5 +1008,17 @@ mod tests {
             seq: 15,
         };
         assert_eq!(p.encode(), 0x0181343f, "line-in pin config mismatch");
+    }
+
+    #[test]
+    fn first_failed_verb_aborts_only_current_list() {
+        let mut trace = alloc::vec::Vec::new();
+        let mut send = |v| {
+            trace.push(v);
+            v != 2
+        };
+        assert!(!deliver([1, 2, 3].into_iter(), &mut send));
+        assert!(deliver([4].into_iter(), send));
+        assert_eq!(trace, [1, 2, 4]);
     }
 }

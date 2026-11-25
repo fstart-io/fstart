@@ -46,6 +46,26 @@ impl LpcFlashConfig {
             .modify(BIOS_CONTROL::READ_CONFIGURATION::PrefetchAndCache);
     }
 
+    /// Never open BIOS writes at handoff. With no SMM-only policy, leave any
+    /// stronger existing hardware protection in place.
+    pub fn finalize_bios_protection(&self, smm_only: bool) -> bool {
+        let reg = &self.bios_control;
+        if smm_only {
+            reg.modify(
+                BIOS_CONTROL::WRITE_ENABLE::CLEAR
+                    + BIOS_CONTROL::LOCK_ENABLE::SET
+                    + BIOS_CONTROL::SMM_WRITE_PROTECT::SET,
+            );
+        } else {
+            reg.modify(BIOS_CONTROL::WRITE_ENABLE::CLEAR);
+        }
+        let actual = reg.extract();
+        !actual.is_set(BIOS_CONTROL::WRITE_ENABLE)
+            && (!smm_only
+                || actual.is_set(BIOS_CONTROL::LOCK_ENABLE)
+                    && actual.is_set(BIOS_CONTROL::SMM_WRITE_PROTECT))
+    }
+
     /// Platform-owned development write policy, matching coreboot's
     /// `spi_init()` / `spi_set_smm_only_flashing(false)`. Ibex Peak deliberately
     /// keeps this policy through payload handoff; its SPI opcode lockdown
@@ -422,6 +442,12 @@ mod tests {
         config.bios_control.set(0xfb);
         config.prepare_firmware_writes();
         assert_eq!(bytes[0xdc / 4], 0xaaaa_aad9);
+        assert!(config.finalize_bios_protection(false));
+        assert_eq!(bytes[0xdc / 4], 0xaaaa_aad8);
+        assert!(config.finalize_bios_protection(true));
+        assert_eq!(bytes[0xdc / 4], 0xaaaa_aafa);
+        assert!(config.finalize_bios_protection(false));
+        assert_eq!(bytes[0xdc / 4], 0xaaaa_aafa);
         assert_eq!(bytes[0xe0 / 4], 0xaaaa_aaaa);
     }
 

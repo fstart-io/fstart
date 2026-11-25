@@ -30,8 +30,10 @@ pub enum UpdateStatus {
 }
 
 /// Error while parsing or loading an Intel microcode update.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ufmt::derive::uDebug)]
 pub enum MicrocodeError {
+    /// Optional post-relocation reload has no matching, non-downgrade patch.
+    NoReloadPatch,
     /// A record's advertised size would run past the supplied blob.
     TruncatedRecord,
     /// The update data pointer does not meet Intel's 16-byte alignment.
@@ -181,6 +183,14 @@ pub fn current_revision() -> u32 {
 /// Find the best matching patch for the current CPU in a concatenated blob.
 pub fn find_for_current_cpu(blob: &[u8]) -> Result<Option<MicrocodePatch<'_>>, MicrocodeError> {
     let (sig, platform) = current_signature_and_platform();
+    find_matching(blob, sig, platform)
+}
+
+fn find_matching(
+    blob: &[u8],
+    sig: u32,
+    platform: u32,
+) -> Result<Option<MicrocodePatch<'_>>, MicrocodeError> {
     let mut best: Option<MicrocodePatch<'_>> = None;
     let mut offset = 0usize;
 
@@ -210,6 +220,35 @@ pub fn find_for_current_cpu(blob: &[u8]) -> Result<Option<MicrocodePatch<'_>>, M
     Ok(best)
 }
 
+/// Serialize `IA32_BIOS_UPDT_TRIG` across logical processors: Intel SDM Vol. 3
+/// §9.11.6.1 forbids concurrent microcode updates on Hyper-Threading siblings.
+static MICROCODE_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+struct MicrocodeLock;
+
+impl MicrocodeLock {
+    fn acquire() -> Self {
+        while MICROCODE_LOCK
+            .compare_exchange_weak(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        Self
+    }
+}
+
+impl Drop for MicrocodeLock {
+    fn drop(&mut self) {
+        MICROCODE_LOCK.store(false, core::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Load a selected patch on the current CPU.
 ///
 /// # Safety
@@ -217,6 +256,7 @@ pub fn find_for_current_cpu(blob: &[u8]) -> Result<Option<MicrocodePatch<'_>>, M
 /// The caller must ensure `patch.record()` is reachable at its current physical
 /// address by this CPU and remains alive for the duration of the WRMSR.
 pub unsafe fn load(patch: MicrocodePatch<'_>) -> Result<UpdateStatus, MicrocodeError> {
+    let _guard = MicrocodeLock::acquire();
     let old_rev = current_revision();
     if old_rev >= patch.revision {
         return Ok(UpdateStatus::AlreadyCurrent { rev: old_rev });
@@ -248,6 +288,42 @@ pub unsafe fn update_current_cpu(blob: &[u8]) -> Result<UpdateStatus, MicrocodeE
     unsafe { load(patch) }
 }
 
+/// Re-trigger the installed update after SMM relocation on CPUs that require
+/// the second load (e.g. Haswell). Never loads a lower revision.
+///
+/// # Safety
+///
+/// Same trusted firmware blob and privileged CPU requirements as [`update_current_cpu`].
+pub unsafe fn reload_current_cpu(blob: &[u8]) -> Result<(), MicrocodeError> {
+    let _guard = MicrocodeLock::acquire();
+    let patch = required_patch(blob)?;
+    unsafe { wrmsr(IA32_BIOS_UPDT_TRIG, patch.data_ptr()?) };
+    let actual = current_revision();
+    if actual != patch.revision {
+        return Err(MicrocodeError::LoadFailed {
+            expected: patch.revision,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn required_patch(blob: &[u8]) -> Result<MicrocodePatch<'_>, MicrocodeError> {
+    validate_reload(find_for_current_cpu(blob)?, current_revision())
+}
+
+fn validate_reload(
+    patch: Option<MicrocodePatch<'_>>,
+    installed: u32,
+) -> Result<MicrocodePatch<'_>, MicrocodeError> {
+    let patch = patch.ok_or(MicrocodeError::NoReloadPatch)?;
+    patch.data_ptr()?;
+    if patch.revision < installed {
+        return Err(MicrocodeError::NoReloadPatch);
+    }
+    Ok(patch)
+}
+
 /// Apply a microcode blob and log the result.  Intended for MP flight-plan use.
 ///
 /// # Safety
@@ -271,6 +347,9 @@ pub unsafe fn update_current_cpu_logged(blob: &[u8]) {
                 actual
             );
         }
+        Err(MicrocodeError::NoReloadPatch) => {
+            fstart_log::warn!("microcode: no eligible reload patch");
+        }
         Err(MicrocodeError::TruncatedRecord) => {
             fstart_log::error!("microcode: blob has a truncated record");
         }
@@ -283,6 +362,35 @@ pub unsafe fn update_current_cpu_logged(blob: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relocation_requires_matching_aligned_patch_including_equal_revision() {
+        #[repr(align(16))]
+        struct Blob([u8; DEFAULT_UPDATE_SIZE]);
+        let mut bytes = Blob([0; DEFAULT_UPDATE_SIZE]);
+        bytes.0[4..8].copy_from_slice(&9u32.to_le_bytes());
+        bytes.0[12..16].copy_from_slice(&0x40651u32.to_le_bytes());
+        bytes.0[24..28].copy_from_slice(&4u32.to_le_bytes());
+        let select = |sig, platform| find_matching(&bytes.0, sig, platform).unwrap();
+        assert_eq!(
+            validate_reload(select(0x40651, 4), 9).unwrap().revision(),
+            9
+        );
+        assert_eq!(
+            validate_reload(select(0x40651, 4), 10).unwrap_err(),
+            MicrocodeError::NoReloadPatch
+        );
+        for patch in [
+            find_matching(&[], 0x40651, 4).unwrap(),
+            select(0x40650, 4),
+            select(0x40651, 1),
+        ] {
+            assert_eq!(
+                validate_reload(patch, 0).unwrap_err(),
+                MicrocodeError::NoReloadPatch
+            );
+        }
+    }
 
     #[test]
     fn update_data_requires_16_byte_alignment_not_just_eight() {
@@ -302,6 +410,9 @@ mod tests {
             record: &storage.0[8..],
             revision: 1,
         };
-        assert_eq!(unaligned.data_ptr(), Err(MicrocodeError::UnalignedUpdate));
+        assert_eq!(
+            validate_reload(Some(unaligned), 1).unwrap_err(),
+            MicrocodeError::UnalignedUpdate
+        );
     }
 }

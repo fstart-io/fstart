@@ -266,16 +266,26 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         let northbridge = Nb::<B>::new_from_config(B::CONFIG.northbridge()).unwrap_or_else(halt);
         let mut southbridge =
             Sb::<B>::new_from_config(B::CONFIG.southbridge()).unwrap_or_else(halt);
-        let store = crate::store::open(geometry).unwrap_or_else(halt);
-        crate::store::attach_timestamps(&store);
-        fstart_timestamp::add_at(fstart_timestamp::id::RAMSTAGE_START, entry);
         // S3 resume is bootblock policy transported through the postcar stash.
         let resume = crate::boot::handoff(firmware_base, firmware_size)
             .map(|stash| {
                 stash.boot_flags & fstart_arch::x86::boot::car_teardown::BOOT_FLAG_S3_RESUME != 0
             })
-            .unwrap_or(false);
+            .unwrap_or_else(|_| B::Platform::reset_failed_postcar_resume());
+        let store = crate::store::open(geometry).unwrap_or_else(|e| {
+            if resume {
+                B::Platform::reset_failed_postcar_resume();
+            }
+            halt(e)
+        });
+        crate::store::attach_timestamps(&store);
+        fstart_timestamp::add_at(fstart_timestamp::id::RAMSTAGE_START, entry);
         southbridge.set_resume(resume);
+        if cfg!(feature = "ehci-console")
+            && let Some(debug) = B::CONFIG.ehci_debug()
+        {
+            southbridge.set_ehci_debug(fstart_pci::devfn(debug.device, debug.function), debug.bar);
+        }
         let mut rs = Self {
             northbridge,
             southbridge,
@@ -382,6 +392,15 @@ impl<B: IntelBoard> Ramstage<B, Console> {
             self.northbridge.memory_detected(self.ctx.e820_state());
             // coreboot chip_operations.init: before PCI enumeration, e.g.
             // hiding functions the board disables.
+            if self.resume {
+                let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
+                if !self
+                    .southbridge
+                    .matches_acpi_population(crate::acpi_bars::cold_snapshot(store))
+                {
+                    return Err(ServiceError::HardwareError);
+                }
+            }
             self.northbridge.chip_init()?;
             self.southbridge.chip_init()?;
             // Cache is still off: the RAM-stage entry tore down CAR. The ranges
@@ -548,6 +567,48 @@ impl<B: IntelBoard> Ramstage<B, Enumerated> {
                     );
                 }
             }
+            // coreboot pci_dev_set_subsystem(): every enabled onboard function
+            // gets a subsystem ID, defaulting to its own VID/DID.
+            if rs.southbridge.onboard_subsystem_fallback() {
+                let listed = |d: u8, f: u8| {
+                    B::CONFIG
+                        .pci_subsystem_ids()
+                        .iter()
+                        .any(|e| e.device == d && e.function == f)
+                };
+                for d in 0..32u8 {
+                    let head = fstart_pci::ecam::EcamDevice::new(0, d, 0);
+                    if !head.is_present() {
+                        continue;
+                    }
+                    let functions = if head.read8(0x0e) & 0x80 != 0 { 8 } else { 1 };
+                    for f in 0..functions {
+                        let dev = fstart_pci::ecam::EcamDevice::new(0, d, f);
+                        if dev.is_present() && !listed(d, f) {
+                            rs.southbridge.program_subsystem_id(dev, 0);
+                        }
+                    }
+                }
+            }
+            // A suspended OS keeps the cold DSDT. Never hide Serial IO at a
+            // different address; phase failure takes the cold reset path on S3.
+            let store = rs.store.as_mut().ok_or(ServiceError::NotInitialized)?;
+            let retained = match rs.southbridge.acpi_bar_snapshot() {
+                Ok(bars) => crate::acpi_bars::retain(store, &bars, rs.resume)?,
+                Err(e) if rs.resume => return Err(e),
+                Err(e) => {
+                    fstart_log::warn!("ACPI BAR snapshot failed: {:?}", e);
+                    false
+                }
+            };
+            if !retained {
+                fstart_log::warn!("ACPI BAR snapshot not retained; withholding S3");
+                rs.northbridge.set_s3_enabled(false);
+                rs.southbridge.set_s3_enabled(false);
+            }
+            if B::Platform::IOAPIC_VIRTUAL_WIRE {
+                fstart_arch::x86::lapic::Lapic::from_msr().setup_virtual_wire(false);
+            }
             rs.northbridge.post_dram_init()?;
             rs.southbridge.post_dram_init()
         });
@@ -556,10 +617,52 @@ impl<B: IntelBoard> Ramstage<B, Enumerated> {
 }
 
 impl<B: IntelBoard> Ramstage<B, Chipset> {
+    /// Probe a discrete LPC/MMIO TIS TPM at [`fstart_driver_tpm::tis::BASE`],
+    /// enforce S3 population retention in `TPM_STATE`, and run `Startup(Clear)`
+    /// or `Startup(State)`.
+    ///
+    /// On S3 resume, a changed population or failed `Startup(State)` aborts
+    /// resume via [`Self::fail`]. On cold boot, failures withhold S3 (and, for
+    /// failed startup, omit the TPM device from ACPI) without aborting boot.
+    pub fn init_tis_tpm(&mut self) -> crate::tpm::TisProbe {
+        use fstart_driver_tpm::tis;
+
+        let resume = self.resume;
+        // SAFETY: LPC TIS window, exclusively used by the BSP before handoff.
+        let mut tis = unsafe { tis::Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
+        let id = tis.probe();
+        let irq = id.and_then(|_| tis.irq());
+        let same_tpm = self
+            .store
+            .as_mut()
+            .is_some_and(|store| crate::tpm::same_population(store, resume, id, irq));
+        if !same_tpm {
+            if resume {
+                self.fail("retained TPM identity");
+            }
+            fstart_log::warn!("TPM: could not retain identity; withholding S3");
+            self.northbridge.set_s3_enabled(false);
+            self.southbridge.set_s3_enabled(false);
+        }
+        let mut family = id.map(|i| i.family);
+        if let Some(kind) = family
+            && fstart_driver_tpm::startup(&mut tis, kind, resume).is_err()
+        {
+            if resume {
+                self.fail("TPM resume");
+            }
+            fstart_log::warn!("TPM: cold startup failed; withholding TPM device and S3");
+            family = None;
+            self.northbridge.set_s3_enabled(false);
+            self.southbridge.set_s3_enabled(false);
+        }
+        crate::tpm::TisProbe { family, irq }
+    }
+
     /// Bring up the APs with the CPU driver and, when fbuild embedded an SMM
     /// image ([`crate::SMM_IMAGE`]), relocate SMBASE, install the handler in
     /// TSEG and lock SMRAM.
-    pub fn start_cpus(self) -> Ramstage<B, Cpus> {
+    pub fn start_cpus(mut self) -> Ramstage<B, Cpus> {
         if init_mp::<B::Platform>(
             &self.northbridge,
             &self.southbridge,
@@ -569,6 +672,12 @@ impl<B: IntelBoard> Ramstage<B, Chipset> {
         .is_err()
         {
             self.fail("MP init");
+        }
+        if self.northbridge.post_mp_init().is_err() {
+            self.fail("northbridge post-MP init");
+        }
+        if self.southbridge.post_mp_init().is_err() {
+            self.fail("southbridge post-MP init");
         }
         self.into()
     }
@@ -665,7 +774,7 @@ impl<B: IntelBoard> Ramstage<B, Displayed> {
                     rom,
                     device.device_id(),
                     &windows,
-                    &DisplayClock,
+                    &fstart_arch::x86::Udelay,
                 )
             }
             .map_err(|error| {
@@ -698,14 +807,27 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
     /// devices it attaches to through its platform's
     /// [`PcNamespace`](fstart_acpi::PcNamespace).
     pub fn emit_tables(
-        mut self,
+        self,
         identity: &crate::tables::SmbiosIdentity<'_>,
         board: &impl fstart_acpi::device::AcpiDevice<Config = ()>,
     ) -> Ramstage<B, Ready> {
+        self.emit_tables_with_onboard(identity, board, &[])
+    }
+
+    /// Like [`Self::emit_tables`], plus board-defined SMBIOS Type 41 records.
+    pub fn emit_tables_with_onboard(
+        mut self,
+        identity: &crate::tables::SmbiosIdentity<'_>,
+        board: &impl fstart_acpi::device::AcpiDevice<Config = ()>,
+        extra_onboard: &[crate::tables::ExtraOnboardDevice<'_>],
+    ) -> Ramstage<B, Ready> {
         self.mainboard = (identity.bb_manufacturer.into(), identity.bb_product.into());
+        self.phase(fstart_timestamp::id::FINALIZE, |rs| {
+            rs.northbridge.finalize_init()
+        });
         self.phase(fstart_timestamp::id::EMIT_TABLES, |rs| {
             rs.emit_acpi(board)?;
-            rs.emit_smbios(identity)?;
+            rs.emit_smbios(identity, extra_onboard)?;
             rs.reserve_coreboot_window()
         });
         // Nothing is added to the store after the tables; a resume reuses it.
@@ -750,6 +872,7 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
     fn emit_smbios(
         &mut self,
         identity: &crate::tables::SmbiosIdentity<'_>,
+        extra_onboard: &[crate::tables::ExtraOnboardDevice<'_>],
     ) -> Result<(), ServiceError> {
         let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
         let memory = crate::memory_info::read(store);
@@ -758,6 +881,7 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
             memory: memory.as_ref(),
             pci: self.pci.as_ref(),
             ports: B::CONFIG.pcie_attached(),
+            extra_onboard,
         };
         let smbios =
             crate::tables::prepare_smbios(store, self.ctx.e820_state(), identity, &runtime)?;
@@ -800,24 +924,12 @@ impl<B: IntelBoard> Ramstage<B, Resume> {
     /// owns the live tables; rebuilding them would overwrite its memory.
     pub fn keep_tables(mut self) -> Ramstage<B, Ready> {
         let e820 = self.ctx.e820();
+        let acpi = self.store.as_ref().and_then(|s| {
+            let e = s.find(fstart_store::tag::ACPI)?;
+            Some((s.address(&e) as u64, e.len() as u64))
+        });
         self.wake_vector = fstart_acpi::platform::x86::wake::find_wakeup_vector(|addr, size| {
-            let Some(end) = addr.checked_add(size as u64) else {
-                return false;
-            };
-            // BDA, EBDA and the legacy BIOS scan window are below 1 MiB.
-            // Every table pointer above that must stay inside a chipset-
-            // reported physical-memory span, never an unlisted MMIO hole.
-            end <= 0x10_0000
-                || e820.iter().any(|entry| {
-                    entry.size != 0
-                        && entry.kind
-                            != fstart_core::services::memory_detect::E820Kind::Unusable as u32
-                        && addr >= entry.addr
-                        && entry
-                            .addr
-                            .checked_add(entry.size)
-                            .is_some_and(|entry_end| end <= entry_end)
-                })
+            crate::tables::wake_readable(e820, acpi, addr, size)
         });
         self.phase(
             fstart_timestamp::id::LOAD_MEMORY_POLICY,
@@ -832,6 +944,9 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
     /// vector on S3 resume, to the payload otherwise.
     pub fn boot(mut self) -> ! {
         self.phase(fstart_timestamp::id::FINALIZE, |rs| {
+            if rs.resume {
+                rs.northbridge.finalize_init()?;
+            }
             rs.southbridge.finalize_init()
         });
         // mp_init leaves APs polling firmware mailboxes. Stop that activity before
@@ -945,42 +1060,40 @@ fn init_mp<P: IntelEarlyPlatform>(
         let (_, ebx, _, _) = fstart_arch::x86::cpuid(1);
         (((ebx >> 16) & 0xff) as u16).max(1)
     });
-    let mp = fstart_arch::x86::mp::mp_init(&fstart_arch::x86::mp::MpConfig {
+    use fstart_arch::x86::cpu::intel::smm::{IntelSmm, IntelSmmError};
+    use fstart_arch::x86::mp::{MpConfig, MpError, MpHandle, mp_init_with_setup};
+    let config = MpConfig {
         cpu_drivers: &drivers,
         num_cpus,
         max_cpus,
-    })
-    .map_err(|_| ServiceError::HardwareError)?;
-    if let Some(image) = crate::SMM_IMAGE {
-        let smm = fstart_arch::x86::cpu::intel::smm::IntelSmm::new(
-            P::NAME,
-            northbridge,
-            southbridge,
-            &cpu,
-            resume,
-        );
-        if let Err(error) = smm.install(&mp, image) {
-            fstart_log::error!("{} SMM installation failed: {}", P::NAME, error.name());
-            return Err(ServiceError::HardwareError);
-        }
+    };
+    let smm = IntelSmm::new(P::NAME, northbridge, southbridge, &cpu, resume);
+    let mut relocated = None;
+    let report = |e: IntelSmmError| {
+        fstart_log::error!("{} SMM installation failed: {}", P::NAME, e.name());
+        ServiceError::HardwareError
+    };
+    let mut relocate = |mp: &MpHandle| {
+        relocated = crate::SMM_IMAGE
+            .map(|image| smm.relocate(mp, image))
+            .transpose()
+            .map_err(report)?;
+        Ok(())
+    };
+    let mp = if P::RELOCATE_BEFORE_CPU_INIT {
+        mp_init_with_setup(&config, !P::IOAPIC_VIRTUAL_WIRE, |mp| {
+            relocate(mp).map_err(|_: ServiceError| MpError::PlatformSetupFailed)
+        })
+        .map_err(|_| ServiceError::HardwareError)?
+    } else {
+        let mp = fstart_arch::x86::mp::mp_init(&config).map_err(|_| ServiceError::HardwareError)?;
+        relocate(&mp)?;
+        mp
+    };
+    if let Some(handler) = relocated {
+        handler.activate(&mp).map_err(report)?;
     }
     Ok(())
-}
-
-/// The common x86 calibrated clock, as required by the bounded VBIOS executor.
-#[cfg(target_arch = "x86_64")]
-struct DisplayClock;
-#[cfg(target_arch = "x86_64")]
-impl fstart_core::services::Timer for DisplayClock {
-    fn delay_us(&self, us: u64) {
-        for _ in 0..us / u64::from(u32::MAX) {
-            fstart_arch::udelay(u32::MAX);
-        }
-        fstart_arch::udelay((us % u64::from(u32::MAX)) as u32);
-    }
-    fn timestamp_us(&self) -> u64 {
-        fstart_arch::x86::timestamp_us()
-    }
 }
 
 pub struct MainstageCtx {

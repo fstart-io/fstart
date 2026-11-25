@@ -13,6 +13,13 @@ use crate::x86::mp::{CpuDriver, CpuIdMatch, CpuVendor};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields};
 
+pub use super::ratio::{
+    CORE_THREAD_COUNT, CoreThreadCount, IA32_MISC_ENABLE, IA32_PERF_CTL, IA32_THERM_INTERRUPT,
+    MISC_PWR_MGMT, MiscEnable, MiscPwrMgmt, PLATFORM_INFO, POWER_CTL, PerfCtl, PlatformInfo,
+    PowerCtl, TEMPERATURE_TARGET, TURBO_RATIO_LIMIT, TemperatureTarget, TurboRatioLimit,
+    TurboState, turbo_state,
+};
+
 /// Arrandale's bus clock is fixed at 133 MHz (coreboot `IRONLAKE_BCLK`).
 pub const BCLK_MHZ: u32 = 133;
 
@@ -24,38 +31,6 @@ register_bitfields![u64,
         LOCK OFFSET(15) NUMBITS(1) [],
         C3_AUTO_DEMOTION OFFSET(25) NUMBITS(1) []
     ],
-    /// MSR_POWER_CTL.
-    pub PowerCtl [ C1E OFFSET(1) NUMBITS(1) [] ],
-    /// MSR_MISC_PWR_MGMT.
-    pub MiscPwrMgmt [
-        EIST_HW_COORDINATION_DISABLE OFFSET(0) NUMBITS(1) [],
-        THERMAL_INTERRUPT_LOCK OFFSET(22) NUMBITS(1) []
-    ],
-    /// IA32_MISC_ENABLE.
-    pub MiscEnable [
-        FAST_STRINGS OFFSET(0) NUMBITS(1) [],
-        THERMAL_MONITOR OFFSET(3) NUMBITS(1) [],
-        EIST OFFSET(16) NUMBITS(1) [],
-        TURBO_DISABLE OFFSET(38) NUMBITS(1) []
-    ],
-    /// MSR_PLATFORM_INFO.
-    pub PlatformInfo [
-        MAX_NON_TURBO_RATIO OFFSET(8) NUMBITS(8) [],
-        PROGRAMMABLE_TJ_OFFSET OFFSET(30) NUMBITS(1) [],
-        MAX_EFFICIENCY_RATIO OFFSET(40) NUMBITS(8) []
-    ],
-    /// MSR_TEMPERATURE_TARGET.
-    pub TemperatureTarget [
-        TJ_MAX OFFSET(16) NUMBITS(8) [],
-        TCC_OFFSET OFFSET(24) NUMBITS(4) []
-    ],
-    /// MSR_TURBO_RATIO_LIMIT.
-    pub TurboRatioLimit [ ONE_CORE OFFSET(0) NUMBITS(8) [] ],
-    /// MSR_CORE_THREAD_COUNT.
-    pub CoreThreadCount [
-        THREADS OFFSET(0) NUMBITS(16) [],
-        CORES OFFSET(16) NUMBITS(16) []
-    ],
     /// MSR_FEATURE_CONFIG.
     pub FeatureConfig [ AESNI_LOCK OFFSET(0) NUMBITS(1) [] ],
     /// MSR_TURBO_POWER_CURRENT_LIMIT.
@@ -63,46 +38,11 @@ register_bitfields![u64,
 ];
 
 pub const PKG_CST_CONFIG_CONTROL: Msr<PkgCstConfig::Register> = Msr::new(0xe2);
-pub const PLATFORM_INFO: Msr<PlatformInfo::Register> = Msr::new(0xce);
-pub const CORE_THREAD_COUNT: Msr<CoreThreadCount::Register> = Msr::new(0x35);
 pub const FEATURE_CONFIG: Msr<FeatureConfig::Register> = Msr::new(0x13c);
-pub const IA32_THERM_INTERRUPT: Msr = Msr::new(0x19b);
-pub const IA32_MISC_ENABLE: Msr<MiscEnable::Register> = Msr::new(0x1a0);
-pub const TEMPERATURE_TARGET: Msr<TemperatureTarget::Register> = Msr::new(0x1a2);
-pub const MISC_PWR_MGMT: Msr<MiscPwrMgmt::Register> = Msr::new(0x1aa);
 pub const TURBO_POWER_CURRENT_LIMIT: Msr<TurboPowerCurrentLimit::Register> = Msr::new(0x1ac);
-pub const TURBO_RATIO_LIMIT: Msr<TurboRatioLimit::Register> = Msr::new(0x1ad);
-pub const POWER_CTL: Msr<PowerCtl::Register> = Msr::new(0x1fc);
-register_bitfields![u64,
-    /// IA32_PERF_CTL.
-    pub PerfCtl [ RATIO OFFSET(0) NUMBITS(8) [] ]
-];
-/// IA32_PERF_CTL. coreboot ironlake writes the ratio to the low byte.
-pub const IA32_PERF_CTL: Msr<PerfCtl::Register> = Msr::new(0x199);
 
 /// coreboot `HIGHEST_CLEVEL`: C6 package limit.
 const HIGHEST_CLEVEL: u64 = 3;
-
-/// Turbo availability (coreboot `cpu/intel/turbo`): a package-wide fact.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TurboState {
-    Unavailable,
-    /// Supported, but `IA32_MISC_ENABLE` hides it.
-    Disabled,
-    Enabled,
-}
-
-/// coreboot `update_turbo_state()`.
-pub fn turbo_state(cpu: &impl MsrAccess) -> TurboState {
-    let capable = crate::x86::cpuid(6).0 & (1 << 1) != 0;
-    let hidden = cpu.reg(IA32_MISC_ENABLE).is_set(MiscEnable::TURBO_DISABLE);
-    match (capable, hidden) {
-        (true, false) => TurboState::Enabled,
-        // CPUID leaf 6 stops advertising turbo while MISC_ENABLE hides it.
-        (false, true) => TurboState::Disabled,
-        _ => TurboState::Unavailable,
-    }
-}
 
 /// coreboot ironlake `early_cpu_init()`, MSR part: request the ratio above
 /// the maximum non-turbo one and enable EIST before raminit. When CPUID

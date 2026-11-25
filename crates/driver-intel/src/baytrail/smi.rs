@@ -84,7 +84,7 @@ impl SmiControl for BaytrailSmi {
             pm1 |= pmio::PCIEXPWAK_DIS;
         }
         pm.write16(pmio::PM1_EN, pm1);
-        pm.write32(pmc::GPE0_EN, previous.gpe0_low & !pmc::PME_B0_EN);
+        pm.write32(pmc::GPE0_EN, previous.gpe0[0] & !pmc::PME_B0_EN);
         self.route_gpios();
         pm.write32(pmio::SMI_EN, pmio::APMC_EN | pmio::GBL_SMI_EN | pmio::EOS);
     }

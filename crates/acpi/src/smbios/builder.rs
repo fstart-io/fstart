@@ -184,6 +184,28 @@ impl<'a> Builder<'a> {
         self
     }
 
+    /// An onboard device (type 41) with an explicit `instance` field (used by
+    /// platforms such as ChromeOS that encode non-PCI bus/IRQ facts in Type 41).
+    pub fn onboard_device_raw(
+        &mut self,
+        device: &OnboardDevice<'a>,
+        enabled: bool,
+        instance: u8,
+        segment: u16,
+        bus: u8,
+        devfn: u8,
+    ) -> &mut Self {
+        self.onboard.push(Onboard {
+            device: *device,
+            enabled,
+            instance,
+            segment,
+            bus,
+            devfn,
+        });
+        self
+    }
+
     /// Write the tables into `bytes`, which the OS will find at `address`;
     /// returns the length.
     pub fn assemble_into(&self, bytes: &mut [u8], address: u64) -> Result<usize, WriteError> {
@@ -279,6 +301,29 @@ mod tests {
             .memory_array(64 << 20, 6)
             .dimm(&MemoryDevice::empty(0, 1), "A1", "A")
             .onboard_device(&LAN, true, 0, 3, 0);
+        let mut bytes = vec![0; BUFFER_SIZE];
+        assert_eq!(builder.assemble_into(&mut bytes, 0x1000), Ok(len));
+        assert_eq!(bytes[..len], expected[..len]);
+    }
+
+    #[test]
+    fn onboard_device_raw_preserves_explicit_instance() {
+        let identity = SmbiosIdentity::new("Vendor", "Board");
+        let trackpad = OnboardDevice {
+            designation: "trackpad",
+            kind: OnboardType::Other,
+        };
+        let mut expected = vec![0; BUFFER_SIZE];
+        let len = assemble_into(&mut expected, 0x1000, |w| {
+            w.add_identity(&identity, 8 << 20, true);
+            w.add_onboard_device(&trackpad, true, 37, 1, 0x67, 0);
+            w.add_system_boot_info();
+            w.add_end_of_table();
+        })
+        .unwrap();
+
+        let mut builder = Builder::new(&identity, 8 << 20, true);
+        builder.onboard_device_raw(&trackpad, true, 37, 1, 0x67, 0);
         let mut bytes = vec![0; BUFFER_SIZE];
         assert_eq!(builder.assemble_into(&mut bytes, 0x1000), Ok(len));
         assert_eq!(bytes[..len], expected[..len]);

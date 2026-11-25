@@ -39,8 +39,9 @@ register_bitfields! [u32,
     /// DDI buffer control register fields.
     pub DDI_BUF_CTL_REG [
         BUFFER_ENABLE OFFSET(31) NUMBITS(1) [],
-        TRANS_SELECT OFFSET(24) NUMBITS(2) [],
+        TRANS_SELECT OFFSET(24) NUMBITS(4) [],
         PORT_REVERSAL OFFSET(16) NUMBITS(1) [],
+        IDLE_STATUS OFFSET(7) NUMBITS(1) [],
         DDI_A_LANE_CAP OFFSET(4) NUMBITS(1) [],
         PORT_WIDTH OFFSET(1) NUMBITS(2) [
             OneLane = 0,
@@ -172,13 +173,28 @@ pub enum DdiPort {
 
 impl DdiPort {
     /// Map a board-facing logical port to a DDI port.
+    ///
+    /// Matches libgfxinit `To_GPU_Port` for Haswell/Broadwell/Skylake and
+    /// `gmbus::ddc_pin_for_port`: DDI-A is eDP/DP-A only, while HDMI A/B/C
+    /// map to DDI-B/C/D alongside DP-B/C/D.
     pub const fn from_port(port: Port) -> Result<Self, GmaError> {
         match port {
-            Port::Edp | Port::DpA | Port::HdmiA => Ok(Self::A),
-            Port::DpB | Port::HdmiB => Ok(Self::B),
-            Port::DpC | Port::HdmiC => Ok(Self::C),
-            Port::DpD => Ok(Self::D),
+            Port::Edp | Port::DpA => Ok(Self::A),
+            Port::DpB | Port::HdmiA => Ok(Self::B),
+            Port::DpC | Port::HdmiB => Ok(Self::C),
+            Port::DpD | Port::HdmiC => Ok(Self::D),
             Port::Lvds | Port::Vga => Err(GmaError::UnsupportedPort),
+        }
+    }
+
+    /// Base MMIO offset of the 20-dword `DDI_BUF_TRANS` table for this DDI port.
+    pub const fn buf_trans_base(self) -> usize {
+        match self {
+            Self::A => 0x64e00,
+            Self::B => 0x64e60,
+            Self::C => 0x64ec0,
+            Self::D => 0x64f20,
+            Self::E => 0x64f80,
         }
     }
 }
@@ -481,7 +497,7 @@ pub const fn hsw_ddi_buffer_table_kind(
     edp_low_voltage_swing: bool,
 ) -> Result<HswDdiBufferTableKind, GmaError> {
     match cpu {
-        Cpu::Haswell => match ddi {
+        Cpu::Haswell | Cpu::HaswellUlt | Cpu::HaswellUlx => match ddi {
             DdiPort::A | DdiPort::B | DdiPort::C | DdiPort::D => {
                 Ok(HswDdiBufferTableKind::HaswellDp)
             }
@@ -514,7 +530,7 @@ pub fn hsw_ddi_buffer_translations(
         HswDdiBufferTableKind::BroadwellFdi => BROADWELL_TRANS_FDI,
     };
     let hdmi = match cpu {
-        Cpu::Haswell => HASWELL_TRANS_HDMI
+        Cpu::Haswell | Cpu::HaswellUlt | Cpu::HaswellUlx => HASWELL_TRANS_HDMI
             .get(hdmi_translation as usize)
             .copied()
             .ok_or(GmaError::InvalidConfig)?,
@@ -1079,6 +1095,48 @@ pub const fn encode_ddi_buf_ctl(
         | bool_bit(init_display_detect, DDI_BUF_CTL_INIT_DISPLAY_DETECT)
 }
 
+/// Mask of `DDI_BUF_CTL` bits cleared before programming DP signal levels.
+///
+/// Matches libgfxinit `Connectors.DDI.Set_Signal_Levels`: clears only
+/// `TRANS_SELECT` (bits 27:24), `PORT_REVERSAL` (bit 16), and `PORT_WIDTH`
+/// (bits 2:1), preserving `DDI_A_4_LANES` (bit 4) and `INIT_DISPLAY_DETECT`
+/// (bit 0).
+pub const DDI_BUF_CTL_DP_RMW_CLEAR_MASK: u32 = DDI_BUF_CTL_REG::TRANS_SELECT.val(0xf).value
+    | DDI_BUF_CTL_PORT_REVERSAL
+    | DDI_BUF_CTL_REG::PORT_WIDTH.val(0b11).value;
+
+/// Mask of `DDI_BUF_CTL` bits cleared before enabling HDMI/DVI output.
+pub const DDI_BUF_CTL_HDMI_RMW_CLEAR_MASK: u32 =
+    DDI_BUF_CTL_REG::TRANS_SELECT.val(0xf).value | DDI_BUF_CTL_PORT_REVERSAL;
+
+/// `DDI_BUF_CTL` idle status bit (bit 7).
+pub const DDI_BUF_CTL_IDLE_STATUS: u32 = DDI_BUF_CTL_REG::IDLE_STATUS::SET.value;
+
+/// Read-modify-write helper for `DDI_BUF_CTL` during DP/eDP signal-level setup.
+///
+/// Preserves bit 4 (`DDI_A_4_LANES`) and bit 0 (`INIT_DISPLAY_DETECT`) on DDI-A.
+#[must_use]
+pub const fn ddi_buf_ctl_dp_rmw(
+    current: u32,
+    trans_select: u8,
+    lanes: DdiLaneCount,
+    enable: bool,
+) -> u32 {
+    (current & !DDI_BUF_CTL_DP_RMW_CLEAR_MASK)
+        | bool_bit(enable, DDI_BUF_CTL_BUFFER_ENABLE)
+        | ((trans_select as u32 & 0x0f) << DDI_BUF_CTL_TRANS_SELECT_SHIFT)
+        | lanes.buf_ctl_bits()
+}
+
+/// Read-modify-write helper for `DDI_BUF_CTL` when enabling HDMI/DVI in `post_on`.
+///
+/// Clears `TRANS_SELECT` and `PORT_REVERSAL` while preserving `DDI_A_4_LANES`
+/// and `INIT_DISPLAY_DETECT`, and sets `BUFFER_ENABLE` when `enable` is true.
+#[must_use]
+pub const fn ddi_buf_ctl_hdmi_rmw(current: u32, enable: bool) -> u32 {
+    (current & !DDI_BUF_CTL_HDMI_RMW_CLEAR_MASK) | bool_bit(enable, DDI_BUF_CTL_BUFFER_ENABLE)
+}
+
 /// Build a DP_TP_CTL value for DP/eDP transport.
 pub const fn encode_dp_tp_ctl(
     enable: bool,
@@ -1564,7 +1622,10 @@ pub fn hsw_hdmi_init_sequence_plan(
         per_ddi_clock_sel,
         hdmi_translation,
     } = params;
-    if !matches!(cpu, Cpu::Haswell | Cpu::Broadwell) {
+    if !matches!(
+        cpu,
+        Cpu::Haswell | Cpu::HaswellUlt | Cpu::HaswellUlx | Cpu::Broadwell
+    ) {
         return Err(GmaError::UnsupportedPlatform);
     }
     let routed = hsw_routed_hdmi_plan(HswHdmiRouteParams {
@@ -1685,7 +1746,10 @@ pub fn hsw_dp_init_sequence_plan(
         per_ddi_clock_sel,
         iboost_enabled,
     } = params;
-    if !matches!(cpu, Cpu::Haswell | Cpu::Broadwell) {
+    if !matches!(
+        cpu,
+        Cpu::Haswell | Cpu::HaswellUlt | Cpu::HaswellUlx | Cpu::Broadwell
+    ) {
         return Err(GmaError::UnsupportedPlatform);
     }
     let routed = hsw_routed_dp_plan(HswDpRouteParams {
@@ -1940,9 +2004,12 @@ mod tests {
     #[test]
     fn maps_logical_ports_to_ddi_ports() {
         assert_eq!(DdiPort::from_port(Port::Edp), Ok(DdiPort::A));
-        assert_eq!(DdiPort::from_port(Port::HdmiA), Ok(DdiPort::A));
+        assert_eq!(DdiPort::from_port(Port::DpA), Ok(DdiPort::A));
+        assert_eq!(DdiPort::from_port(Port::HdmiA), Ok(DdiPort::B));
         assert_eq!(DdiPort::from_port(Port::DpB), Ok(DdiPort::B));
-        assert_eq!(DdiPort::from_port(Port::HdmiC), Ok(DdiPort::C));
+        assert_eq!(DdiPort::from_port(Port::HdmiB), Ok(DdiPort::C));
+        assert_eq!(DdiPort::from_port(Port::DpC), Ok(DdiPort::C));
+        assert_eq!(DdiPort::from_port(Port::HdmiC), Ok(DdiPort::D));
         assert_eq!(DdiPort::from_port(Port::DpD), Ok(DdiPort::D));
         assert_eq!(
             DdiPort::from_port(Port::Vga),
@@ -2084,8 +2151,8 @@ mod tests {
     #[test]
     fn builds_data_only_hdmi_and_dp_plans_without_enabling_caps() {
         let hdmi = DdiPortPlan::hdmi(Port::HdmiB, Pipe::B, DdiClockSelect::Wrpll1).unwrap();
-        assert_eq!(hdmi.port, DdiPort::B);
-        assert_eq!(hdmi.regs.buf_ctl, 0x64100);
+        assert_eq!(hdmi.port, DdiPort::C);
+        assert_eq!(hdmi.regs.buf_ctl, 0x64200);
         assert_eq!(hdmi.dp_tp_ctl, None);
         assert_eq!(hdmi.port_clk_sel, 4 << 29);
 
@@ -2118,7 +2185,7 @@ mod tests {
             per_ddi_clock_sel: true,
         })
         .unwrap();
-        assert_eq!(hdmi.port.port, DdiPort::B);
+        assert_eq!(hdmi.port.port, DdiPort::C);
         assert_eq!(hdmi.port.port_clk_sel, 4 << 29);
         assert!(matches!(
             hdmi.pll,
@@ -2135,7 +2202,7 @@ mod tests {
             hdmi.routing,
             DdiClockRouting::PortClkSel {
                 op: DdiRegisterOp {
-                    register: 0x46104,
+                    register: 0x46108,
                     mask_unset: u32::MAX,
                     mask_set: 4 << 29,
                 }
@@ -2178,8 +2245,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.cpu, Cpu::Haswell);
-        assert_eq!(plan.routed.port.port, DdiPort::B);
-        assert_eq!(plan.routed.port.regs.buf_ctl, 0x64100);
+        assert_eq!(plan.routed.port.port, DdiPort::C);
+        assert_eq!(plan.routed.port.regs.buf_ctl, 0x64200);
         assert_eq!(plan.routed.port.dp_tp_ctl, None);
         assert!(matches!(
             plan.routed.pll,
@@ -2196,7 +2263,7 @@ mod tests {
             plan.routed.routing,
             DdiClockRouting::PortClkSel {
                 op: DdiRegisterOp {
-                    register: 0x46104,
+                    register: 0x46108,
                     mask_unset: u32::MAX,
                     mask_set: 4 << 29,
                 }
@@ -2343,13 +2410,13 @@ mod tests {
             pll: SklPllSelect::Dpll3,
         })
         .unwrap();
-        assert_eq!(hdmi.port.port, DdiPort::C);
+        assert_eq!(hdmi.port.port, DdiPort::D);
         assert_eq!(hdmi.port.port_clk_sel, 7 << 29);
         assert_eq!(
             hdmi.routing,
             DdiClockRouting::PortClkSel {
                 op: DdiRegisterOp {
-                    register: 0x46108,
+                    register: 0x4610c,
                     mask_unset: u32::MAX,
                     mask_set: 3,
                 }
@@ -2413,7 +2480,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(plan.cpu, Cpu::Kabylake);
-        assert_eq!(plan.routed.port.port, DdiPort::C);
+        assert_eq!(plan.routed.port.port, DdiPort::D);
         assert_eq!(plan.routed.port.dp_tp_ctl, None);
         assert!(matches!(
             plan.routed.pll,
@@ -2432,7 +2499,7 @@ mod tests {
             plan.routed.routing,
             DdiClockRouting::PortClkSel {
                 op: DdiRegisterOp {
-                    register: 0x46108,
+                    register: 0x4610c,
                     mask_unset: u32::MAX,
                     mask_set: 3,
                 }
