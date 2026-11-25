@@ -111,6 +111,24 @@ fn bounds_and_reservations_fail_before_writes() {
 }
 
 #[test]
+fn empty_half_open_windows_do_not_overlap() {
+    let outer = MemoryWindow {
+        start: 10,
+        size: 10,
+    };
+    let empty_inside = MemoryWindow { start: 15, size: 0 };
+    assert!(!outer.overlaps(empty_inside));
+    assert!(!empty_inside.overlaps(outer));
+
+    let overflowing = MemoryWindow {
+        start: u64::MAX,
+        size: 2,
+    };
+    assert!(outer.overlaps(overflowing));
+    assert!(overflowing.overlaps(outer));
+}
+
+#[test]
 fn compressed_input_window_cannot_wrap_the_address_space() {
     // The output fits below 2^64, but the scratch input behind it would wrap.
     let mut descriptor = descriptor(b"stored", b"loaded!", Compression::Lz4);

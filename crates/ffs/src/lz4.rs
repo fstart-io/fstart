@@ -663,12 +663,11 @@ mod proofs {
     /// One sequence from any state with `ip <= S`, `op <= D` equals the
     /// byte-at-a-time reference. Both decoders run their step through the
     /// same [`decode_sequences`] driver from `(0, 0)`, and `Next` preserves
-    /// that precondition while strictly advancing, so blocks of at most `S`
-    /// input and `D` output bytes agree by induction over their sequences.
-    /// Positions are symbolic within fixed-size buffers, so every pairing of
-    /// remaining input/output up to `S`/`D` and every match offset up to `op`
-    /// is covered. Longer blocks rest on the helper and length-extension
-    /// proofs, not on this bounded equivalence.
+    /// that precondition while strictly advancing, so blocks with the exact
+    /// `(S, D)` buffer lengths passed by each harness (`(10, 24)` and
+    /// `(17, 16)`) agree by induction over their sequences. Other slice
+    /// lengths (shorter or longer) rest on the helper, length-extension and
+    /// test coverage rather than on this fixed-shape equivalence.
     fn check_sequence<const S: usize, const D: usize>() {
         let src: [u8; S] = kani::any();
         let ip: usize = kani::any_where(|&i| i <= S);

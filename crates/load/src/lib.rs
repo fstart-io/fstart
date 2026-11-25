@@ -329,7 +329,9 @@ impl MemoryWindow {
 
     pub fn overlaps(self, other: Self) -> bool {
         match (self.end(), other.end()) {
-            (Some(end), Some(other_end)) => self.start < other_end && other.start < end,
+            (Some(end), Some(other_end)) => {
+                self.size != 0 && other.size != 0 && self.start < other_end && other.start < end
+            }
             _ => true,
         }
     }
@@ -562,10 +564,14 @@ mod proofs {
             && end_u128(b) <= end_u128(a);
         assert_eq!(a.contains(b), contains);
 
-        // A window that does not fit in u64 is conservatively overlapping.
+        // A window that does not fit in u64 is conservatively overlapping;
+        // representable empty half-open windows share no bytes.
         let overlaps = !fits(a)
             || !fits(b)
-            || (u128::from(a.start) < end_u128(b) && u128::from(b.start) < end_u128(a));
+            || (a.size != 0
+                && b.size != 0
+                && u128::from(a.start) < end_u128(b)
+                && u128::from(b.start) < end_u128(a));
         assert_eq!(a.overlaps(b), overlaps);
         assert_eq!(a.overlaps(b), b.overlaps(a));
     }
@@ -600,7 +606,7 @@ mod proofs {
         for r in policy.reserved {
             // No byte of the accepted range lies in any reservation.
             assert!(fits(*r));
-            assert!(end <= u128::from(r.start) || u128::from(start) >= end_u128(*r));
+            assert!(r.size == 0 || end <= u128::from(r.start) || u128::from(start) >= end_u128(*r));
         }
     }
 

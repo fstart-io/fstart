@@ -268,7 +268,8 @@ pub(crate) fn read_asset(media: &(impl BootMedia + ?Sized), name: &str) -> Optio
     if file.file_type().ok()? != FileType::Data {
         return None;
     }
-    let descriptor = descriptor(&file)?;
+    let mut descriptor = descriptor(&file)?;
+    descriptor.load_addr = 0;
     let footprint = usize::try_from(crate::boot::bootstrap_footprint(&descriptor).ok()?).ok()?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(footprint).ok()?;
