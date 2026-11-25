@@ -192,6 +192,46 @@ impl EcamDevice {
         None
     }
 
+    /// The PCIe extended capabilities of this function, in list order, as
+    /// `(offset, header)`: a bounded walk from 0x100 that stops at an empty
+    /// or all-ones header, a misaligned or out-of-range pointer, or a cycle.
+    pub fn ext_capabilities(&self) -> ExtCapabilities<'_> {
+        ExtCapabilities {
+            device: self,
+            offset: if self.is_present() { 0x100 } else { 0 },
+            seen: [0; 16],
+        }
+    }
+
+    /// Find PCIe extended capability `id` (the header's low 16 bits).
+    pub fn find_ext_capability(&self, id: u16) -> Option<u16> {
+        self.ext_capabilities()
+            .find(|&(_, header)| header as u16 == id)
+            .map(|(offset, _)| offset)
+    }
+
+    /// Find a Designated Vendor-Specific Extended Capability (ID 0x23) of
+    /// `vendor` with DVSEC ID `id` whose declared span fits in config space
+    /// and holds at least `min_bytes` (including the DVSEC headers). A next
+    /// pointer into its own span is a malformed list.
+    pub fn find_dvsec(&self, vendor: u16, id: u16, min_bytes: u16) -> Option<u16> {
+        self.ext_capabilities().find_map(|(offset, header)| {
+            if header as u16 != EXT_CAP_DVSEC || offset > 0xff4 {
+                return None;
+            }
+            let next = (header >> 20) as u16;
+            let dvsec = self.read32(offset + 4);
+            let bytes = (dvsec >> 20) as u16;
+            let end = offset + bytes;
+            (dvsec as u16 == vendor
+                && bytes >= min_bytes.max(12)
+                && usize::from(end) <= FUNCTION_CONFIG_BYTES
+                && !(offset..end).contains(&next)
+                && self.read16(offset + 8) == id)
+                .then_some(offset)
+        })
+    }
+
     /// Return a typed config-space overlay for this device.
     ///
     /// # Safety
@@ -463,6 +503,45 @@ impl EcamDevice {
         };
         let base = high | u64::from(low & !0xf);
         (base != 0).then_some(base)
+    }
+}
+
+/// PCIe extended capability ID of a Designated Vendor-Specific Extended
+/// Capability (PCIe 6.0 §7.9.6).
+pub const EXT_CAP_DVSEC: u16 = 0x23;
+
+/// The walk of [`EcamDevice::ext_capabilities`].
+pub struct ExtCapabilities<'a> {
+    device: &'a EcamDevice,
+    offset: u16,
+    /// One bit per dword of extended configuration space already visited.
+    seen: [u64; 16],
+}
+
+impl Iterator for ExtCapabilities<'_> {
+    type Item = (u16, u32);
+
+    fn next(&mut self) -> Option<(u16, u32)> {
+        let offset = self.offset;
+        if !(0x100..=0xffc).contains(&offset) || offset & 3 != 0 {
+            return None;
+        }
+        let dword = usize::from(offset / 4);
+        let (slot, bit) = (&mut self.seen[dword / 64], 1u64 << (dword % 64));
+        if *slot & bit != 0 {
+            self.offset = 0;
+            return None;
+        }
+        *slot |= bit;
+        let header = self.device.read32(offset);
+        // 0: no list at 0x100, or a last capability of ID 0 elsewhere; a
+        // null capability (ID 0) with a next pointer is walked through.
+        if matches!(header, 0 | u32::MAX) {
+            self.offset = 0;
+            return None;
+        }
+        self.offset = (header >> 20) as u16;
+        Some((offset, header))
     }
 }
 

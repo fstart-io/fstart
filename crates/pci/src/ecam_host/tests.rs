@@ -618,6 +618,31 @@ fn legacy_vga_needs_a_path_the_allocator_programmed() {
     assert!(pci.forwards_legacy_vga(display));
 }
 
+/// One allocator owns up to [`MAX_PCI_ROOTS`] root bridges (2P SP7 B0 has
+/// 12); more are refused, not cut short.
+#[test]
+fn an_allocator_owns_up_to_max_pci_roots() {
+    let root = |i: usize| {
+        PciRoot::new(
+            PciRootInfo {
+                segment: 0,
+                ecam_base: 0xe000_0000,
+                bus_start: i as u8 * 8,
+                bus_end: i as u8 * 8 + 7,
+            },
+            [Window.mmio(0xc000_0000 + i as u64 * 0x10_0000, 0x10_0000)],
+        )
+        .unwrap()
+    };
+    let pci = PciEcam::new((0..MAX_PCI_ROOTS).map(root)).unwrap();
+    assert_eq!(pci.roots().len(), MAX_PCI_ROOTS);
+    const { assert!(MAX_PCI_ROOTS >= 12) };
+    assert_eq!(
+        PciEcam::new((0..=MAX_PCI_ROOTS).map(root)).err(),
+        Some(PciEcamError::ConfigError)
+    );
+}
+
 /// The root the platform routes the legacy VGA memory to reports it.
 #[test]
 fn the_legacy_vga_root_forwards_the_vga_memory() {

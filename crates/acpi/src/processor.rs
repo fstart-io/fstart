@@ -259,6 +259,14 @@ impl CpcEntry {
 /// `Name(_CPC, Package { NumEntries, Revision, entries... })`; NumEntries
 /// counts itself and the revision.
 pub fn cpc_aml(revision: u8, entries: &[CpcEntry]) -> Vec<u8> {
+    cpc_named_aml("_CPC", revision, entries)
+}
+
+/// The `_CPC` package of [`cpc_aml`] under another name (`path`), for
+/// processors that share it through [`cpc_reference_aml`]: one package for
+/// every thread whose registers are its own MSRs (FFixedHW), where a copy
+/// per processor would cost the table space of a package each.
+pub fn cpc_named_aml(path: &str, revision: u8, entries: &[CpcEntry]) -> Vec<u8> {
     let registers: Vec<CpcRegisterDescriptor> = entries
         .iter()
         .map(|e| {
@@ -301,7 +309,16 @@ pub fn cpc_aml(revision: u8, entries: &[CpcEntry]) -> Vec<u8> {
         CpcEntry::Register(_) | CpcEntry::PccRegister { .. } => cpc.add_element(t),
         CpcEntry::Integer(v) => cpc.add_element(v),
     });
-    crate::serialize(&Name::new("_CPC".into(), &cpc))
+    crate::serialize(&Name::new(path.into(), &cpc))
+}
+
+/// `Method(_CPC) { Return(path) }`: a processor's `_CPC` is the package
+/// [`cpc_named_aml`] named `path`.
+pub fn cpc_reference_aml(path: &str) -> Vec<u8> {
+    use acpi_tables::aml::{Method, Path, Return};
+    let package = Path::new(path);
+    let ret = Return::new(&package);
+    crate::serialize(&Method::new("_CPC".into(), 0, false, alloc::vec![&ret]))
 }
 
 #[cfg(test)]
@@ -334,6 +351,17 @@ mod tests {
             18
         );
         assert!(b.windows(3).any(|w| w == [0x0b, 0xdc, 0x05]), "1500");
+        // The same package under another name, and a `_CPC` returning it.
+        let shared = cpc_named_aml("\\_SB_.CPCP", 3, &entries);
+        // NameOp, `\`, DualNamePrefix, `_SB_`, `CPCP`.
+        assert_eq!(&shared[..11], b"\x08\\\x2e_SB_CPCP");
+        assert_eq!(&shared[11..], &b[5..]);
+        let reference = cpc_reference_aml("\\_SB_.CPCP");
+        // MethodOp, PkgLength, `_CPC`, no arguments, ReturnOp, the path.
+        assert_eq!(
+            reference,
+            [&[0x14, 17][..], b"_CPC", &[0, 0xa4], b"\\\x2e_SB_CPCP"].concat()
+        );
     }
 
     #[test]

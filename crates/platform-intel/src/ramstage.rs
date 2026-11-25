@@ -949,6 +949,7 @@ fn init_mp<P: IntelEarlyPlatform>(
         cpu_drivers: &drivers,
         num_cpus,
         max_cpus,
+        x2apic: false,
     })
     .map_err(|_| ServiceError::HardwareError)?;
     if let Some(image) = crate::SMM_IMAGE {

@@ -43,6 +43,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 pub mod aml_linker;
+#[cfg(feature = "pci")]
+pub mod cedt;
 pub mod cper;
 pub mod dbg2;
 pub mod descriptors;
