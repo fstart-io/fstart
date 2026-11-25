@@ -24,6 +24,9 @@ pub struct LogicalId {
     pub cpu: Id,
     /// `None` on Naples.
     pub core: Option<Id>,
+    /// WH: the CPUID model\[3:0\] of the matched revision row (the SoC
+    /// logical ID's byte 6, [`super::table::Guard::model`]); `None` before.
+    pub model: Option<u8>,
 }
 
 /// Naples (ZP) CPU family and revision bits (AmdSocSp3ZpPei map).
@@ -68,6 +71,7 @@ impl LogicalId {
                     family: core,
                     revision,
                 }),
+                model: None,
             }
         }
         const fn zp(revision: u32) -> LogicalId {
@@ -77,6 +81,7 @@ impl LogicalId {
                     revision,
                 },
                 core: None,
+                model: None,
             }
         }
         match revision {
@@ -105,6 +110,11 @@ impl LogicalId {
     /// The CPU ID is in `family` with a revision in `revisions`.
     pub const fn cpu_is(&self, family: u32, revisions: u32) -> bool {
         self.cpu.family & family != 0 && self.cpu.revision & revisions != 0
+    }
+
+    /// The CPU ID's model is `model` (WH; never before).
+    pub const fn model_is(&self, model: u8) -> bool {
+        matches!(self.model, Some(m) if m == model)
     }
 
     /// The core ID is in `family` with a revision in `revisions` (never on

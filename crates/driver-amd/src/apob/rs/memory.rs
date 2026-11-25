@@ -23,15 +23,21 @@ pub const MAX_POSITIONS: usize = 24;
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub struct SpdRecord {
-    dram_down: u8,
-    present: u8,
+    pub(crate) dram_down: u8,
+    pub(crate) present: u8,
     _padding: [u8; 2],
     _address: U32,
     pub socket: u8,
     pub channel: u8,
     pub dimm: u8,
-    shadow: u8,
+    pub(crate) shadow: u8,
     pub data: [u8; 1024],
+}
+
+impl SpdRecord {
+    pub const fn is_present(&self) -> bool {
+        self.present == 1
+    }
 }
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]

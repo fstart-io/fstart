@@ -5,6 +5,8 @@
 //! error: each generation's code only runs on silicon it was recovered
 //! from (AGESA treats an unknown stepping as the newest known one).
 
+pub mod wh;
+
 /// CPUID Fn8000_0001_EBX[31:28].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Package {

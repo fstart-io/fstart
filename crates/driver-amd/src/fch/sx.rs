@@ -65,7 +65,7 @@ fn pm1_status<'a, I: Window>(io: &'a I, ports: &AcpiPorts) -> Reg<&'a I, u16, Pm
 fn pm1_enable<'a, I: Window>(io: &'a I, ports: &AcpiPorts) -> Reg<&'a I, u16, Pm1Enable::Register> {
     io.at(At::new(u32::from(ports.event) + 2))
 }
-fn pm1_control<'a, I: Window>(
+pub(super) fn pm1_control<'a, I: Window>(
     io: &'a I,
     ports: &AcpiPorts,
 ) -> Reg<&'a I, u16, Pm1Control::Register> {
@@ -155,8 +155,8 @@ fn mask_ioapic<H: FchHw>(hw: &H) {
 
 /// A sleep state the FCH is armed for ([`arm`]).
 pub struct Armed<'a, H: FchHw> {
-    hw: &'a H,
-    ports: AcpiPorts,
+    pub(super) hw: &'a H,
+    pub(super) ports: AcpiPorts,
     /// How the USB and SMU steps went; the entry goes on either way.
     pub preparation: Result<(), SxError>,
 }

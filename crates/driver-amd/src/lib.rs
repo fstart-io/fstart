@@ -11,6 +11,7 @@ pub mod acp;
 pub mod apob;
 pub mod ccx;
 pub mod cpu;
+pub mod cxl;
 pub mod df;
 pub mod dxio;
 pub mod fch;

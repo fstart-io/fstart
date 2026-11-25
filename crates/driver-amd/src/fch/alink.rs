@@ -10,10 +10,11 @@ use super::FchHw;
 use super::acpimmio::MISC;
 use crate::cpu::Silicon;
 use crate::fch::acpimmio::PM_ISA_CONTROL;
+use crate::smn::{SmnAccess, SmnReg};
 use crate::table::{self, Record};
 use crate::window::{At, Reg, Window, update};
 use tock_registers::{
-    interfaces::{Readable, Writeable},
+    interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
 };
 
@@ -121,6 +122,43 @@ pub fn clock_gating_secondary<H: FchHw>(hw: &H, generation: Silicon) {
     modify(hw.io(), MISC_CTL, RESET_CPU_ON_SYNC_FLOOD, 0);
 }
 
+/// What the A-Link and SBG clock-gating rows of an FCH version differ in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gating {
+    /// SMN `0x02D0_001C[31]`, the clock gate next to the FCH's relocatable
+    /// block ([`AB_CLOCK_GATE`]), and the ABCFG `0x238`/`0x228` rows.
+    pub smn_gate: bool,
+    /// What is ORed into ABCFG `0x208` after its `0x280`.
+    pub abcfg_208: u32,
+}
+
+/// Taishan (ZP): no SMN gate, ABCFG `0x208 |= 0x40_8010`.
+pub const TAISHAN: Gating = Gating {
+    smn_gate: false,
+    abcfg_208: 0x40_8010,
+};
+/// Huashan (Rome, Milan): `0x208 |= 0x43_8000`.
+pub const HUASHAN: Gating = Gating {
+    smn_gate: true,
+    abcfg_208: 0x43_8000,
+};
+/// Qilian (`FchAbEnvCommon` `0xf47ae0`): `0x208 |= 0x40_8000`.
+pub const QILIAN: Gating = Gating {
+    smn_gate: true,
+    abcfg_208: 0x40_8000,
+};
+
+register_bitfields![u32,
+    /// SMN 0x02D0_001C (32-bit): bit 31, the A-Link clock gate next to the
+    /// FCH's relocatable block (inferred, FCH_SP3 §10).
+    pub AbClockGate [
+        ENABLE OFFSET(31) NUMBITS(1) []
+    ]
+];
+
+/// SMN 0x02D0_001C, of the IOD whose FCH this is.
+pub const AB_CLOCK_GATE: SmnReg<AbClockGate::Register> = SmnReg::new(0x02d0_001c);
+
 fn program<H: FchHw>(hw: &H, generation: Silicon, primary: Option<&AbPolicy>) {
     let (io, acpi) = (hw.io(), hw.acpi());
     let huashan = generation != Silicon::Zp;
@@ -153,34 +191,50 @@ fn program<H: FchHw>(hw: &H, generation: Silicon, primary: Option<&AbPolicy>) {
         modify(io, 0x00054, 0xff << 16, 0x10 << 16);
         modify(io, 0x10054, 0xff << 16, 0x10 << 16);
     }
+    dma_write_sizes(io);
+    memory_power_saving(io, acpi);
+    let gating = if huashan { HUASHAN } else { TAISHAN };
+    clock_gating_rows(io, acpi, &hw.smn(), &gating);
+}
+
+/// ABCFG `0x54`/`0x10054`: the DMA write sizes.
+fn dma_write_sizes(io: &impl Window) {
     modify(io, 0x00054, 0, 0x10);
     modify(io, 0x00054, 0, 1 << 24);
     modify(io, 0x10054, 0, 3 << 24);
+}
+
+/// The A-Link memory power saving: ABCFG `0x54`, `0xBC`, `0x58`,
+/// MISCx68\[2\]. Qilian's secondary runs these first
+/// ([`super::qilian::secondary::alink`]).
+pub fn memory_power_saving(io: &impl Window, acpi: &impl Window) {
     modify(io, 0x00054, 1, 0);
     modify(io, 0x00054, 0, 1 << 2);
-    // Memory power saving.
     update::<u8, _>(acpi, MISC + 0x68, 0x04, 0);
     modify(io, 0x000bc, 0, 0x10);
     modify(io, 0x00058, 0, 1 << 29);
     modify(io, 0x00058, 0, 1 << 31);
+}
+
+/// The A-Link and SBG clock gating of an FCH version (`gating`), then the
+/// policy bits the donors leave 0. `smn` is the FCH's IOD's.
+fn clock_gating_rows(io: &impl Window, acpi: &impl Window, smn: &impl SmnAccess, gating: &Gating) {
     update::<u8, _>(acpi, MISC + 0x2e, 0, 0x01);
     update::<u8, _>(acpi, MISC + 0x2e, 0, 0x02);
-    if huashan {
-        // SMN 02D0001C[31] next to the FCH relocatable block (FCH_SP3 §10:
-        // unnamed, inferred clock gate).
-        update::<u32, _>(&hw.smn_window(), 0x02D0_001C, 0, 1 << 31);
+    if gating.smn_gate {
+        smn.reg(AB_CLOCK_GATE).modify(AbClockGate::ENABLE::SET);
     }
     // PMx04[ABClkGateEn].
     update::<u8, _>(acpi, PM_ISA_CONTROL.offset + 2, 0, 0x01);
     update::<u8, _>(acpi, MISC + 0x68, 0x02, 0);
     // SBG memory power saving and clock gating (ABCFG 0x208/0x238/0x228).
     modify(io, 0x00208, 0, 0x280);
-    if huashan {
+    if gating.smn_gate {
         modify(io, 0x00238, 0, 0x400);
-        modify(io, 0x00208, 0, 0x43_8000);
+    }
+    modify(io, 0x00208, 0, gating.abcfg_208);
+    if gating.smn_gate {
         modify(io, 0x00228, 0, 0x0a);
-    } else {
-        modify(io, 0x00208, 0, 0x40_8010);
     }
     // Policy bits left 0 at the donor defaults (sp4r2 FCH_TAISHAN §3.2).
     modify(io, 0x00180, 1, 0);
@@ -189,6 +243,14 @@ fn program<H: FchHw>(hw: &H, generation: Silicon, primary: Option<&AbPolicy>) {
     modify(io, 0x00180, 1 << 5, 0);
     modify(io, 0x0022c, 1 << 11, 0);
     modify(io, 0x0022c, 1 << 14, 0);
+}
+
+/// The common A-Link environment of an FCH version (`FchAbEnvCommon`): the
+/// DMA write sizes and the clock gating, without the memory power saving
+/// ([`memory_power_saving`]) and the table. `smn` is the FCH's IOD's.
+pub fn env_common(io: &impl Window, acpi: &impl Window, smn: &impl SmnAccess, gating: &Gating) {
+    dma_write_sizes(io);
+    clock_gating_rows(io, acpi, smn, gating);
 }
 
 #[cfg(test)]

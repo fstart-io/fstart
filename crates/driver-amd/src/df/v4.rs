@@ -433,20 +433,28 @@ pub fn root_bridges(
         .collect()
 }
 
-/// The bus maps of node `df`, in pair order.
-pub fn bus_routes<P: fstart_pci::ConfigRegionAccess>(
+/// The bus maps of node `df` across `0..N` CfgAddressMap pairs, in pair order.
+pub fn bus_routes_n<const N: usize, P: fstart_pci::ConfigRegionAccess>(
     df: &Df<P>,
-) -> Result<Vec<BusRoute, { CONFIG_PAIRS as usize }>, Error> {
+) -> Result<Vec<BusRoute, N>, Error> {
     let mut routes = Vec::new();
-    for pair in 0..CONFIG_PAIRS {
-        let base = df.reg(CONFIG_BASE.at(pair, CONFIG_STRIDE)).get();
-        let limit = df.reg(CONFIG_LIMIT.at(pair, CONFIG_STRIDE)).get();
+    for pair in 0..N {
+        let pair_u8 = pair as u8;
+        let base = df.reg(CONFIG_BASE.at(pair_u8, CONFIG_STRIDE)).get();
+        let limit = df.reg(CONFIG_LIMIT.at(pair_u8, CONFIG_STRIDE)).get();
         if let Some(route) = BusRoute::decode(base, limit)? {
-            // CONFIG_PAIRS is the capacity.
+            // N is the capacity.
             let _ = routes.push(route);
         }
     }
     Ok(routes)
+}
+
+/// The bus maps of node `df`, in pair order.
+pub fn bus_routes<P: fstart_pci::ConfigRegionAccess>(
+    df: &Df<P>,
+) -> Result<Vec<BusRoute, { CONFIG_PAIRS as usize }>, Error> {
+    bus_routes_n::<{ CONFIG_PAIRS as usize }, _>(df)
 }
 
 /// Decode a DRAM rule (address\[55:28\]); `None` if it is not valid.

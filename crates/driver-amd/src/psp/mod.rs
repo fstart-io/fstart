@@ -32,6 +32,11 @@ pub enum Variant {
     Ssp,
     /// Milan.
     Gn,
+    /// The WH I/O die's PSP: its C2P mailbox is at `PSP_BAR + 0x1_0970`
+    /// (the vendor modules' default C2P base `0x1_0900`, no WH row in
+    /// their CPUID profile table), with the busy and reset bits of
+    /// [`mailbox::C2P_CMD`] (RUNTIME §2.2).
+    Wh,
 }
 
 /// The PSP MMIO bases of all dies, 0 where the BAR isn't enabled, for the

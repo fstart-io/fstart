@@ -122,10 +122,11 @@ header_only!(
     /// `closure-runtime/lifecycle`, `PspOnSmmReadyToLock` `26C8`/`2894`)
     /// sends it from its DxeSmmReadyToLock notification, after LockDFReg
     /// and before ReadyToBoot, header only. Milan's AmdPspDxeV2Ssp does not
-    /// have it.
+    /// have it. WH: AmdPspDxeV2Wh's DxeSmmReadyToLock (`0x3670`, MD25
+    /// `0x349d` instruction-checked).
     SmmLock = 0x6c,
     "SmmLock",
-    |g| g == Variant::Gn
+    |g| matches!(g, Variant::Gn | Variant::Wh)
 );
 header_only!(
     /// Naples only, from the SMM capsule hook (PSP_APOB §3.3).
@@ -137,10 +138,11 @@ header_only!(
     /// Milan FCH lock, sent from the SW SMI 0xD2 handler with the SMM flag
     /// set (FCH_SP3 §SMM; FchHuashanSmmInit, decompiler-only). The handler
     /// sends 0x30 and [`LockFchReg3a`] under separate gates, both logged as
-    /// "LockFCHReg".
+    /// "LockFCHReg". WH: FchSmmInit's SmmReadyToBoot (`0x9550`), same
+    /// flag.
     LockFchReg = 0x30,
     "LockFCHReg",
-    |g| g == Variant::Gn
+    |g| matches!(g, Variant::Gn | Variant::Wh)
 );
 header_only!(
     /// The second "LockFCHReg" command of the Milan D2 handler (see
@@ -150,11 +152,20 @@ header_only!(
     |g| g == Variant::Gn
 );
 header_only!(
+    /// WH's command 3Ah, named "LockGpio" (`psp_c2p.json`): FchSmmInit's
+    /// SmmReadyToBoot sends it after [`LockFchReg`] under its own gate,
+    /// from SMM with the SMM flag set (Dell `0x9550`). Milan's 3Ah is
+    /// [`LockFchReg3a`].
+    LockGpio = 0x3a,
+    "LockGpio",
+    |g| g == Variant::Wh
+);
+header_only!(
     /// Milan ReadyToBoot when DRTM is off: sent only if a TPM answers at
     /// `0xfed40000` (dword != 0xffffffff) (PSP_APOB §3.3).
     ResetTpmEstablishment = 0x61,
     "ResetTpmEstablishment",
-    |g| g == Variant::Gn
+    |g| matches!(g, Variant::Gn | Variant::Wh)
 );
 
 /// A register the PSP touches to raise or check its SMI (SmmInfo).
@@ -312,7 +323,7 @@ impl Command for PspCapsQuery {
     const NAME: &'static str = "PspCapsQuery";
 
     fn supported(generation: Variant) -> bool {
-        generation == Variant::Gn
+        matches!(generation, Variant::Gn | Variant::Wh)
     }
 }
 
@@ -348,7 +359,7 @@ impl Command for BiosDisablePsb {
     const NAME: &'static str = "BiosDisablePsb";
 
     fn supported(generation: Variant) -> bool {
-        matches!(generation, Variant::Ssp | Variant::Gn)
+        matches!(generation, Variant::Ssp | Variant::Gn | Variant::Wh)
     }
 }
 
@@ -377,7 +388,40 @@ impl Command for DisableDrtm {
     const NAME: &'static str = "DisableDrtmCapability";
 
     fn supported(generation: Variant) -> bool {
-        generation == Variant::Gn
+        matches!(generation, Variant::Gn | Variant::Wh)
+    }
+}
+
+/// SendIvrsAcpiTable (3Fh): where the IVRS is and its length, which the
+/// WH PSP takes after the table is built (AmdNbioDxe `0x14720`, buffer
+/// size 14h: `{lo, hi, length}`; its caller `0x16c40` sends it when PCDs
+/// 223h and 376h are set and installs the table it describes). What the
+/// PSP does with it is not known (RUNTIME §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct SendIvrsAcpiTable {
+    pub address_lo: u32,
+    pub address_hi: u32,
+    pub length: u32,
+}
+
+impl SendIvrsAcpiTable {
+    /// The IVRS at `address`, `length` bytes.
+    pub const fn new(address: u64, length: u32) -> Self {
+        Self {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            length,
+        }
+    }
+}
+
+impl Command for SendIvrsAcpiTable {
+    const ID: u8 = 0x3f;
+    const NAME: &'static str = "SendIvrsAcpiTable";
+
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Wh
     }
 }
 
@@ -396,6 +440,13 @@ mod tests {
         assert_eq!(C2pBuffer::new(QueryCaps::default()).header.size, 0xc);
         assert_eq!(C2pBuffer::new(DisableDrtm::new()).header.size, 0xc);
         assert_eq!(C2pBuffer::new(BiosDisablePsb::new()).header.size, 0x10);
+        // AmdNbioDxe `0x14720`.
+        let ivrs = C2pBuffer::new(SendIvrsAcpiTable::new(0x1_2345_6000, 0x3c0));
+        assert_eq!(ivrs.header.size, 0x14);
+        assert_eq!(
+            ivrs.request.as_bytes()[..12],
+            [0, 0x60, 0x45, 0x23, 1, 0, 0, 0, 0xc0, 3, 0, 0]
+        );
         let smm = C2pBuffer::new(SmmInfo::new(0, 0, 0, 0));
         assert_eq!(smm.header.size, 0x110);
     }
@@ -419,6 +470,24 @@ mod tests {
             &[1, 0, 0, 0, 2, 0, 0, 0, 0xff, 0xff, 0xff, 0xfd, 0, 0, 0, 2]
         );
         assert_eq!(&b[0x78..0x80], &[0xc, 0, 0, 0, 4, 0, 0, 0]);
+    }
+
+    #[test]
+    fn wh_takes_the_venice_commands_and_3ah_is_its_gpio_lock() {
+        for supported in [
+            SmmLock::supported,
+            LockFchReg::supported,
+            ResetTpmEstablishment::supported,
+            DisableDrtm::supported,
+            LockGpio::supported,
+            SendIvrsAcpiTable::supported,
+        ] {
+            assert!(supported(Variant::Wh));
+        }
+        assert_eq!((LockGpio::ID, LockFchReg3a::ID), (0x3a, 0x3a));
+        assert!(!LockFchReg3a::supported(Variant::Wh));
+        assert!(!LockGpio::supported(Variant::Gn));
+        assert!(!ClearSmmLock::supported(Variant::Wh));
     }
 
     #[test]

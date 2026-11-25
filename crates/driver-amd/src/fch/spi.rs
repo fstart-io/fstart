@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The SPI ROM controller (FCH::ITF::SPI at [`super::SPI_BASE`]) of every
-//! FCH, the LPC ROM protect ranges, and a reserved flash region through its
-//! command engine ([`flash`]).
+//! FCH, the LPC ROM protect ranges, a reserved flash region through its
+//! command engine ([`flash`]), and the whole flash read through SMN on
+//! Qilian ([`smn`]).
 //!
 //! [`reset`] is PEI task af43, identical on all three SP3 generations at
 //! the donor defaults (FCH_SP3 §3.1); speed and read mode are policy (§8,
@@ -11,6 +12,7 @@ use crate::cpu::Silicon;
 use crate::window::{At, Window, update};
 #[cfg(feature = "spi-flash")]
 pub mod flash;
+pub mod smn;
 
 use tock_registers::interfaces::{ReadWriteable, Writeable};
 use tock_registers::register_bitfields;

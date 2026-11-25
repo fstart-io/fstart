@@ -31,7 +31,7 @@ fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-smm = { workspace = true, optional = true }
 libc = { version = "0.2", optional = true }
 fstart-amdfw-format.workspace = true
-fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi = { workspace = true, features = ["x86", "pci"], optional = true }
 fstart-driver-spd = { workspace = true, optional = true }
 fstart-options.workspace = true
 rflasher-core = { workspace = true, optional = true }

@@ -250,10 +250,12 @@ mod handler {
 
     fn psp(config: &SmmConfig<Sp3>) -> Mailbox<MmioTransport> {
         // SAFETY: the PSP BAR the boot flow programmed and left mapped.
-        Mailbox::new(
-            unsafe { MmioTransport::new(u64::from(config.soc.psp_bar)) },
-            config.soc.generation.silicon().into(),
-        )
+        unsafe {
+            Mailbox::mmio(
+                u64::from(config.soc.psp_bar),
+                config.soc.generation.silicon().into(),
+            )
+        }
     }
 
     /// SmmInfo with this handler's buffers (`crate::smm::psp`), then

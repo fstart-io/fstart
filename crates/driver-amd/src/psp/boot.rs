@@ -51,7 +51,7 @@ pub fn notify_smm(
     }
     static mut STORAGE: Storage = Storage::new();
     // SAFETY: the BAR was mapped and locked by the silicon init; BSP only.
-    let mailbox = Mailbox::new(unsafe { MmioTransport::new(bar.into()) }, variant);
+    let mailbox = unsafe { Mailbox::mmio(bar.into(), variant) };
     // SAFETY: firmware BSS in the early region, identity mapped and
     // reserved until reset; this is its only reference.
     let session = Session::new(mailbox, unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) });

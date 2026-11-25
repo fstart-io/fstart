@@ -141,6 +141,18 @@ impl<P: ConfigRegionAccess> Smn<P> {
     pub fn modify32(&self, address: SmnAddr, clear: u32, set: u32) {
         self.write32(address, (self.read32(address) & !clear) | set)
     }
+    /// [`Self::modify32`] with `address` written to the index register as
+    /// is, unaligned too, as vendor code does for a few registers (the
+    /// hardware's decode of the low bits is theirs to know).
+    pub fn modify_unaligned(&self, address: SmnAddr, clear: u32, set: u32) {
+        // SAFETY: the constructor's contract covers the index/data pair.
+        unsafe {
+            self.pci.write(self.root, SMN_INDEX, address);
+            let value = (self.pci.read(self.root, SMN_DATA) & !clear) | set;
+            self.pci.write(self.root, SMN_INDEX, address);
+            self.pci.write(self.root, SMN_DATA, value);
+        }
+    }
     /// Run `access` and restore the index register: SMM may interrupt the
     /// OS between its index and data accesses. Each socket has its own
     /// index to preserve. `access` must not unwind (firmware aborts on
