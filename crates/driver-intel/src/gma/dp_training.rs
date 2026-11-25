@@ -7,9 +7,9 @@
 
 use crate::gma::dp_aux::{
     AuxRegs, DPCD_DOWNSPREAD_CTRL, DPCD_LINK_BW_SET, DPCD_LINK_STATUS, DPCD_RECEIVER_CAPS,
-    DPCD_TRAINING_PATTERN_SET, DpLinkRate, LinkStatus, PreEmphasis, ReceiverCaps, TrainSet,
-    TrainingPattern, VoltageSwing, gmch_native_aux_read, gmch_native_aux_write, native_aux_read,
-    native_aux_write,
+    DPCD_TRAINING_LANE0_SET, DPCD_TRAINING_PATTERN_SET, DpLinkRate, LinkStatus, PreEmphasis,
+    ReceiverCaps, TrainSet, TrainingPattern, VoltageSwing, gmch_native_aux_read,
+    gmch_native_aux_write, native_aux_read, native_aux_write,
 };
 use crate::gma::error::GmaError;
 use crate::gma::mmio::{Mmio, delay_us};
@@ -258,8 +258,12 @@ pub fn sink_training_payload(
     Ok(1 + lane_count as usize)
 }
 
-/// Adjust the current train set from sink adjust-request nibbles.
-pub fn adjusted_train_set(status: LinkStatus, lane_count: u8) -> Result<TrainSet, GmaError> {
+/// Adjust the current train set from sink adjust-request nibbles, clamped to `max_vs`.
+pub fn adjusted_train_set_with_max(
+    status: LinkStatus,
+    lane_count: u8,
+    max_vs: VoltageSwing,
+) -> Result<TrainSet, GmaError> {
     if !matches!(lane_count, 1 | 2 | 4) {
         return Err(GmaError::InvalidConfig);
     }
@@ -277,9 +281,14 @@ pub fn adjusted_train_set(status: LinkStatus, lane_count: u8) -> Result<TrainSet
         lane += 1;
     }
     Ok(clamp_train_set(TrainSet {
-        voltage_swing,
+        voltage_swing: voltage_swing.min(max_vs),
         pre_emphasis,
     }))
+}
+
+/// Adjust the current train set from sink adjust-request nibbles.
+pub fn adjusted_train_set(status: LinkStatus, lane_count: u8) -> Result<TrainSet, GmaError> {
+    adjusted_train_set_with_max(status, lane_count, max_voltage_swing())
 }
 
 /// Train a GMCH DP link using live AUX transactions and source register ops.
@@ -366,10 +375,45 @@ fn train_gmch_dp_once(
         &[writes.downspread_ctrl, writes.main_link_channel_coding],
     )?;
 
-    train_patterns(
+    let initial = TrainSet {
+        voltage_swing: VoltageSwing::Level0,
+        pre_emphasis: PreEmphasis::Level0,
+    };
+    set_source_and_sink_training(mmio, port, TrainingPattern::Pattern1, initial, config)?;
+    let train_set = clock_recovery_loop(
+        &mut |levels| {
+            apply_port_op(mmio, dp_signal_levels_op(port, levels)?);
+            let lane = levels.encode(max_voltage_swing(), max_pre_emphasis(levels));
+            let data = [lane; 4];
+            gmch_native_aux_write(
+                mmio,
+                port,
+                DPCD_TRAINING_LANE0_SET,
+                &data[..usize::from(config.lane_count)],
+            )
+        },
+        &mut || read_link_status(mmio, port),
         config,
-        |pattern, levels| set_source_and_sink_training(mmio, port, pattern, levels, config),
-        || read_link_status(mmio, port),
+        max_voltage_swing(),
+        initial,
+    )?;
+    channel_equalization(
+        &mut |pattern, levels| set_source_and_sink_training(mmio, port, pattern, levels, config),
+        &mut |levels| {
+            apply_port_op(mmio, dp_signal_levels_op(port, levels)?);
+            let lane = levels.encode(max_voltage_swing(), max_pre_emphasis(levels));
+            let data = [lane; 4];
+            gmch_native_aux_write(
+                mmio,
+                port,
+                DPCD_TRAINING_LANE0_SET,
+                &data[..usize::from(config.lane_count)],
+            )
+        },
+        &mut || read_link_status(mmio, port),
+        config,
+        max_voltage_swing(),
+        train_set,
     )?;
     clear_sink_and_source_training(mmio, port, config)
 }
@@ -380,13 +424,32 @@ pub(crate) fn train_ddi_link(
     mmio: &Mmio,
     port: Port,
     config: DpLinkConfig,
-    mut source: impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
+    max_vs: VoltageSwing,
+    mut set_source_pattern: impl FnMut(TrainingPattern) -> Result<(), GmaError>,
+    mut set_source_levels: impl FnMut(TrainSet) -> Result<(), GmaError>,
 ) -> Result<(), GmaError> {
     if !matches!(config.lane_count, 1 | 2 | 4) {
         return Err(GmaError::InvalidConfig);
     }
     let aux = AuxRegs::gen9_for_port(port)?;
+    let lane_count = usize::from(config.lane_count);
     let write = |address, bytes: &[u8]| native_aux_write(mmio, aux, address, bytes);
+    let clamp = |levels: TrainSet| {
+        clamp_train_set(TrainSet {
+            voltage_swing: levels.voltage_swing.min(max_vs),
+            pre_emphasis: levels.pre_emphasis,
+        })
+    };
+    let initial = TrainSet {
+        voltage_swing: VoltageSwing::Level0,
+        pre_emphasis: PreEmphasis::Level0,
+    };
+    // Match libgfxinit hw-gfx-dp_training.adb: program source TP1 and enable
+    // DDI_BUF_CTL at Level0/Level0 once before configuring the sink, then tell
+    // the sink to enter TP1 and update only signal levels (DDI_BUF_CTL + DPCD
+    // TRAINING_LANEx_SET) on CR/EQ retries.
+    set_source_pattern(TrainingPattern::Pattern1)?;
+    set_source_levels(initial)?;
     let writes = sink_link_config_writes(config);
     write(
         DPCD_LINK_BW_SET,
@@ -396,84 +459,99 @@ pub(crate) fn train_ddi_link(
         DPCD_DOWNSPREAD_CTRL,
         &[writes.downspread_ctrl, writes.main_link_channel_coding],
     )?;
-    let result = train_patterns(
-        config,
-        |pattern, levels| {
-            let levels = clamp_train_set(TrainSet {
-                voltage_swing: levels.voltage_swing.min(VoltageSwing::Level2),
-                pre_emphasis: levels.pre_emphasis,
-            });
-            source(pattern, levels)?;
-            let lane = levels.encode(VoltageSwing::Level2, max_pre_emphasis(levels));
-            let mut data = [lane; 5];
-            data[0] = pattern.encode();
-            write(
-                DPCD_TRAINING_PATTERN_SET,
-                &data[..1 + usize::from(config.lane_count)],
-            )
-        },
-        || {
+    let result = (|| {
+        let mut init_payload = [initial.encode(max_vs, max_pre_emphasis(initial)); 5];
+        init_payload[0] = TrainingPattern::Pattern1.encode();
+        write(DPCD_TRAINING_PATTERN_SET, &init_payload[..1 + lane_count])?;
+
+        let mut set_levels = |levels: TrainSet| {
+            let levels = clamp(levels);
+            set_source_levels(levels)?;
+            let lane = levels.encode(max_vs, max_pre_emphasis(levels));
+            let data = [lane; 4];
+            write(DPCD_TRAINING_LANE0_SET, &data[..lane_count])
+        };
+        let mut status = || {
             let mut data = [0; LINK_STATUS_LEN];
             native_aux_read(mmio, aux, DPCD_LINK_STATUS, &mut data)?;
             LinkStatus::parse(&data)
-        },
-    );
+        };
+        let train_set = clock_recovery_loop(&mut set_levels, &mut status, config, max_vs, initial)?;
+        channel_equalization(
+            &mut |pattern, levels| {
+                let levels = clamp(levels);
+                set_source_pattern(pattern)?;
+                let lane = levels.encode(max_vs, max_pre_emphasis(levels));
+                let mut data = [lane; 5];
+                data[0] = pattern.encode();
+                write(DPCD_TRAINING_PATTERN_SET, &data[..1 + lane_count])
+            },
+            &mut set_levels,
+            &mut status,
+            config,
+            max_vs,
+            train_set,
+        )
+    })();
     let clear = write(DPCD_TRAINING_PATTERN_SET, &[0]);
     result.and(clear)
 }
 
-fn train_patterns(
-    config: DpLinkConfig,
-    mut set: impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
-    mut status: impl FnMut() -> Result<LinkStatus, GmaError>,
-) -> Result<(), GmaError> {
-    let train_set = TrainSet {
-        voltage_swing: VoltageSwing::Level0,
-        pre_emphasis: PreEmphasis::Level0,
-    };
-    let train_set = clock_recovery(&mut set, &mut status, config, train_set)?;
-    channel_equalization(&mut set, &mut status, config, train_set)
-}
-
-fn clock_recovery(
-    set: &mut impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
+fn clock_recovery_loop(
+    set_levels: &mut impl FnMut(TrainSet) -> Result<(), GmaError>,
     status: &mut impl FnMut() -> Result<LinkStatus, GmaError>,
     config: DpLinkConfig,
+    max_vs: VoltageSwing,
     mut train_set: TrainSet,
 ) -> Result<TrainSet, GmaError> {
-    set(TrainingPattern::Pattern1, train_set)?;
     let mut same_vs_tries = 0;
-    let mut last_vs = train_set.voltage_swing;
+    let mut last_status = [0u8; 6];
     let mut tries = 0;
     while tries < CLOCK_RECOVERY_MAX_TRIES {
         delay_us(clock_recovery_delay_us(config));
-        let status = status()?;
-        if status.clock_recovery_done(config.lane_count) {
+        let st = status()?;
+        last_status = st.raw_bytes();
+        if st.clock_recovery_done(config.lane_count) {
             return Ok(train_set);
         }
-        let next = adjusted_train_set(status, config.lane_count)?;
-        if next.voltage_swing == last_vs {
+        let next = adjusted_train_set_with_max(st, config.lane_count, max_vs)?;
+        if next.voltage_swing == train_set.voltage_swing {
+            if same_vs_tries >= CLOCK_RECOVERY_MAX_SAME_VS_TRIES {
+                break;
+            }
             same_vs_tries += 1;
         } else {
+            if train_set.voltage_swing == max_vs {
+                break;
+            }
             same_vs_tries = 0;
-            last_vs = next.voltage_swing;
-        }
-        if same_vs_tries >= CLOCK_RECOVERY_MAX_SAME_VS_TRIES
-            || train_set.voltage_swing == max_voltage_swing()
-        {
-            break;
         }
         train_set = next;
-        set(TrainingPattern::Pattern1, train_set)?;
+        set_levels(train_set)?;
         tries += 1;
     }
+    fstart_log::warn!(
+        "intel-gma: DP CR failed rate={:#x} lanes={} vs={} pe={} max_vs={} st={:#x},{:#x},{:#x} adj={:#x},{:#x}",
+        config.link_rate.dpcd_code(),
+        config.lane_count,
+        train_set.voltage_swing as u8,
+        train_set.pre_emphasis as u8,
+        max_vs as u8,
+        last_status[0],
+        last_status[1],
+        last_status[2],
+        last_status[4],
+        last_status[5]
+    );
     Err(GmaError::HardwareError)
 }
 
 fn channel_equalization(
-    set: &mut impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
+    set_pattern: &mut impl FnMut(TrainingPattern, TrainSet) -> Result<(), GmaError>,
+    set_levels: &mut impl FnMut(TrainSet) -> Result<(), GmaError>,
     status: &mut impl FnMut() -> Result<LinkStatus, GmaError>,
     config: DpLinkConfig,
+    max_vs: VoltageSwing,
     mut train_set: TrainSet,
 ) -> Result<(), GmaError> {
     let pattern = if config.tps3_supported {
@@ -481,21 +559,36 @@ fn channel_equalization(
     } else {
         TrainingPattern::Pattern2
     };
-    set(pattern, train_set)?;
+    set_pattern(pattern, train_set)?;
+    let mut last_status = [0u8; 6];
     let mut tries = 0;
     while tries < CHANNEL_EQ_MAX_TRIES {
         delay_us(channel_eq_delay_us(config));
-        let status = status()?;
-        if status.channel_eq_done(config.lane_count) {
+        let st = status()?;
+        last_status = st.raw_bytes();
+        if st.channel_eq_done(config.lane_count) {
             return Ok(());
         }
-        if !status.clock_recovery_done(config.lane_count) {
+        if !st.clock_recovery_done(config.lane_count) {
             break;
         }
-        train_set = adjusted_train_set(status, config.lane_count)?;
-        set(pattern, train_set)?;
+        train_set = adjusted_train_set_with_max(st, config.lane_count, max_vs)?;
+        set_levels(train_set)?;
         tries += 1;
     }
+    fstart_log::warn!(
+        "intel-gma: DP EQ failed rate={:#x} lanes={} pat={} vs={} pe={} st={:#x},{:#x},{:#x} adj={:#x},{:#x}",
+        config.link_rate.dpcd_code(),
+        config.lane_count,
+        pattern.encode(),
+        train_set.voltage_swing as u8,
+        train_set.pre_emphasis as u8,
+        last_status[0],
+        last_status[1],
+        last_status[2],
+        last_status[4],
+        last_status[5]
+    );
     Err(GmaError::HardwareError)
 }
 
@@ -750,6 +843,15 @@ mod tests {
         let adjusted = adjusted_train_set(status, 2).unwrap();
         assert_eq!(adjusted.voltage_swing, VoltageSwing::Level1);
         assert_eq!(adjusted.pre_emphasis, PreEmphasis::Level2);
+
+        let high_vs = LinkStatus::parse(&[0, 0, 0, 0, 0x33, 0]).unwrap();
+        let clamped = adjusted_train_set_with_max(high_vs, 2, VoltageSwing::Level2).unwrap();
+        assert_eq!(clamped.voltage_swing, VoltageSwing::Level2);
+        assert_eq!(clamped.pre_emphasis, PreEmphasis::Level0);
+
+        let full = adjusted_train_set_with_max(high_vs, 2, VoltageSwing::Level3).unwrap();
+        assert_eq!(full.voltage_swing, VoltageSwing::Level3);
+        assert_eq!(full.pre_emphasis, PreEmphasis::Level0);
     }
 
     #[test]

@@ -1429,6 +1429,11 @@ impl LinkStatus {
         Ok(Self { bytes: status })
     }
 
+    /// Raw six-byte DPCD 0x202..0x207 status block.
+    pub const fn raw_bytes(self) -> [u8; 6] {
+        self.bytes
+    }
+
     /// Return true when all active lanes have clock recovery done.
     pub const fn clock_recovery_done(self, lane_count: u8) -> bool {
         self.lanes_satisfy(lane_count, 0x01)

@@ -4,9 +4,9 @@
 //! Transcoder and Pipe_Setup.
 
 use crate::gma::ddi::{
-    DdiClockRouting, DdiClockSelect, DdiPort, DpTrainingPattern, SklDpll, SklDpllPlan,
-    calculate_skl_hdmi_dpll, encode_dp_tp_ctl, skl_dp_dpll_ctrl1_update, skl_dpll_enable_ops,
-    skl_hdmi_dpll_ctrl1_update,
+    DdiClockRouting, DdiClockSelect, DdiPort, DpTrainingPattern, SKL_DPLL_CTRL2, SklDpll,
+    SklDpllPlan, calculate_skl_hdmi_dpll, encode_dp_tp_ctl, skl_dp_dpll_ctrl1_update,
+    skl_dpll_enable_ops, skl_hdmi_dpll_ctrl1_update,
 };
 use crate::gma::dp_aux::{
     AuxRegs, DPCD_RECEIVER_CAPS, DpLinkRate, PreEmphasis, ReceiverCaps, TrainSet, TrainingPattern,
@@ -47,10 +47,13 @@ const DATA1: usize = 0x13812c;
 const TRANS_CLOCK: usize = 0x46140;
 const DDI_FUNC: usize = 0x60400;
 const PIPECONF: usize = 0x70008;
+const PIPE_MISC: usize = 0x70030;
 const PRIMARY_PLANE: usize = 0x70180;
 const TIMING_BASE: usize = 0x60000;
 const EDP_TIMING: usize = 0x6f000;
 const EDP_CONF: usize = 0x7f008;
+const DISPIO_CR_TX_BMU_CR0: usize = 0x6c00c;
+const PCH_RAWCLK_FREQ: usize = 0xc6204;
 
 #[derive(Clone, Copy)]
 struct Scanout {
@@ -300,6 +303,11 @@ pub(super) fn prepare(
     if pipes_running(mmio) || (0..5).any(|i| mmio.read32(0x64000 + 0x100 * i) & ENABLE != 0) {
         return Err(GmaError::HardwareError);
     }
+    // libgfxinit Connectors.Post_Reset_Off: Skylake leaves DDI A..E clocks
+    // ungated out of reset (DPLL_CTRL2[19:15] = 0). Gate them off before
+    // enabling/routing PLLs so DDIx_SELECT is never switched live.
+    mmio.update32(SKL_DPLL_CTRL2, 0, 0x1f << 15);
+    let _ = mmio.read32(SKL_DPLL_CTRL2);
     mmio.update32(LCPLL1, 0, ENABLE);
     wait(mmio, LCPLL1, RUNNING, RUNNING)?;
     mmio.update32(0x46430, 0, 1 << 13); // WaEnableChickenDCPR
@@ -309,6 +317,7 @@ pub(super) fn prepare(
     wait(mmio, DBUF, RUNNING, RUNNING)?;
     power_well(mmio, 1 << 31, 1 << 25)?;
     mmio.update32(0x41000, 0, ENABLE); // disable legacy VGA plane
+    mmio.update32(PCH_RAWCLK_FREQ, 0x3ff, 24);
     prepare_ports(mmio, ports, vbt)
 }
 
@@ -325,13 +334,15 @@ pub(crate) fn prepare_ports(
         {
             fstart_log::warn!("intel-gma: LSPCON on {:?}: {}", port, error.as_str());
         }
-        if port == Port::Edp
-            && let Err(error) = prepare_panel(mmio, vbt)
-        {
-            fstart_log::warn!(
-                "intel-gma: eDP panel preparation failed: {}",
-                error.as_str()
-            );
+        if port == Port::Edp {
+            // coreboot graphics.c / libgfxinit: enable 4 lanes on DDI-A when DDI-E is unused.
+            mmio.update32(0x64000, 0, 1 << 4);
+            if let Err(error) = prepare_panel(mmio, vbt) {
+                fstart_log::warn!(
+                    "intel-gma: eDP panel preparation failed: {}",
+                    error.as_str()
+                );
+            }
         }
     }
     Ok(())
@@ -389,39 +400,77 @@ fn is_ulx(ctx: &GmaContext<'_>) -> bool {
     )
 }
 
-fn dp_translations(cpu: crate::gma::types::Cpu, low_swing: bool, ulx: bool) -> [(u32, u32); 9] {
+fn program_tx_bmu(mmio: &Mmio, cpu: crate::gma::types::Cpu, ulx: bool) {
     use crate::gma::types::Cpu;
-    let mobile = is_mobile_gen9();
+    // libgfxinit `HW.GFX.GMA.Connectors.DDI.Initialize` (`Has_Iboost_Config`):
+    // clear balance-leg disable bits [27:23] and program DDI_Buffer_Iboost
+    // across all five balance-leg select fields [22:8].
+    const MASK_UNSET: u32 =
+        (0x1f << 23) | (0x7 << 20) | (0x7 << 17) | (0x7 << 14) | (0x7 << 11) | (0x7 << 8);
+    let iboost: u32 = if ulx || (cpu == Cpu::Kabylake && is_mobile_gen9()) {
+        3
+    } else {
+        1
+    };
+    let mask_set =
+        (iboost << 20) | (iboost << 17) | (iboost << 14) | (iboost << 11) | (iboost << 8);
+    mmio.update32(DISPIO_CR_TX_BMU_CR0, MASK_UNSET, mask_set);
+}
+
+fn dp_translations(
+    cpu: crate::gma::types::Cpu,
+    low_swing: bool,
+    ulx: bool,
+) -> ([(u32, u32); 10], usize) {
+    dp_translations_for(cpu, low_swing, ulx, is_mobile_gen9())
+}
+
+fn dp_translations_for(
+    cpu: crate::gma::types::Cpu,
+    low_swing: bool,
+    ulx: bool,
+    mobile: bool,
+) -> ([(u32, u32); 10], usize) {
+    use crate::gma::types::Cpu;
     if ulx && low_swing {
-        // libgfxinit Skylake_Y_Trans_EDP, also used on Kaby Lake Y.
-        return [
-            (0x18, 0x00a8),
-            (0x4013, 0x00ab),
-            (0x7011, 0x00a4),
-            (0x9010, 0x00df),
-            (0x18, 0x00aa),
-            (0x6013, 0x00a4),
-            (0x7011, 0x009d),
-            (0x18, 0x00a0),
-            (0x6012, 0x00df),
-        ];
+        // libgfxinit Skylake_Y_Trans_EDP (all 10 slots, including VS level 3).
+        return (
+            [
+                (0x18, 0x00a8),
+                (0x4013, 0x00ab),
+                (0x7011, 0x00a4),
+                (0x9010, 0x00df),
+                (0x18, 0x00aa),
+                (0x6013, 0x00a4),
+                (0x7011, 0x009d),
+                (0x18, 0x00a0),
+                (0x6012, 0x00df),
+                (0x18, 0x008a),
+            ],
+            10,
+        );
     }
     if low_swing {
-        // libgfxinit Skylake_Trans_EDP and Skylake_U_Trans_EDP (also for KBL).
-        return [
-            (0x18, 0x00a8),
-            (0x4013, 0x00a9),
-            (0x7011, 0x00a2),
-            (0x9010, 0x009c),
-            (0x18, 0x00a9),
-            (0x6013, 0x00a2),
-            (0x7011, 0x00a6),
-            (if mobile { 0x2016 } else { 0x18 }, 0x00ab),
-            (if mobile { 0x5013 } else { 0x7013 }, 0x009f),
-        ];
+        // libgfxinit Skylake_Trans_EDP / Skylake_U_Trans_EDP (all 10 slots).
+        return (
+            [
+                (0x18, 0x00a8),
+                (0x4013, 0x00a9),
+                (0x7011, 0x00a2),
+                (0x9010, 0x009c),
+                (0x18, 0x00a9),
+                (0x6013, 0x00a2),
+                (0x7011, 0x00a6),
+                (if mobile { 0x2016 } else { 0x18 }, 0x00ab),
+                (if mobile { 0x5013 } else { 0x7013 }, 0x009f),
+                (0x18, 0x00df),
+            ],
+            10,
+        );
     }
+    let mut table = [(0, 0); 10];
     if ulx {
-        let mut table = [
+        table[..9].copy_from_slice(&[
             (0x1017, 0x00a1),
             (0x5012, 0x0088),
             (0x80007011, 0x00cd),
@@ -431,23 +480,23 @@ fn dp_translations(cpu: crate::gma::types::Cpu, low_swing: bool, ulx: bool) -> [
             (0x80007011, 0x00c0),
             (0x18, 0x0088),
             (0x80005012, 0x00c0),
-        ];
+        ]);
         if cpu == Cpu::Kabylake {
             table[7] = (0x1017, 0x004c);
         }
-        return table;
+        return (table, 9);
     }
     if !mobile {
-        let mut table = DP_TRANSLATIONS;
+        table[..9].copy_from_slice(&DP_TRANSLATIONS);
         if cpu == Cpu::Kabylake {
             table[6].0 = 0x00007011;
             table[7].1 = 0x0097;
         }
-        return table;
+        return (table, 9);
     }
     // libgfxinit's U-series table. Use the standard DP electrical levels;
-    // boards with low-swing eDP wiring need separate VBT drive policy.
-    let mut table = [
+    // boards with low-swing eDP wiring select the 10-slot table above via VBT.
+    table[..9].copy_from_slice(&[
         (0x201b, 0x00a2),
         (0x5012, 0x0088),
         (0x80007011, 0x00cd),
@@ -457,12 +506,12 @@ fn dp_translations(cpu: crate::gma::types::Cpu, low_swing: bool, ulx: bool) -> [
         (0x80007011, 0x00c0),
         (0x2016, 0x0088),
         (0x80005012, 0x00c0),
-    ];
+    ]);
     if cpu == Cpu::Kabylake {
         table[0].1 = 0x00a1;
         table[7].1 = 0x004f;
     }
-    table
+    (table, 9)
 }
 
 fn prepare_panel(mmio: &Mmio, vbt: Option<&[u8]>) -> Result<(), GmaError> {
@@ -526,12 +575,19 @@ fn enable_panel_backlight(mmio: &Mmio, vbt: Option<&[u8]>) -> Result<(), GmaErro
     mmio.write32(0xc8254, (period << 16) | period);
     mmio.update32(
         0xc8250,
-        1 << 29,
-        ENABLE | (1 << 30) | (u32::from(pwm.active_low_pwm) << 29),
+        (1 << 30) | (1 << 29),
+        ENABLE | (u32::from(pwm.active_low_pwm) << 29),
     );
+    let _ = mmio.read32(0xc8250);
     apply_panel_op(
         mmio,
         panel_power_control_plan(PanelPowerRegs::PCH).backlight_on,
+    );
+    fstart_log::debug!(
+        "intel-gma: eDP backlight ctl1={:#x} ctl2={:#x} pp_ctl={:#x}",
+        mmio.read32(0xc8250),
+        mmio.read32(0xc8254),
+        mmio.read32(PanelPowerRegs::PCH.control)
     );
     Ok(())
 }
@@ -686,9 +742,8 @@ fn level(set: TrainSet) -> usize {
     match set.voltage_swing {
         VoltageSwing::Level0 => set.pre_emphasis as usize,
         VoltageSwing::Level1 => 4 + (set.pre_emphasis as usize).min(2),
-        VoltageSwing::Level2 | VoltageSwing::Level3 => {
-            7 + usize::from(set.pre_emphasis != PreEmphasis::Level0)
-        }
+        VoltageSwing::Level2 => 7 + usize::from(set.pre_emphasis != PreEmphasis::Level0),
+        VoltageSwing::Level3 => 9,
     }
 }
 
@@ -707,9 +762,11 @@ fn disable_link(mmio: &Mmio, out: Scanout) -> Result<(), GmaError> {
     if enabled {
         wait(mmio, buf, 1 << 7, 1 << 7)?;
     }
+    let ctrl2 = mmio.read32(0x6c05c);
+    let selected_pll = (ctrl2 >> (1 + 3 * out.ddi)) & 0x3;
     mmio.update32(0x6c05c, 0, 1 << (15 + out.ddi)); // DPLL_CTRL2 DDI clock off
     // DPLL0 also supplies CDCLK; never disable it during panel teardown.
-    if !out.panel {
+    if selected_pll != 0 {
         mmio.update32(out.pll().registers().ctl, ENABLE, 0);
     }
     Ok(())
@@ -751,6 +808,14 @@ enum LinkClock {
     Hdmi(SklDpllPlan),
 }
 
+fn dpll0_matches_dp_rate(mmio: &Mmio, rate: DdiClockSelect) -> Result<bool, GmaError> {
+    let (ctrl, clear, value) = skl_dp_dpll_ctrl1_update(SklDpll::Dpll1, rate)?;
+    let shift = SklDpll::Dpll1.registers().ctrl1_shift;
+    let mask = (clear >> shift) | 1; // HDMI_MODE | SSC | LINK_RATE | OVERRIDE
+    let expected = value >> shift;
+    Ok((mmio.read32(ctrl) & mask) == expected)
+}
+
 fn program_link_clock(
     mmio: &Mmio,
     out: Scanout,
@@ -758,33 +823,56 @@ fn program_link_clock(
     clock: LinkClock,
 ) -> Result<(), GmaError> {
     let pll = out.pll();
-    let hint = if out.panel { 0 } else { out.pipe as u32 + 1 };
+    // DPLL0 is already running for CDCLK. Only reuse DPLL0 for eDP if its
+    // current link rate already matches; otherwise allocate a configurable
+    // DPLL (matching libgfxinit hw-gfx-gma-plls.adb) rather than mutating
+    // live DPLL0.
+    let use_dpll0 = match clock {
+        LinkClock::Dp(rate) if out.panel => dpll0_matches_dp_rate(mmio, rate)?,
+        _ => false,
+    };
+    let hint = if use_dpll0 { 0 } else { out.pipe as u32 + 1 };
     let DdiClockRouting::DpllCtrl2 { op } =
         DdiClockRouting::dpll_ctrl2(DdiPort::from_gen9_port(port)?, hint)?
     else {
         return Err(GmaError::InvalidConfig);
     };
-    let (ctrl, clear, value) = match clock {
-        LinkClock::Dp(rate) => skl_dp_dpll_ctrl1_update(pll, rate)?,
-        LinkClock::Hdmi(plan) => {
-            let regs = pll.registers();
-            mmio.write32(regs.cfgr1, plan.encode_cfgr1());
-            mmio.write32(regs.cfgr2, plan.encode_cfgr2());
-            skl_hdmi_dpll_ctrl1_update(pll)
-        }
-    };
-    if out.panel {
-        // DPLL0 has the same field layout in the low six DPLL_CTRL1 bits.
-        let shift = pll.registers().ctrl1_shift;
-        mmio.update32(ctrl, clear >> shift, value >> shift);
+    if use_dpll0 {
         wait(mmio, LCPLL1, RUNNING, RUNNING)?;
     } else {
-        mmio.update32(ctrl, clear, value);
         let (enable, bit, status, lock) = skl_dpll_enable_ops(pll);
+        mmio.update32(enable, bit, 0);
+        let _ = mmio.read32(enable);
+        let (ctrl, clear, value) = match clock {
+            LinkClock::Dp(rate) => skl_dp_dpll_ctrl1_update(pll, rate)?,
+            LinkClock::Hdmi(plan) => {
+                let regs = pll.registers();
+                let ctrl1 = skl_hdmi_dpll_ctrl1_update(pll);
+                mmio.update32(ctrl1.0, ctrl1.1, ctrl1.2);
+                mmio.write32(regs.cfgr1, plan.encode_cfgr1());
+                mmio.write32(regs.cfgr2, plan.encode_cfgr2());
+                let _ = mmio.read32(ctrl1.0);
+                let _ = mmio.read32(regs.cfgr1);
+                let _ = mmio.read32(regs.cfgr2);
+                ctrl1
+            }
+        };
+        if matches!(clock, LinkClock::Dp(_)) {
+            mmio.update32(ctrl, clear, value);
+            let _ = mmio.read32(ctrl);
+        }
         mmio.update32(enable, 0, bit);
+        let _ = mmio.read32(enable);
         wait(mmio, status, lock, lock)?;
     }
-    mmio.update32(op.register, op.mask_unset, op.mask_set);
+    // Skylake PRM: DDIx_CLOCK_OFF must be 1 while changing DDIx_SELECT.
+    let clock_off = 1u32 << (15 + out.ddi);
+    mmio.update32(op.register, 0, clock_off);
+    let _ = mmio.read32(op.register);
+    mmio.update32(op.register, op.mask_unset & !clock_off, op.mask_set);
+    let _ = mmio.read32(op.register);
+    mmio.update32(op.register, clock_off, 0);
+    let _ = mmio.read32(op.register);
     Ok(())
 }
 
@@ -831,6 +919,8 @@ pub(super) fn init(ctx: &mut GmaContext<'_>, mode: Mode) -> Result<(), GmaError>
     } else {
         None
     };
+    let ulx = is_ulx(ctx);
+    program_tx_bmu(&mmio, ctx.config.cpu, ulx);
     if matches!(port, Port::HdmiB | Port::HdmiC | Port::HdmiD) {
         return initialize_hdmi(ctx, out, port, mode, stride, rect);
     }
@@ -853,15 +943,30 @@ pub(super) fn init(ctx: &mut GmaContext<'_>, mode: Mode) -> Result<(), GmaError>
         delay_us(1_000);
     }
     let links = link_config_candidates(caps, mode, true)?;
+    let max_vs = if out.panel && low_swing {
+        VoltageSwing::Level3
+    } else {
+        VoltageSwing::Level2
+    };
+    fstart_log::info!(
+        "intel-gma: gen9 {:?} bpc={} low_swing={} max_vs={} dpcd rev={:#x} max_rate={:#x} max_lanes={} candidates={}",
+        port,
+        bpc,
+        low_swing,
+        max_vs as u8,
+        bytes[0],
+        caps.max_link_rate.dpcd_code(),
+        caps.max_lane_count,
+        links.len()
+    );
     let trans_base = 0x64e00 + 0x60 * out.ddi;
-    for (slot, (low, high)) in dp_translations(ctx.config.cpu, low_swing, is_ulx(ctx))
-        .into_iter()
-        .enumerate()
-    {
+    let (translations, count) = dp_translations(ctx.config.cpu, low_swing, ulx);
+    for (slot, &(low, high)) in translations[..count].iter().enumerate() {
         mmio.write32(trans_base + 8 * slot, low);
         mmio.write32(trans_base + 8 * slot + 4, high);
     }
     let buf = out.buffer();
+    let mut trained = None;
     let mut error = GmaError::ModeUnavailable;
     for i in 0..links.len() {
         let link = links.get(i).ok_or(GmaError::InvalidConfig)?;
@@ -871,51 +976,89 @@ pub(super) fn init(ctx: &mut GmaContext<'_>, mode: Mode) -> Result<(), GmaError>
             DpLinkRate::Hbr2 => DdiClockSelect::Lcpll2700,
             DpLinkRate::Unknown(_) => continue,
         };
-        let result = (|| {
+        let result: Result<(), GmaError> = (|| {
             program_link_clock(&mmio, out, port, LinkClock::Dp(clock))?;
-            train_ddi_link(&mmio, port, link, |pattern, levels| {
-                let pattern = match pattern {
-                    TrainingPattern::Pattern1 => DpTrainingPattern::Pattern1,
-                    TrainingPattern::Pattern2 => DpTrainingPattern::Pattern2,
-                    TrainingPattern::Pattern3 => DpTrainingPattern::Pattern3,
-                    _ => return Err(GmaError::InvalidConfig),
-                };
-                let was_enabled = mmio.read32(buf) & ENABLE != 0;
-                transport(&mmio, buf, link, pattern);
-                mmio.update32(
-                    buf,
-                    (0xf << 24) | (1 << 16) | (7 << 1),
-                    ENABLE | ((level(levels) as u32) << 24) | (u32::from(link.lane_count - 1) << 1),
-                );
-                let _ = mmio.read32(buf);
-                if !was_enabled {
-                    delay_us(600);
-                }
-                Ok(())
-            })?;
+            train_ddi_link(
+                &mmio,
+                port,
+                link,
+                max_vs,
+                |pattern| {
+                    let pattern = match pattern {
+                        TrainingPattern::Pattern1 => DpTrainingPattern::Pattern1,
+                        TrainingPattern::Pattern2 => DpTrainingPattern::Pattern2,
+                        TrainingPattern::Pattern3 => DpTrainingPattern::Pattern3,
+                        _ => return Err(GmaError::InvalidConfig),
+                    };
+                    transport(&mmio, buf, link, pattern);
+                    Ok(())
+                },
+                |levels| {
+                    let was_enabled = mmio.read32(buf) & ENABLE != 0;
+                    mmio.update32(
+                        buf,
+                        (0xf << 24) | (1 << 16) | (7 << 1),
+                        ENABLE
+                            | ((level(levels) as u32) << 24)
+                            | (u32::from(link.lane_count - 1) << 1),
+                    );
+                    let _ = mmio.read32(buf);
+                    if !was_enabled {
+                        delay_us(600);
+                    }
+                    Ok(())
+                },
+            )?;
             transport(&mmio, buf, link, DpTrainingPattern::Idle);
             if !out.panel {
                 wait(&mmio, buf + 0x44, 1 << 25, 1 << 25)?;
             }
             transport(&mmio, buf, link, DpTrainingPattern::None);
-            program_pipe(ctx, out, mode, OutputLink::Dp(link, bpc), stride, rect)?;
-            if out.panel {
-                enable_panel_backlight(&mmio, ctx.config.vbt)?;
-            }
             Ok(())
         })();
         match result {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                trained = Some(link);
+                break;
+            }
             Err(e) => {
+                fstart_log::warn!(
+                    "intel-gma: gen9 {:?} train rate={:#x} lanes={} failed: {} (ctrl1={:#x} ctrl2={:#x} stat={:#x} buf={:#x} tp={:#x} pwr={:#x} pp={:#x})",
+                    port,
+                    link.link_rate.dpcd_code(),
+                    link.lane_count,
+                    e.as_str(),
+                    mmio.read32(0x6c058),
+                    mmio.read32(SKL_DPLL_CTRL2),
+                    mmio.read32(0x6c060),
+                    mmio.read32(buf),
+                    mmio.read32(buf + 0x40),
+                    mmio.read32(PWR_WELL),
+                    mmio.read32(PanelPowerRegs::PCH.status)
+                );
                 error = e;
-                disable(&mmio, ctx.pipe, port)?;
-                if out.panel {
-                    prepare_panel(&mmio, ctx.config.vbt)?;
-                }
+                // Only tear down the DDI link/PLL between candidates so the
+                // eDP panel stays powered and in DPCD D0 for the next try.
+                let _ = disable_link(&mmio, out);
             }
         }
     }
-    Err(error)
+    let Some(link) = trained else {
+        let _ = disable(&mmio, ctx.pipe, port);
+        return Err(error);
+    };
+    let result: Result<(), GmaError> = (|| {
+        program_pipe(ctx, out, mode, OutputLink::Dp(link, bpc), stride, rect)?;
+        if out.panel {
+            enable_panel_backlight(&mmio, ctx.config.vbt)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        let _ = disable(&mmio, ctx.pipe, port);
+        return Err(e);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -968,7 +1111,7 @@ fn program_pipe(
         mmio.write32(out.timing() + 0x200, 0); // no packets on DVI
         1 << 24
     };
-    let panel_select = if out.panel {
+    let panel_select = if out.panel && (out.pipe != 0 || scaler.is_some()) {
         (4 + out.pipe as u32) << 12
     } else {
         0
@@ -992,8 +1135,16 @@ fn program_pipe(
         mmio.write32(out.scaler() - 0xc, (rect.width << 16) | rect.height);
     }
     program_watermarks(&mmio, out.pipe);
-    let dither = matches!(link, OutputLink::Dp(_, 6));
-    mmio.write32(out.conf(), ENABLE | (u32::from(dither) << 4));
+    // Gen9 places BPC and dithering in PIPE_MISC (bits [7:5] BPC, bit 4
+    // DITHER_ENABLE); TRANS_CONF bit 4 is reserved.
+    let pipe_misc = if matches!(link, OutputLink::Dp(_, 6)) {
+        (2 << 5) | (1 << 4)
+    } else {
+        0
+    };
+    mmio.write32(PIPE_MISC + out.pipe * 0x1000, pipe_misc);
+    mmio.write32(out.conf(), ENABLE);
+    let _ = mmio.read32(out.conf());
     wait(&mmio, out.conf(), RUNNING, RUNNING)?;
     // SAFETY: the Gen9 display BAR and selected primary plane are live.
     let plane = unsafe { mmio.reg_block::<PrimaryPlane>(out.plane()) };
@@ -1030,5 +1181,43 @@ mod tests {
         let bytes = zerocopy::IntoBytes::as_bytes(&packet);
         assert_eq!(&bytes[..4], &[0x82, 2, 13, 0]);
         assert_eq!(bytes[..18].iter().copied().fold(0, u8::wrapping_add), 0);
+    }
+
+    #[test]
+    fn low_swing_edp_exposes_all_ten_translation_slots_and_level3_maps_to_slot_9() {
+        use crate::gma::types::Cpu;
+
+        let (kbl_u_edp, count) = dp_translations_for(Cpu::Kabylake, true, false, true);
+        assert_eq!(count, 10);
+        assert_eq!(kbl_u_edp[9], (0x18, 0x00df));
+
+        let (kbl_y_edp, count) = dp_translations_for(Cpu::Kabylake, true, true, true);
+        assert_eq!(count, 10);
+        assert_eq!(kbl_y_edp[9], (0x18, 0x008a));
+
+        let (_, dp_count) = dp_translations_for(Cpu::Kabylake, false, false, true);
+        assert_eq!(dp_count, 9);
+
+        assert_eq!(
+            level(TrainSet {
+                voltage_swing: VoltageSwing::Level2,
+                pre_emphasis: PreEmphasis::Level0,
+            }),
+            7
+        );
+        assert_eq!(
+            level(TrainSet {
+                voltage_swing: VoltageSwing::Level2,
+                pre_emphasis: PreEmphasis::Level1,
+            }),
+            8
+        );
+        assert_eq!(
+            level(TrainSet {
+                voltage_swing: VoltageSwing::Level3,
+                pre_emphasis: PreEmphasis::Level0,
+            }),
+            9
+        );
     }
 }
