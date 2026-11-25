@@ -13,7 +13,7 @@ use fstart_driver_amd::fch::FchHw;
 use fstart_core::description::PciRootInfo;
 use fstart_driver_amd::apob::Apob;
 use fstart_driver_amd::ccx;
-use fstart_driver_amd::df::plan::{self, Plan, RootBridgePlan, Window};
+use fstart_driver_amd::df::plan::{self, Plan, Window};
 use fstart_driver_amd::df::topology::MAX_ROOT_BRIDGES;
 use fstart_driver_amd::df::topology::{self, Topology};
 use fstart_driver_amd::df::{self as sp3_df, Fabric};
@@ -70,39 +70,7 @@ pub struct NumaPlan {
     pub root_bridges: Vec<u32>,
 }
 
-/// Bump allocator over a root bridge's non-PCI MMIO pool (below 4 GiB).
-/// Allocations are naturally aligned (every NBIO BAR is aligned to its
-/// size) and taken from the top down, keeping the pool base free for the
-/// larger ones that follow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NonPci {
-    base: u64,
-    top: u64,
-}
-
-impl NonPci {
-    pub const fn new(pool: Window) -> Self {
-        Self {
-            base: pool.base,
-            top: pool.base + pool.size,
-        }
-    }
-
-    /// The non-PCI pool below 4 GiB of `rb`.
-    pub const fn of(rb: &RootBridgePlan) -> Self {
-        Self::new(rb.below_pools.non_pci)
-    }
-
-    /// `size` bytes aligned to `size` (rounded up to a power of two).
-    pub fn alloc(&mut self, size: u64) -> Option<u64> {
-        let align = size.checked_next_power_of_two()?;
-        let base = self.top.checked_sub(size)? & !(align - 1);
-        (base >= self.base && size != 0).then(|| {
-            self.top = base;
-            base
-        })
-    }
-}
+pub use crate::nonpci::NonPci;
 
 /// What the steps work on and hand on.
 pub struct Ctx {
@@ -376,8 +344,6 @@ pub fn psp(ctx: &Ctx) -> Result<fstart_driver_amd::psp::boot::Psp, &'static str>
 
 #[cfg(test)]
 mod tests {
-    use fstart_driver_amd::df::plan::Window;
-
     #[test]
     fn mcfg_per_generation() {
         let m =
@@ -395,23 +361,5 @@ mod tests {
             0xE000_0000
         );
         assert_eq!(m[55], 255);
-    }
-
-    #[test]
-    fn non_pci_bars_are_aligned_and_fit() {
-        let mut pool = super::NonPci::new(Window::new(0xaf00_0000, 0x0100_0000));
-        let smu = pool.alloc(1 << 20).unwrap();
-        let psp = pool.alloc(1 << 20).unwrap();
-        let ioapic = pool.alloc(0x1000).unwrap();
-        let iommu = pool.alloc(512 << 10).unwrap();
-        assert_eq!(smu, 0xaff0_0000);
-        assert_eq!(psp, 0xafe0_0000);
-        assert_eq!(ioapic, 0xafdf_f000);
-        assert_eq!(iommu, 0xafd0_0000, "aligned below the IOAPIC page");
-        assert_eq!(
-            super::NonPci::new(Window::new(0x1000, 0x1000)).alloc(0x2000),
-            None
-        );
-        assert_eq!(pool.alloc(0), None);
     }
 }

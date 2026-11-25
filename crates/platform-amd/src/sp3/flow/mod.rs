@@ -4,12 +4,10 @@
 
 extern crate alloc;
 
-use crate::sp3::silicon::hw::{PrimaryFch, msr, post};
+use crate::sp3::silicon::hw::{PrimaryFch, post};
 use crate::sp3::silicon::{self, Generation};
 use fstart_amdfw_format::anchor::FlashAnchor;
 use fstart_amdfw_format::directory::{BiosEntry, Levels, bios};
-use fstart_arch::x86::cpu::amd::msr::SYSCFG;
-use fstart_arch::x86::cpu::msr::MsrAccess;
 use fstart_core::services::memory_detect::E820State;
 use fstart_driver_amd::apob::sysmap;
 use fstart_driver_amd::apob::{self, Apob};
@@ -17,7 +15,6 @@ use fstart_driver_amd::fch::rom3::{self, FlashMap, Rom3};
 use tock_registers::interfaces::Readable;
 
 use crate::layout::Region;
-use crate::memory;
 use crate::sp3::layout;
 
 pub(crate) mod handoff;
@@ -79,22 +76,7 @@ unsafe impl Sync for AnchorSite {}
 static FLASH_ANCHOR: AnchorSite =
     AnchorSite(core::cell::UnsafeCell::new(FlashAnchor::placeholder()));
 
-/// Physical memory the identity map covers, read byte-wise.
-fn read_phys(address: u64, buf: &mut [u8]) {
-    buf.iter_mut().zip(address..).for_each(|(b, a)| {
-        // SAFETY: flash windows (ROM2, ROM3), read-only device memory, or
-        // the reset image's own anchor, all identity-mapped by its page
-        // tables.
-        *b = unsafe { fstart_core::mmio::read8(a as *const u8) }
-    });
-}
-
-/// `len` bytes of flash windows at `address` as a slice.
-fn flash_slice(address: u64, len: u32) -> &'static [u8] {
-    // SAFETY: a ROM2/ROM3 range `FlashMap::address` vouched for; nothing
-    // writes flash during boot.
-    unsafe { core::slice::from_raw_parts(address as *const u8, len as usize) }
-}
+use crate::media::{flash_slice, read_phys};
 
 /// What [`flash`] found.
 pub(crate) struct Flash {
@@ -234,23 +216,10 @@ pub(crate) fn memory_regions(
     sysmap::memory_map(generation.silicon().into(), map.top, map.holes()).or_halt("memory map")
 }
 
-/// MTRRs: RAM below 4 GiB write-back by variable MTRRs; above 4 GiB
-/// through SYSCFG.Tom2ForceMemTypeWB (the AMD way: the variable MTRRs
-/// cannot cover TiBs of DRAM). The reset image's 16 MiB window is RAM too.
 pub(crate) fn cache_ram(regions: &[sysmap::Region]) {
-    use fstart_arch::x86::cpu::amd::msr::Syscfg;
-    use tock_registers::interfaces::ReadWriteable;
-    let low = regions
-        .iter()
-        .filter(|r| r.kind.is_ram() && r.base < memory::FOUR_GIB)
-        .map(|r| (r.base, r.end().min(memory::FOUR_GIB) - r.base));
-    fstart_arch::x86::mtrr::set_ram_wb_ranges_from(low).or_halt("MTRR ranges");
-    // SAFETY: BSP only, before any AP runs.
-    unsafe { fstart_arch::x86::mtrr::setup_ram_wb() }.or_halt("MTRRs");
-    // SAFETY: BSP only, caching enabled; SYSCFG.MtrrFixDramModEn is clear
-    // (amd_psp_reset.S), so the fixed MTRRs' DRAM routing is hidden again after.
-    unsafe { fstart_arch::x86::cpu::amd::mtrr::route_fixed_wb_to_dram(&msr()) };
-    msr().reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
+    if let Err(step) = crate::memory::cache_ram(regions) {
+        fail(step);
+    }
 }
 
 /// Select scratch pages using the live routing map, and name those the

@@ -87,8 +87,10 @@ pub struct SocAcpi {
     pub xhci: Option<((u8, u8), u32)>,
     /// The sleep states, `(state, SLP_TYP)`. S3 needs a resume path.
     pub sleep_states: &'static [(u8, u8)],
-    /// SLIT distance between two domains of a socket (32 between sockets).
+    /// SLIT distance between two domains of a socket.
     pub socket_distance: u8,
+    /// SLIT distance between domains of different sockets.
+    pub remote_socket_distance: u8,
 }
 
 /// PME wake of the internal bridges: `_PRW` on each and the GPE's handler
@@ -100,8 +102,9 @@ pub struct Wake {
     pub bridges: &'static [(u8, u8)],
 }
 
-/// An enabled thread. The slice order is the ACPI processor UID (MADT and
-/// processor-device `_UID`).
+/// An enabled thread. The slice order is the MADT's and numbers the
+/// processor devices (`Cnnn`); their ACPI processor UIDs (MADT and `_UID`)
+/// are `fstart_acpi::platform::x86::processor_uids` of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cpu {
     pub apic_id: u32,
@@ -146,6 +149,38 @@ pub struct RootBridgeAcpi<'a> {
     /// root bus.
     pub ioapic_features: u32,
     pub iommu: Option<Iommu>,
+    /// Per-root-bridge PCIe/internal bridge routing override (`None` uses
+    /// `SocAcpi::bridges`). Unset `(0, 0)` entries are omitted when emitting
+    /// `_PRT` and `RPxx` devices.
+    pub bridges: Option<&'a [prt::Bridge]>,
+    /// A CXL host bridge: `ACPI0016` (compatible with `PNP0A08`/`PNP0A03`)
+    /// with the CXL `_OSC` of this policy.
+    pub cxl: Option<CxlHost>,
+}
+
+/// What a CXL host bridge's `_OSC` grants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CxlHost {
+    /// Errors are handled firmware-first (`AmdPcieAerReportMechanism` 2):
+    /// the OS gets no AER, DPC nor CXL memory error reporting control, as
+    /// the vendors' `_OSC` (`CDW3 & ~0x88`). Otherwise it gets every
+    /// control it asks for.
+    pub firmware_first: bool,
+}
+
+impl CxlHost {
+    /// The `_OSC` method.
+    pub fn osc(self) -> Vec<u8> {
+        use fstart_acpi::osc::{cxl_control, cxl_host_osc, pci_control};
+        if self.firmware_first {
+            cxl_host_osc(
+                !pci_control::FIRMWARE_FIRST,
+                !cxl_control::MEMORY_ERROR_REPORTING,
+            )
+        } else {
+            cxl_host_osc(!0, !0)
+        }
+    }
 }
 
 /// Processor power data for `_PSS`/`_PCT`/`_PSD`/`_CST` (BSP's view;

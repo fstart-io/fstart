@@ -29,14 +29,14 @@ pub struct Numa<'a> {
 }
 
 /// SLIT distance between two different domains: the SoC's within a socket
-/// ([`SocAcpi::socket_distance`]), 32 between sockets, the vendors'
-/// defaults. The APOB type-0x14 extra domains (50/60/255) are not modelled
-/// (ACPI_SMM §7.2).
+/// ([`SocAcpi::socket_distance`]) and between sockets
+/// ([`SocAcpi::remote_socket_distance`]), the vendors' defaults. The APOB
+/// type-0x14 extra domains (50/60/255) are not modelled (ACPI_SMM §7.2).
 pub const fn distance(soc: &SocAcpi, a: Domain, b: Domain) -> u8 {
     if a.socket == b.socket {
         soc.socket_distance
     } else {
-        32
+        soc.remote_socket_distance
     }
 }
 

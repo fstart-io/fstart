@@ -83,6 +83,7 @@ pub const fn soc(pmbase: u16, legacy: bool) -> SocAcpi {
         xhci: None,
         sleep_states: &[(0, 0), (5, S5_SLEEP_TYPE)],
         socket_distance: 12,
+        remote_socket_distance: 32,
     }
 }
 

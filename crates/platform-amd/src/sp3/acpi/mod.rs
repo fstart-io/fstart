@@ -89,6 +89,7 @@ const fn soc(generation: Generation) -> SocAcpi {
         // 16; Rome/Milan "auto" (PCD 0x179 ≠ 0) with PCD 0x17A TRUE → same
         // socket 12.
         socket_distance: if naples { 16 } else { 12 },
+        remote_socket_distance: 32,
     }
 }
 

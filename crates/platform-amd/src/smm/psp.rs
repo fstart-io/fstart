@@ -25,6 +25,7 @@ use fstart_arch::x86::cpu::amd::msr::{SMM_ADDR, SMM_MASK};
 use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
 use fstart_core::services::timer::Timer;
 use fstart_driver_amd::fch::smi::{self, source};
+use fstart_driver_amd::psp::Variant;
 use fstart_driver_amd::psp::command::{
     C2pBuffer, Command, P2C_BUFFER_SIZE, SMM_FLAG_OFFSET, SmmInfo,
 };
@@ -157,10 +158,18 @@ pub(crate) unsafe fn send<C: Command, T: C2pTransport>(
 /// the SMI has ended ([`release`]). Returns the PSP's command.
 #[inline(always)]
 pub(crate) fn answer<W: Window>(acpi: &W, pending: &smi::Pending) -> u32 {
+    answer_of(acpi, pending, Variant::Gn)
+}
+
+/// [`answer`] by the rules of the `generation` PSP's P2C handler
+/// ([`p2c::answer_of`]: the WH PSP's differ).
+#[inline(always)]
+pub(crate) fn answer_of<W: Window>(acpi: &W, pending: &smi::Pending, generation: Variant) -> u32 {
     pending.acknowledged(source::PSP);
     // SAFETY: the P2C static is SMRAM owned by the rendezvous owner; ring 0.
     let command = unsafe {
-        p2c::answer(
+        p2c::answer_of(
+            generation,
             P2C.0.get().cast(),
             fstart_arch::x86::writeback_invalidate_caches,
             || smi::acknowledge_psp(acpi),

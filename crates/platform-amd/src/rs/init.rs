@@ -546,7 +546,7 @@ impl<V: Variant> Init for Rs<V> {
         );
         let psp = state.psp.as_mut().ok_or("PSP")?;
         // SAFETY: the APs are parked and SMM is locked.
-        unsafe { psp::boot::ready_to_boot(psp, &ctx.clock, ctx.board.discrete_tpm) }.map_err(
+        unsafe { psp::boot::ready_to_boot(psp, &ctx.clock, crate::tpm::present()) }.map_err(
             |(what, error)| {
                 let (why, value) = error.parts();
                 fstart_log::error!("rs: PSP {}: {} {:#x}", what, why, value);
@@ -630,12 +630,27 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
     const TSEG_SIZE: u32 = TSEG_SIZE;
     type Flow = ();
 
+    /// The reset image in the 16 MiB boot flash below 4 GiB.
+    fn reset_image(_: &Hw, (): &()) -> Option<&'static [u8]> {
+        // SAFETY: the boot flash below 4 GiB, read only.
+        let flash = unsafe {
+            core::slice::from_raw_parts(
+                V::LAYOUT.flash.base as *const u8,
+                V::LAYOUT.flash.size as usize,
+            )
+        };
+        crate::media::reset_image(
+            flash,
+            fstart_amdfw_format::efs::BiosDirectorySlot::Family19h,
+        )
+    }
+
     /// The APOB where the BIOS directory puts it, the memory map with the
     /// firmware's DRAM and TSEG reserved, the cache plan and the FFS.
     fn map(
         _: &mut Hw,
         _: &mut Config,
-        board: &crate::board::Facts,
+        _: &crate::board::Facts,
         msr: &NativeMsr,
         _: Tsc,
     ) -> Result<Mapped<Self>, &'static str> {
@@ -667,22 +682,8 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         let e820 = memory::build(V::NAME, &regions, TopOfMemory { tom, tom2 }, &reservations)
             .map_err(|_| "memory map")?;
         // RAM below 4 GiB WB in the MTRRs, above through TOM2, as SP3.
-        crate::sp3::flow::cache_ram(&regions);
-        if board.discrete_tpm {
-            // SAFETY: the boot flash below 4 GiB, read only.
-            let flash = unsafe {
-                core::slice::from_raw_parts(
-                    V::LAYOUT.flash.base as *const u8,
-                    V::LAYOUT.flash.size as usize,
-                )
-            };
-            crate::tpm::start(
-                crate::media::reset_image(
-                    flash,
-                    fstart_amdfw_format::efs::BiosDirectorySlot::Family19h,
-                ),
-                true,
-            )?;
+        if let Err(step) = crate::memory::cache_ram(&regions) {
+            crate::flow::fail::<Self>(step);
         }
         let ffs = V::LAYOUT.ffs.ok_or("boot media")?;
         fstart_arch::x86::boot::enable_boot_media_rom_cache();

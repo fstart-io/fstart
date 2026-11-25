@@ -149,6 +149,8 @@ fn root_bridges(s: &System) -> Vec<RootBridgeAcpi<'static>> {
                         ..Default::default()
                     },
                 }),
+                bridges: None,
+                cxl: None,
             }
         })
         .collect()

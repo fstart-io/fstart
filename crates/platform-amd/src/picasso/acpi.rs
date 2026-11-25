@@ -39,6 +39,7 @@ pub const ACPI: SocAcpi = SocAcpi {
     sleep_states: &[(0, 0), (4, 4), (5, S5_SLEEP_TYPE)],
     // One die: no SLIT.
     socket_distance: 10,
+    remote_socket_distance: 32,
 };
 
 /// NameSeg of FCH I2C controller `index`.

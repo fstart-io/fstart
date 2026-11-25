@@ -32,7 +32,8 @@ impl fstart_platform_amd::board::Board for Board {
     /// J40 takes an LPC TPM module (Tyan lists TM-TPM2-I-3353, SLB9665).
     /// Unlike the vendor's Setup default it is used when fitted: without a
     /// module the probe finds nothing.
-    const DISCRETE_TPM: bool = true;
+    const TPM: Option<fstart_platform_amd::board::TpmBus> =
+        Some(fstart_platform_amd::board::TpmBus::Lpc);
     /// The vendor DSDT's `BSMI` = 0xC0 and BmcAcpi's SW SMIs 0xC0–0xC5.
     const BMC_SX_NOTIFY: Option<SleepNotify> = Some(SleepNotify {
         kcs_port: bmc::KCS_PORT,

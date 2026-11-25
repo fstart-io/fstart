@@ -46,6 +46,8 @@ pub fn root_bridge(
                 counter_config: iommu.counter_config,
             },
         }),
+        bridges: None,
+        cxl: None,
     }
 }
 

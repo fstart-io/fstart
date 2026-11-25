@@ -362,9 +362,14 @@ mod handler {
 
     use super::{Bucket, Delivery, Event, Policy};
 
-    /// Logical CPUs the handler tracks: two Genoa sockets of 96 cores and
-    /// two threads fit. Indices beyond stay OS-first, never armed.
-    const MAX_CPUS: usize = 512;
+    // `MAX_CPUS`, the logical CPUs the handler tracks, and `BLOCKS`, the
+    // thresholding blocks SMM can own: the board's CPU ceiling
+    // (`FSTART_MP_MAX_CPUS`), at least 512 CPUs (two 96-core Genoa
+    // sockets with SMT) and 8 blocks per CPU (every thread's core banks,
+    // every L3 slice and socket bank), so only a board with more CPUs (2P
+    // Venice: 1024) grows them (`build.rs`). A CPU or block beyond stays
+    // OS-first, never armed.
+    include!(concat!(env!("OUT_DIR"), "/ras_capacity.rs"));
     const RECORDS: usize = 64;
     /// Events sent to the BMC per boot.
     pub const SEL_PER_BOOT: u32 = 16;
@@ -379,9 +384,6 @@ mod handler {
     /// Periodic SMIs a waiting report gets, from its record or the last
     /// event that went out ([`Retry`]).
     pub const RETRY_SMIS: u32 = 16;
-    /// Thresholding blocks SMM can own: every thread's core banks, every
-    /// L3 slice and socket bank of two 96-core sockets.
-    const BLOCKS: usize = 4096;
     /// How long the rendezvous owner waits for every CPU to be in SMM, its
     /// local work done (EDK2 waits up to its PcdCpuSmmApSyncTimeout). A CPU
     /// that never comes (wait-for-SIPI) makes it give up each time: the

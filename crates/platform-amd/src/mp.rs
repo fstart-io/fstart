@@ -25,7 +25,8 @@ pub struct Cpus {
 }
 
 /// Bring up `threads` CPUs (the BSP included, `max_cpus` at most) with the
-/// SoC's driver `cpu`; `release` lets the SoC release that many APs, and
+/// SoC's driver `cpu`, in x2APIC mode if `x2apic`; `release` lets the SoC
+/// release that many APs, and
 /// `errors` counts the threads whose init failed. `name` is the log
 /// prefix.
 pub fn start(
@@ -34,6 +35,7 @@ pub fn start(
     errors: impl Fn() -> u32,
     threads: u16,
     max_cpus: u16,
+    x2apic: bool,
     mut release: impl FnMut(u16) -> Result<(), u32>,
 ) -> Result<Cpus, &'static str> {
     let drivers: [&dyn CpuDriver; 1] = [cpu];
@@ -49,7 +51,7 @@ pub fn start(
             cpu_drivers: &drivers,
             num_cpus: threads,
             max_cpus,
-            x2apic: false,
+            x2apic,
         },
         &mut launch,
     );
@@ -74,6 +76,7 @@ pub fn start(
                 MpError::PlatformLaunchFailed(_) => {
                     fstart_log::error!("mp: the release of the APs failed")
                 }
+                MpError::X2ApicUnsupported => fstart_log::error!("mp: no x2APIC"),
                 MpError::HardwareCpuCountExceedsCapacity { reported, .. } => {
                     fstart_log::error!("mp: {} CPUs responded", reported)
                 }

@@ -101,6 +101,7 @@ pub const CONSOLE: Ns16550Config = Ns16550Config {
 /// The onboard BCM5720 (lane 135) must be there. The BMC's display link
 /// (lane 134) is the PSP's: MPIO is not asked for it.
 const REQUIRED: [Soldered; 1] = [Soldered {
+    socket: 0,
     lane: wiring::BCM5720,
     behind: Behind::Device,
 }];

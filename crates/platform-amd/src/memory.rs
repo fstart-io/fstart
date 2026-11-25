@@ -260,6 +260,32 @@ pub fn dma_alloc(size: usize, align: usize) -> Result<&'static mut [u8], &'stati
     Ok(unsafe { core::slice::from_raw_parts_mut(ptr, size) })
 }
 
+/// MTRRs: RAM below 4 GiB write-back by variable MTRRs; above 4 GiB through
+/// `SYSCFG.Tom2ForceMemTypeWB` (the AMD way: variable MTRRs cannot cover TiBs
+/// of DRAM). The reset image's 16 MiB window is RAM too.
+#[cfg(all(feature = "bundle", target_os = "none"))]
+pub(crate) fn cache_ram(
+    regions: &[fstart_driver_amd::apob::sysmap::Region],
+) -> Result<(), &'static str> {
+    use fstart_arch::x86::cpu::amd::msr::{SYSCFG, Syscfg};
+    use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
+    use tock_registers::interfaces::ReadWriteable;
+
+    let low = regions
+        .iter()
+        .filter(|r| r.kind.is_ram() && r.base < FOUR_GIB)
+        .map(|r| (r.base, r.end().min(FOUR_GIB) - r.base));
+    fstart_arch::x86::mtrr::set_ram_wb_ranges_from(low).map_err(|_| "MTRR ranges")?;
+    // SAFETY: BSP only, before any AP runs.
+    unsafe { fstart_arch::x86::mtrr::setup_ram_wb() }.map_err(|_| "MTRRs")?;
+    // SAFETY: BSP only, caching enabled; SYSCFG.MtrrFixDramModEn is clear
+    // (amd_psp_reset.S), so the fixed MTRRs' DRAM routing is hidden again after.
+    let msr = unsafe { NativeMsr::new() };
+    unsafe { fstart_arch::x86::cpu::amd::mtrr::route_fixed_wb_to_dram(&msr) };
+    msr.reg(SYSCFG).modify(Syscfg::TOM2_WB::SET);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

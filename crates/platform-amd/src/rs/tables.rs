@@ -63,6 +63,8 @@ pub fn acpi<V: Variant>(
                         counter_config: iommu.counter_config,
                     },
                 }),
+                bridges: None,
+                cxl: None,
             }
         })
         .collect();
