@@ -91,18 +91,7 @@ core::arch::global_asm!(
     "orl %ecx, %eax",   // EAX = display model
     // Atom models (NEM): 0x1C, 0x26, 0x27, 0x35, 0x36 and Silvermont 0x37
     // (Bay Trail, coreboot `cpu/intel/car/non-evict` with the L2 MSR).
-    "cmpl $0x1C, %eax",
-    "je _car_nem",
-    "cmpl $0x26, %eax",
-    "je _car_nem",
-    "cmpl $0x27, %eax",
-    "je _car_nem",
-    "cmpl $0x35, %eax",
-    "je _car_nem",
-    "cmpl $0x36, %eax",
-    "je _car_nem",
-    "cmpl $0x37, %eax",
-    "je _car_nem",
+    super::atom_nem_model_branch!("%eax", "_car_nem"),
     // Integrated-memory-controller cores (coreboot car/non-evict without
     // the L2 enable MSR): Nehalem 0x1A/0x1E/0x1F/0x2E, Westmere
     // 0x25/0x2C/0x2F, Sandy Bridge 0x2A/0x2D, Ivy Bridge 0x3A/0x3E.

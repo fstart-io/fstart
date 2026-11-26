@@ -59,6 +59,46 @@ fn cf9_reset(request: u8) -> ! {
     }
 }
 
+// One Atom NEM model list (Bonnell/Saltwell + Silvermont 0x37) for CAR setup
+// and both teardown ABIs so no model can enable MSR 0x2e0 without clearing it.
+macro_rules! atom_nem_model_branch {
+    ($register:literal, $target:literal) => {
+        concat!(
+            "cmpl $0x1c, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x26, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x27, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x35, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x36, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+            "cmpl $0x37, ",
+            $register,
+            "\nje ",
+            $target,
+            "\n",
+        )
+    };
+}
+pub(crate) use atom_nem_model_branch;
+
 // One IMC-family list for CAR setup and both teardown ABIs. The caller has
 // already extracted the display model into `register`; no stack is required.
 macro_rules! imc_nem_model_branch {

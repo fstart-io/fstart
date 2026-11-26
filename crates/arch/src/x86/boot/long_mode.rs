@@ -540,13 +540,14 @@ core::arch::global_asm!(
     "orl $0x800, %eax", // MTRR_DEF_TYPE_EN
     "wrmsr",
     postcar_uart_checkpoint!("0x6d"), // m
-    // Step 3: re-enable caching, flush stale CAR lines, take fresh stack.
+    // Step 3: flush stale cache lines while CD=1, then re-enable caching and
+    // take the fresh DRAM stack.
     "movq %cr0, %rax",
     // Clear CD|NW. The mask is written as a sign-extended imm32
     // (0x9FFFFFFF does not fit an unsigned imm32).
     "andq $0xFFFFFFFF9FFFFFFF, %rax",
-    "movq %rax, %cr0",
     "invd",
+    "movq %rax, %cr0",
     postcar_uart_checkpoint!("0x63"), // c
     // POST 0x71: transition done; CAR stack abandoned, DRAM stack next.
     "movb $0x71, %al",
