@@ -275,3 +275,38 @@ fn explain_json_preserves_common_route_envelope() {
     assert!(inner.get("route").is_none());
     assert_eq!(inner["plan"]["payload"], "halt");
 }
+
+#[test]
+fn selection_log_level_preserves_pinned_unit_value() {
+    let mut plan = fstart_platform_qemu::host::resolve(
+        fstart_platform_qemu::facts::VirtMachine::Q35,
+        fstart_image_build::plan::BuildSelection {
+            payload: Some("halt".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let smm = plan
+        .units
+        .iter_mut()
+        .find(|u| u.name == "smm")
+        .expect("Q35 plan includes an SMM unit");
+    smm.environment_values
+        .insert("FSTART_LOG_LEVEL".into(), "off".into());
+    let selection = fstart_image_build::plan::BuildSelection {
+        log_level: Some("info".into()),
+        ..Default::default()
+    };
+    apply_selection_environment(&mut plan.units, &selection);
+    for unit in &plan.units {
+        let expected = if unit.name == "smm" { "off" } else { "info" };
+        assert_eq!(
+            unit.environment_values
+                .get("FSTART_LOG_LEVEL")
+                .map(String::as_str),
+            Some(expected),
+            "unit {}",
+            unit.name
+        );
+    }
+}
