@@ -2,13 +2,14 @@
 resolver = "3"
 # Default commands exercise host libraries and tools. Firmware units are
 # selected individually by fbuild with their target, features and artifacts.
-default-members = ["tools/fbuild", "tools/amdfw", "tools/ffmt", "crates/*"]
+default-members = ["tools/fbuild", "tools/amdfw", "tools/ffmt", "tools/mctp-broker", "crates/*"]
 members = [
   "boards/*/*",
   "crates/*",
   "tools/fbuild",
   "tools/amdfw",
   "tools/image-web",
+  "tools/mctp-broker",
   "tools/release",
   "tools/ffmt",
 ]

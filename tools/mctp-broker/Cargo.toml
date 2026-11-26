@@ -1,0 +1,16 @@
+[package]
+name = "fstart-mctp-broker"
+description = "Multi-transport MCTP/PLDM/SPDM socket hub, Wireshark pcapng (LINKTYPE_MCTP) recorder, and QEMU spdm-emu bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+clap = { workspace = true }
+fstart-mctp = { workspace = true }
+fstart-pldm = { workspace = true }
+fstart-spdm = { workspace = true }
+
+[lints]
+workspace = true

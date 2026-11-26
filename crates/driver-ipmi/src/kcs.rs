@@ -174,6 +174,34 @@ where
         Ok(())
     }
 
+    /// Write an arbitrary raw KCS request payload (used by DSP0254 MCTP-over-KCS
+    /// as well as IPMI).
+    fn send_raw(&mut self, payload: &[u8]) -> Result<(), Error> {
+        let (&last, body) = payload.split_last().ok_or(Error::Short)?;
+        self.write_command(START_WRITE)?;
+        body.iter().try_for_each(|&byte| self.write_data(byte))?;
+        self.write_command(END_WRITE)?;
+        self.write_last(last)
+    }
+
+    /// Execute one raw KCS write-then-read transaction (e.g. DSP0254 MCTP-over-KCS)
+    /// without IPMI NetFn/command/completion framing. Returns the number of
+    /// response bytes written into `buffer`.
+    pub fn raw_transaction(&mut self, request: &[u8], buffer: &mut [u8]) -> Result<usize, Error> {
+        let reserve = self.poll_budget.div_ceil(ABORT_SHARE);
+        self.remaining = self.poll_budget - reserve;
+        self.started = false;
+        match self.send_raw(request).and_then(|()| self.receive(buffer)) {
+            Ok(length) => Ok(length),
+            Err(error) if !self.started => Err(error),
+            Err(error) => {
+                self.remaining += reserve;
+                self.error_exits()?;
+                Err(error)
+            }
+        }
+    }
+
     fn send(&mut self, netfn: u8, command: u8, request: &[u8]) -> Result<(), Error> {
         self.write_command(START_WRITE)?;
         self.write_data(netfn << 2)?;
