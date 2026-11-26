@@ -104,13 +104,32 @@ struct Build {
     size: u64,
     sha256: String,
 }
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
 fn identity(path: &Path) -> Result<(u64, String)> {
+    use std::io::Read;
     if !fs::symlink_metadata(path)?.file_type().is_file() {
         return Err("release assets must be regular files".into());
     }
+    let mut file = File::open(path)?;
     let mut digest = Sha256::new();
-    let size = io::copy(&mut File::open(path)?, &mut digest)?;
-    Ok((size, format!("{:x}", digest.finalize())))
+    let mut buf = [0u8; 8192];
+    let mut size = 0u64;
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        digest.update(&buf[..n]);
+        size += n as u64;
+    }
+    Ok((size, hex_digest(&digest.finalize())))
 }
 fn verify(directory: &Path, revision: &str) -> Result<Value> {
     if !fs::symlink_metadata(directory.join("catalog.json"))?

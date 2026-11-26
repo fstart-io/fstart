@@ -293,7 +293,7 @@ dependencies = [
  "r-efi 7.1.0",
  "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=4fb9d6270972d5ba04b5e22671b3416aaaaf6328)",
  "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=4fb9d6270972d5ba04b5e22671b3416aaaaf6328)",
- "sha1 0.11.0",
+ "sha1",
  "sha2 0.11.0",
  "spin",
  "tock-registers",
@@ -657,7 +657,7 @@ dependencies = [
  "object 0.37.3",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "toml",
 ]
@@ -1365,8 +1365,9 @@ dependencies = [
  "ed25519-dalek",
  "fstart-core",
  "p256",
- "sha1 0.10.7",
+ "sha1",
  "sha2 0.10.9",
+ "sha2 0.11.0",
  "sha3",
 ]
 
@@ -1454,7 +1455,7 @@ dependencies = [
  "heapless 0.8.0",
  "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=a37c758fd373b4c23d631c20b78a64c1210205c3)",
  "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=a37c758fd373b4c23d631c20b78a64c1210205c3)",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "tock-registers",
  "ufmt",
@@ -1758,7 +1759,7 @@ dependencies = [
  "heapless 0.8.0",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tock-registers",
  "ufmt",
  "zerocopy",
@@ -1814,7 +1815,7 @@ dependencies = [
  "konst",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "ufmt",
  "zerocopy",
 ]
@@ -1882,7 +1883,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "time",
  "zip",
@@ -2660,17 +2661,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "sha1"
-version = "0.10.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
 ]
 
 [[package]]

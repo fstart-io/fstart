@@ -51,7 +51,7 @@ fn typed_qemu_presets_match_captured_xip_outputs() {
         };
         let mut actual = serde_json::json!({
             "descriptor_hex": expectations.descriptor.as_ref().unwrap().bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            "linker_sha256": format!("{:x}", Sha256::digest(unit.linker_script.as_ref().unwrap().as_bytes())),
+            "linker_sha256": crate::hex_digest(Sha256::digest(unit.linker_script.as_ref().unwrap().as_bytes())),
             "elf": expectations,
             "assembly": plan.config("fixture").unwrap(),
             "target": unit.target,

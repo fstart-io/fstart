@@ -1405,7 +1405,7 @@ file = "siena/PSP/Typex66_0_2_0_UCodePatch.bin"
 fstart-image-build = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["std"] }
 serde_json = { version = "1", optional = true }
-sha2 = { version = "0.10", optional = true }
+sha2 = { workspace = true, optional = true }
 fstart-driver-amd = { workspace = true, features = ["acpi", "smbios"] }
 fstart-amdfw-format.workspace = true
 fstart-driver-vbios.workspace = true

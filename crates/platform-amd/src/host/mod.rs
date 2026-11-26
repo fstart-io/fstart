@@ -284,6 +284,8 @@ fn stage_unit(host: &Host, payload: Payload) -> Result<CompilationUnit, String> 
             "--cfg",
             "curve25519_dalek_backend=\"serial\"",
             "--cfg",
+            "sha1_backend=\"soft\"",
+            "--cfg",
             "sha2_backend=\"soft\"",
             "--cfg",
             "sha2_backend_soft=\"compact\"",

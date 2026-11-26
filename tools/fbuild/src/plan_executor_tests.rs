@@ -175,7 +175,7 @@ fn compiler_files_are_snapshotted_content_bound_and_namespace_isolated() {
     assert_eq!(records[0]["bytes"], 5);
     assert_eq!(
         records[0]["sha256"],
-        format!("{:x}", Sha256::digest(b"first"))
+        crate::hex_digest(Sha256::digest(b"first"))
     );
     let cached = resolved
         .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)

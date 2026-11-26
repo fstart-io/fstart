@@ -46,10 +46,10 @@ fn amd(plan: &BuildPlan) -> &AmdAssembly {
 }
 
 fn units_hash(plan: &BuildPlan) -> String {
-    format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&plan.units).unwrap())
-    )
+    Sha256::digest(serde_json::to_vec(&plan.units).unwrap())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 /// rename from `.sp3.*` to `.amd.*` in the linker script, for the one
 /// AMD host plan, for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`, for
 /// expanding the Zeppelin reset image to 3 MiB, and for stage `-Zplt=yes`
-/// + compact soft `sha2`.)
+/// + compact soft `sha1`/`sha2`.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {

@@ -124,7 +124,7 @@ fn runner_key(manifest_body: &str, main_src: &str) -> String {
     for s in [manifest_body, main_src] {
         field(&mut hash, s.as_bytes());
     }
-    format!("{:x}", hash.finalize())[..16].into()
+    crate::hex_digest(hash.finalize())[..16].into()
 }
 
 /// Remove the per-board Cargo target directories of the old runner layout,

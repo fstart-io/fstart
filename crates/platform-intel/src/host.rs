@@ -206,7 +206,7 @@ pub fn compilation_plan(
         units.push(CompilationUnit {
             name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(),
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
-            rustflags: flags(&format!("-Zub-checks=no -Crelocation-model={relocation_model} -Ccode-model=small -Clink-arg=-no-pie -Zplt=yes --cfg curve25519_dalek_backend=\"serial\" --cfg sha2_backend=\"soft\" --cfg sha2_backend_soft=\"compact\"")),
+            rustflags: flags(&format!("-Zub-checks=no -Crelocation-model={relocation_model} -Ccode-model=small -Clink-arg=-no-pie -Zplt=yes --cfg curve25519_dalek_backend=\"serial\" --cfg sha1_backend=\"soft\" --cfg sha2_backend=\"soft\" --cfg sha2_backend_soft=\"compact\"")),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, !plan.intel_fit, plan.platform, plan.intel_fit)?),
             environment_values: mp_capacity(),
             bindings,

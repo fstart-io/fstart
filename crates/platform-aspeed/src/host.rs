@@ -331,6 +331,12 @@ fn unit(
         rustflags: vec![
             "-Zub-checks=no".into(),
             "--cfg=portable_atomic_unsafe_assume_single_core".into(),
+            "--cfg".into(),
+            "sha1_backend=\"soft\"".into(),
+            "--cfg".into(),
+            "sha2_backend=\"soft\"".into(),
+            "--cfg".into(),
+            "sha2_backend_soft=\"compact\"".into(),
         ],
         release_only: false,
         linker_script: Some(linker_script),

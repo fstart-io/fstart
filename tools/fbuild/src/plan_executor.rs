@@ -150,7 +150,7 @@ impl Resolved {
         &self.plan.options
     }
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
-        let digest = format!("{:x}", Sha256::digest(self.json()?));
+        let digest = crate::hex_digest(Sha256::digest(self.json()?));
         Ok(root
             .join("target/fstart-build")
             .join(board)
@@ -194,7 +194,7 @@ impl Resolved {
         let directory = self
             .artifact_dir(root, &board.board, release)?
             .join(&unit.name)
-            .join(format!("{:x}", hash.finalize()));
+            .join(crate::hex_digest(hash.finalize()));
         let records = files
             .iter()
             .map(|file| {
@@ -504,7 +504,7 @@ impl Resolved {
                 }
             }
         }
-        Ok(format!("{:x}", hash.finalize())[..16].into())
+        Ok(crate::hex_digest(hash.finalize())[..16].into())
     }
 }
 

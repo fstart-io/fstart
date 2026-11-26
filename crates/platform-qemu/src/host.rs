@@ -494,7 +494,15 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             target: policy.target.into(),
             features,
             build_std: Some("core,alloc".into()),
-            rustflags: vec!["-Zub-checks=no".into()],
+            rustflags: vec![
+                "-Zub-checks=no".into(),
+                "--cfg".into(),
+                "sha1_backend=\"soft\"".into(),
+                "--cfg".into(),
+                "sha2_backend=\"soft\"".into(),
+                "--cfg".into(),
+                "sha2_backend_soft=\"compact\"".into(),
+            ],
             release_only: false,
             linker_script: Some(fstart_image_build::linker::resolved_xip(&layout)?),
             environment_values: BTreeMap::new(),
@@ -1125,12 +1133,22 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             "--cfg".into(),
             "curve25519_dalek_backend=\"serial\"".into(),
             "--cfg".into(),
+            "sha1_backend=\"soft\"".into(),
+            "--cfg".into(),
             "sha2_backend=\"soft\"".into(),
             "--cfg".into(),
             "sha2_backend_soft=\"compact\"".into(),
         ]
     } else {
-        vec!["-Zub-checks=no".into()]
+        vec![
+            "-Zub-checks=no".into(),
+            "--cfg".into(),
+            "sha1_backend=\"soft\"".into(),
+            "--cfg".into(),
+            "sha2_backend=\"soft\"".into(),
+            "--cfg".into(),
+            "sha2_backend_soft=\"compact\"".into(),
+        ]
     };
     // Q35 carries a standalone SMM image producer like the Intel family plan:
     // the board crate binds its handler via `smm_bin!` and the monolithic
