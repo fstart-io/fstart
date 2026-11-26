@@ -149,3 +149,41 @@ jobs:
       - name: Deploy web assembler
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  report-failure:
+    needs: [pending, distribution, publish, pages]
+    if: >-
+      always() && (
+        needs.pending.result == 'failure' ||
+        needs.distribution.result == 'failure' ||
+        needs.publish.result == 'failure' ||
+        needs.pages.result == 'failure'
+      )
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+      - name: File or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ needs.pending.outputs.revision }}
+          PENDING_RESULT: ${{ needs.pending.result }}
+          DISTRIBUTION_RESULT: ${{ needs.distribution.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          PAGES_RESULT: ${{ needs.pages.result }}
+        run: |
+          args=(--run-id "$GITHUB_RUN_ID")
+          if [ -n "$REVISION" ]; then
+            args+=(--revision "$REVISION")
+          fi
+          [ "$PENDING_RESULT" = failure ] && args+=(--failed-job pending)
+          [ "$DISTRIBUTION_RESULT" = failure ] && args+=(--failed-job distribution)
+          [ "$PUBLISH_RESULT" = failure ] && args+=(--failed-job publish)
+          [ "$PAGES_RESULT" = failure ] && args+=(--failed-job pages)
+          cargo run --locked --release -p fstart-release -- report-failure "${args[@]}"

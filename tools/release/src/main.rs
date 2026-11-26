@@ -44,6 +44,20 @@ enum Action {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Open or update an issue when the nightly workflow fails.
+    ReportFailure {
+        #[arg(long, env = "GITHUB_REPOSITORY", default_value = "fstart-io/fstart")]
+        repo: String,
+        /// The failed workflow run id.
+        #[arg(long, env = "GITHUB_RUN_ID")]
+        run_id: u64,
+        /// The commit the nightly tried to build, if `pending` succeeded.
+        #[arg(long)]
+        revision: Option<String>,
+        /// Failed job names (repeatable).
+        #[arg(long = "failed-job")]
+        failed_jobs: Vec<String>,
+    },
 }
 
 fn gh(args: &[&str]) -> Result<String> {
@@ -85,5 +99,17 @@ fn main() -> Result<()> {
             nightly::publish(&repo, time::OffsetDateTime::now_utc(), &mut gh, built)
         }
         Action::PackSdk { root, out } => sdk::archive(&root, &out),
+        Action::ReportFailure {
+            repo,
+            run_id,
+            revision,
+            failed_jobs,
+        } => nightly::report_failure(
+            &repo,
+            run_id,
+            revision.as_deref().filter(|s| !s.is_empty()),
+            &failed_jobs,
+            &mut gh,
+        ),
     }
 }

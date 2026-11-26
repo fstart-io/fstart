@@ -14,6 +14,7 @@ use time::{
 };
 
 const MARKER: &str = "fstart-nightly-v1";
+const FAILURE_MARKER: &str = "fstart-nightly-failure-v1";
 /// The catalog format, `fstart_image_build::bundle::VERSION`.
 const FORMAT_VERSION: u32 = 3;
 const DAYS: i64 = 30;
@@ -397,4 +398,86 @@ fn delete_args(repo: &str, release: &Release) -> Vec<String> {
         .map(String::from)
         .to_vec()
     }
+}
+
+#[derive(Deserialize)]
+struct Issue {
+    number: u64,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    pull_request: Option<Value>,
+}
+
+impl Issue {
+    fn owned_failure(&self) -> bool {
+        self.pull_request.is_none()
+            && self
+                .body
+                .as_deref()
+                .is_some_and(|body| body.lines().any(|line| line == FAILURE_MARKER))
+    }
+}
+
+fn open_failure_issue(repo: &str, gh: &mut Github<'_>) -> Result<Option<u64>> {
+    let pages: Vec<Vec<Issue>> = json(
+        gh,
+        &[
+            "api",
+            "--paginate",
+            "--slurp",
+            &format!("repos/{repo}/issues?state=open&per_page=100"),
+        ],
+    )?;
+    Ok(pages
+        .into_iter()
+        .flatten()
+        .filter(Issue::owned_failure)
+        .map(|issue| issue.number)
+        .min())
+}
+
+/// File a new issue for a failed nightly workflow run, or comment on an
+/// already-open nightly failure issue instead of creating duplicates.
+pub(super) fn report_failure(
+    repo: &str,
+    run_id: u64,
+    revision: Option<&str>,
+    failed_jobs: &[String],
+    gh: &mut Github<'_>,
+) -> Result<()> {
+    let run_url = format!("https://github.com/{repo}/actions/runs/{run_id}");
+    let jobs = if failed_jobs.is_empty() {
+        "unknown".to_string()
+    } else {
+        failed_jobs.join(", ")
+    };
+    let mut details = format!("Workflow run: {run_url}\nFailed job(s): `{jobs}`\n");
+    if let Some(revision) = revision {
+        details.push_str(&format!("Revision: `{revision}`\n"));
+    }
+    if let Some(number) = open_failure_issue(repo, gh)? {
+        let number = number.to_string();
+        let comment = format!("Nightly release build failed again.\n\n{details}");
+        gh(&[
+            "issue", "comment", &number, "--repo", repo, "--body", &comment,
+        ])?;
+    } else {
+        let body = format!(
+            "{FAILURE_MARKER}\n\nThe scheduled/dispatched **Nightly releases** workflow failed.\n\n{details}"
+        );
+        gh(&[
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            "Nightly release build failed",
+            "--label",
+            "bug",
+            "--body",
+            &body,
+        ])?;
+    }
+    Ok(())
 }
