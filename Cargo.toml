@@ -37,7 +37,7 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
 sha3 = { version = "0.10", default-features = false }
 sha1 = { version = "0.10", default-features = false, features = ["force-soft"] }
-ed25519-dalek = { version = "2", default-features = false, features = ["fast"] }
+ed25519-dalek = { version = "2", default-features = false }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 # Embedded / no_std utilities
