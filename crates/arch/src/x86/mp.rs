@@ -402,6 +402,9 @@ pub fn ap_checkins() -> u16 {
 /// Flag: tells APs to enter the mailbox loop (vs flight plan).
 static AP_IN_MAILBOX_LOOP: AtomicU8 = AtomicU8::new(0);
 
+/// Flag: set once APs have been parked for payload/OS handoff.
+static APS_PARKED: AtomicBool = AtomicBool::new(false);
+
 /// Total logical CPUs brought online by the most recent MP init.
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
 /// BSP's hardware ID, captured before releasing APs (zero before MP init).
@@ -918,6 +921,7 @@ fn fly(
     CPU_INIT_ERRORS.store(0, Ordering::Release);
     AP_COUNT.store(0, Ordering::Release);
     AP_IN_MAILBOX_LOOP.store(0, Ordering::Release);
+    APS_PARKED.store(false, Ordering::Release);
 
     for sync in STEP_SYNC.iter() {
         sync.barrier.store(0, Ordering::Release);
@@ -1200,6 +1204,9 @@ impl MpHandle {
     /// After this call, APs will not respond to mailbox dispatch.
     /// Call this before jumping to the payload/OS.
     pub fn park_aps(&self) {
+        if APS_PARKED.swap(true, Ordering::AcqRel) {
+            return;
+        }
         // Dispatch HLT to every AP.
         for i in 0..self.num_aps as usize {
             let mb = &MAILBOXES[i];
@@ -1215,6 +1222,51 @@ impl MpHandle {
     }
 }
 
+/// Run `bsp` on the calling BSP concurrently with `ap` on AP 1, joining AP 1
+/// before returning.
+///
+/// Returns `false` without invoking either closure when no AP is online in the
+/// mailbox loop (single-core system, before `mp_init`, or after APs have been
+/// parked).
+pub fn run_with_ap1(bsp: &mut dyn FnMut(), ap: &(dyn Fn() + Sync)) -> bool {
+    if AP_IN_MAILBOX_LOOP.load(Ordering::Acquire) == 0
+        || APS_PARKED.load(Ordering::Acquire)
+        || AP_COUNT.load(Ordering::Acquire) == 0
+    {
+        return false;
+    }
+
+    fn trampoline_dyn(data: *const (), _cpu: u32) {
+        // SAFETY: `data` points to `ap_ref` on the BSP's stack, kept live until
+        // `WaitAp1` observes `MB_IDLE` on drop.
+        let f: &(dyn Fn() + Sync) = unsafe { *(data as *const &(dyn Fn() + Sync)) };
+        f();
+    }
+
+    struct WaitAp1;
+    impl Drop for WaitAp1 {
+        fn drop(&mut self) {
+            while MAILBOXES[0].func.load(Ordering::Acquire) != MB_IDLE {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    let ap_ref: &(dyn Fn() + Sync) = ap;
+    let mb = &MAILBOXES[0];
+    mb.data.store(
+        &ap_ref as *const &(dyn Fn() + Sync) as usize,
+        Ordering::Relaxed,
+    );
+    fence(Ordering::Release);
+    mb.func
+        .store(trampoline_dyn as *const () as usize, Ordering::Release);
+
+    let _wait = WaitAp1;
+    bsp();
+    true
+}
+
 /// Park any APs brought up by [`mp_init`] before handing control to a payload or OS.
 ///
 /// `mp_init` leaves APs in the mailbox loop so firmware can run scoped work on
@@ -1224,7 +1276,7 @@ impl MpHandle {
 #[must_use]
 pub fn park_aps_for_payload() -> bool {
     let num_aps = AP_COUNT.load(Ordering::Acquire).min(MAX_APS);
-    if num_aps == 0 {
+    if num_aps == 0 || APS_PARKED.swap(true, Ordering::AcqRel) {
         return true;
     }
 

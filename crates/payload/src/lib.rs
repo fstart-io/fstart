@@ -438,7 +438,12 @@ impl<D> MainstagePayload<D> for X86LinuxPayload {
             },
         };
         if boot.load_kernel_measured(&kernel).is_err() {
+            fstart_stage::boot::set_parallel_runner(None);
             halt_x86_linux("kernel payload load failed");
+        }
+        fstart_stage::boot::set_parallel_runner(None);
+        if !fstart_arch::x86::mp::park_aps_for_payload() {
+            halt_x86_linux("failed to quiesce APs for OS handoff");
         }
         fstart_log::info!(
             "x86 Linux payload: kernel loaded at {:#x}",

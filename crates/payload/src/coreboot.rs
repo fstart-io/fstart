@@ -63,7 +63,14 @@ impl<D> MainstagePayload<D> for X86CorebootPayload {
             .unwrap_or_else(|| halt("no table window"));
         let table = write_tables(&handoff.description, window, &manifest)
             .unwrap_or_else(|reason| halt(reason));
-        let base = load_payload().unwrap_or_else(|reason| halt(reason));
+        let base = load_payload().unwrap_or_else(|reason| {
+            fstart_stage::boot::set_parallel_runner(None);
+            halt(reason)
+        });
+        fstart_stage::boot::set_parallel_runner(None);
+        if !fstart_arch::x86::mp::park_aps_for_payload() {
+            halt("failed to quiesce APs for payload handoff");
+        }
         #[cfg(feature = "tcg")]
         measure_files(&manifest);
         fstart_log::info!(
