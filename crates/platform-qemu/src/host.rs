@@ -1121,8 +1121,13 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             "-Zub-checks=no".into(),
             "-Crelocation-model=static".into(),
             "-Ccode-model=large".into(),
+            "-Zplt=yes".into(),
             "--cfg".into(),
             "curve25519_dalek_backend=\"serial\"".into(),
+            "--cfg".into(),
+            "sha2_backend=\"soft\"".into(),
+            "--cfg".into(),
+            "sha2_backend_soft=\"compact\"".into(),
         ]
     } else {
         vec!["-Zub-checks=no".into()]

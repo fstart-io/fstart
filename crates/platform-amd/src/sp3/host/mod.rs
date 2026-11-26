@@ -312,6 +312,13 @@ mod tests {
         assert_eq!((entry_count, stack_size), (256, SMM_STACK_SIZE));
 
         let reset = plan.unit(STAGE_UNIT).unwrap();
+        assert!(reset.rustflags.contains(&"-Zplt=yes".into()));
+        assert!(reset.rustflags.contains(&"sha2_backend=\"soft\"".into()));
+        assert!(
+            reset
+                .rustflags
+                .contains(&"sha2_backend_soft=\"compact\"".into())
+        );
         let [binding] = reset.bindings.as_slice() else {
             panic!("stage unit takes exactly the SMM image")
         };

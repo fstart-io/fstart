@@ -180,8 +180,9 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 /// (Re-pinned for the SMM unit's `smm` board feature, again without the
 /// entry cfg, again without the payload cfg, for the AMD reset sections'
 /// rename from `.sp3.*` to `.amd.*` in the linker script, for the one
-/// AMD host plan, for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`, and
-/// for expanding the Zeppelin reset image to 3 MiB.)
+/// AMD host plan, for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`, for
+/// expanding the Zeppelin reset image to 3 MiB, and for stage `-Zplt=yes`
+/// + compact soft `sha2`.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {

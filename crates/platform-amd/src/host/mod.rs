@@ -280,8 +280,13 @@ fn stage_unit(host: &Host, payload: Payload) -> Result<CompilationUnit, String> 
             "-Ccode-model=small",
             "-Clink-arg=-no-pie",
             "-Cno-redzone=yes",
+            "-Zplt=yes",
             "--cfg",
             "curve25519_dalek_backend=\"serial\"",
+            "--cfg",
+            "sha2_backend=\"soft\"",
+            "--cfg",
+            "sha2_backend_soft=\"compact\"",
         ]
         .map(String::from)
         .to_vec(),
