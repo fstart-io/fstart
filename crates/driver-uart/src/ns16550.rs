@@ -425,11 +425,13 @@ impl Console for Ns16550 {
     }
 
     fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
-        if self.lsr().is_set(LSR::DR) {
-            Ok(Some(self.read_reg(REG_THR)))
-        } else {
-            Ok(None)
+        let status = self.lsr();
+        // An undecoded UART (e.g. an undocked ThinkPad) can read as all ones.
+        // Check LSR, not the receive byte: 0xff is valid data on a real UART.
+        if status.get() == u8::MAX || !status.is_set(LSR::DR) {
+            return Ok(None);
         }
+        Ok(Some(self.read_reg(REG_THR)))
     }
 
     fn flush(&self) -> Result<(), ServiceError> {
@@ -441,5 +443,34 @@ impl Console for Ns16550 {
             core::hint::spin_loop();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receive_ignores_an_undecoded_port_but_accepts_ff_as_data() {
+        for (status, expected) in [
+            (u8::MAX, None),
+            (LSR::THRE::SET.value, None),
+            ((LSR::THRE::SET + LSR::DR::SET).value, Some(u8::MAX)),
+        ] {
+            let mut regs = [0u8; 8];
+            regs[REG_THR] = u8::MAX;
+            regs[REG_LSR] = status;
+            let uart = Ns16550::new(Ns16550Config {
+                regs: AccessMode::Mmio {
+                    base: regs.as_mut_ptr() as u64,
+                    reg_shift: 0,
+                    reg_width: 1,
+                },
+                clock_freq: 1_843_200,
+                baud_rate: 115_200,
+            })
+            .unwrap();
+            assert_eq!(uart.read_byte().unwrap(), expected, "LSR={status:#04x}");
+        }
     }
 }
