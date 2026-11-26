@@ -8,6 +8,7 @@
 //! the blobs. Paths are explicit build inputs, never discovered.
 use super::{
     Blob, FlashRegion, Key, SingleLevelImage,
+    ish::{self, IshImage},
     levels::{self, Level, TwoLevelImage},
 };
 use crate::build_plan::FileBinding;
@@ -24,6 +25,12 @@ pub struct FileBlob {
     /// The directory levels of a two-level partition it is in.
     #[serde(default)]
     pub level: Level,
+    /// Target ISH slot (`a` / `b`); both if `None`.
+    #[serde(default)]
+    pub slot: Option<ish::IshSlot>,
+    /// Mark the directory entry writable and 4 KiB-align its allocation (ISH).
+    #[serde(default)]
+    pub writable: bool,
 }
 
 /// A directory entry without a file: erased flash the firmware writes, or a
@@ -36,6 +43,12 @@ pub struct FixedEntry {
     pub key: Key,
     #[serde(default)]
     pub level: Level,
+    /// Target ISH slot (`a` / `b`); both if `None`.
+    #[serde(default)]
+    pub slot: Option<ish::IshSlot>,
+    /// Mark the directory entry writable (ISH).
+    #[serde(default)]
+    pub writable: bool,
     pub content: Fixed,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +77,20 @@ pub struct PspFiles {
     /// Picasso's single level.
     #[serde(default)]
     pub two_level: bool,
+    /// ISH A/B dual-origin partition ([`IshImage`]): EFS -> `$PSP` L1 ->
+    /// `0x48`/`0x4A` ISH -> `$PL2` -> `0x49` -> `$BL2`.
+    #[serde(default)]
+    pub ish: bool,
+    /// Flash offset of the 16 MiB bank holding the EFS and ISH A/B slots.
+    #[serde(default)]
+    pub image_origin: u32,
+    /// Flash offset of the 16 MiB bank used as the mode-1 origin for BIOS
+    /// entries on dual-origin ISH images.
+    #[serde(default)]
+    pub bios_origin: u32,
+    /// Expected PSP ID written into ISH headers (and combo directories).
+    #[serde(default)]
+    pub psp_id: Option<u32>,
     /// The EFS generation bits (+0x24) the SoC's boot ROM requires clear,
     /// if not those of its BIOS directory slot ([`Profile::for_slot`]).
     #[serde(default)]
@@ -72,6 +99,8 @@ pub struct PspFiles {
     /// order), two-level partitions only.
     #[serde(default)]
     pub espi: Option<[u8; 4]>,
+    #[serde(default)]
+    pub efs_byte_59: Option<u8>,
     pub psp: Vec<FileBlob>,
     pub bios: Vec<FileBlob>,
     #[serde(default)]
@@ -88,6 +117,14 @@ pub struct PspFiles {
     /// the board starts the x86 cores only after one ran.
     #[serde(default)]
     pub psp_app: bool,
+    /// The board's CXL regions, written into the APCBs' DF CXL region
+    /// arrays ([`super::apcb_tokens::apply`]).
+    #[serde(default)]
+    pub cxl_regions: Vec<fstart_amdfw_format::apcb::CxlRegion>,
+    /// The board's ABL tokens, written into the APCBs
+    /// ([`super::apcb_tokens::apply`]).
+    #[serde(default)]
+    pub apcb_tokens: Vec<super::apcb_tokens::ApcbToken>,
 }
 
 /// The APCB instances of a board: one per RAM ID strap value, each the
@@ -247,30 +284,98 @@ fn read_bios_directory_as(
     kept: u32,
     profile: Profile,
 ) -> Result<BiosDirectoryFacts, String> {
+    read_bios_directory_in(image, kept, profile, 0, None)
+}
+
+/// [`read_bios_directory`] with explicit EFS and mode-1 BIOS bank origins
+/// (used for ISH A/B dual-origin images such as Venice).
+fn read_bios_directory_in(
+    image: &[u8],
+    kept: u32,
+    profile: Profile,
+    image_origin: usize,
+    bios_origin: Option<usize>,
+) -> Result<BiosDirectoryFacts, String> {
     let slot = profile.bios;
-    let flash = Flash::new(image).with_profile(profile);
+    let flash = if profile.ish {
+        let mut flash = Flash::region(image, image_origin, 0xff00_0000, profile);
+        if let Some(bo) = bios_origin {
+            flash = flash.with_bios_origin(bo);
+        }
+        flash
+    } else {
+        Flash::new(image).with_profile(profile)
+    };
     let (efs, _) = flash.efs_checked().map_err(|e| format!("EFS: {e:?}"))?;
-    let levels = flash
-        .bios_directories_checked(slot)
-        .map_err(|e| format!("BIOS directory: {e:?}"))?;
-    let boot = levels.boot();
-    let find = |kind| {
-        let mut entries = boot.entries.iter().filter(|e| e.kind == kind);
+    let dirs = if profile.ish {
+        let (slots, count) = flash
+            .ish_slots_checked()
+            .map_err(|e| format!("ISH slots: {e:?}"))?;
+        if count != 2 {
+            return Err(format!(
+                "ISH image requires both A and B slots, found {count}"
+            ));
+        }
+        let s0 = slots[0].ok_or("missing ISH slot 0")?;
+        let s1 = slots[1].ok_or("missing ISH slot 1")?;
+        if s0.kind == s1.kind
+            || s0.ish_offset == s1.ish_offset
+            || s0.psp_l2_offset == s1.psp_l2_offset
+        {
+            return Err("ISH A/B slots must have distinct headers and $PL2 directories".into());
+        }
+        let mut out = Vec::new();
+        for s in [s0, s1] {
+            let (_, bios_dir) = flash
+                .ish_slot_directories(&s)
+                .map_err(|e| format!("ISH BIOS directory: {e:?}"))?;
+            let dir = bios_dir.ok_or("ISH slot is missing its $BL2 BIOS directory")?;
+            out.push(dir);
+        }
+        out
+    } else {
+        let levels = flash
+            .bios_directories_checked(slot)
+            .map_err(|e| format!("BIOS directory: {e:?}"))?;
+        let mut out = vec![levels.boot()];
+        for dir in levels.iter() {
+            if dir.offset != out[0].offset {
+                out.push(dir);
+            }
+        }
+        out
+    };
+    let boot = dirs[0];
+    fn find<'a>(
+        dir: fstart_amdfw_format::directory::Directory<
+            'a,
+            fstart_amdfw_format::directory::BiosEntry,
+        >,
+        kind: u8,
+    ) -> Result<&'a fstart_amdfw_format::directory::BiosEntry, &'static str> {
+        let mut entries = dir.entries.iter().filter(|e| e.kind == kind);
         let first = entries.next().ok_or("missing BIOS reset/APOB entry")?;
         if entries.next().is_some() {
             return Err("ambiguous BIOS reset/APOB entry");
         }
         Ok(first)
-    };
-    let reset = find(bios::RESET_IMAGE)?;
-    let apob = find(bios::APOB)?;
+    }
+    let reset = find(boot, bios::RESET_IMAGE)?;
+    let apob = find(boot, bios::APOB)?;
     if !reset.reset() || !reset.copy() {
         return Err("reset image must have reset and copy flags".into());
     }
     let reset_range = boot
         .range(reset)
         .map_err(|e| format!("reset image: {e:?}"))?;
-    for directory in levels.iter() {
+    for directory in &dirs {
+        if profile.ish {
+            let dir_apob = find(*directory, bios::APOB)?;
+            if dir_apob.destination != apob.destination {
+                return Err("the ISH BIOS directories disagree on the APOB destination".into());
+            }
+            let _ = find(*directory, bios::RESET_IMAGE)?;
+        }
         for entry in directory
             .entries
             .iter()
@@ -308,25 +413,29 @@ impl AmdAssembly {
     /// for a packed image, the SoC's EFS generation bits.
     fn profile(&self) -> Profile {
         let mut profile = Profile::for_slot(self.bios_directory);
-        if let Firmware::Packed { files, .. } = &self.firmware
-            && let Some(mask) = files.generation_mask
-        {
+        let Firmware::Packed { files, .. } = &self.firmware;
+        if let Some(mask) = files.generation_mask {
             profile.generation_mask = mask;
+        }
+        if files.ish {
+            profile.ish = true;
+            profile.psp_id = files.psp_id;
         }
         profile
     }
 
     /// The largest flash: 16 MiB, the window the boot ROM maps, unless the
-    /// image is a packed two-level partition that addresses its files by
-    /// flash offset; those boot ROMs read flash parts up to 64 MiB.
+    /// image is a packed ISH or offset-addressed two-level partition; those
+    /// boot ROMs read flash parts up to 64 MiB.
     fn max_flash_size(&self) -> u32 {
         match &self.firmware {
             Firmware::Packed { files, .. }
-                if files.two_level
-                    && matches!(
-                        levels::Addressing::of(self.bios_directory),
-                        levels::Addressing::Offsets { .. }
-                    ) =>
+                if files.ish
+                    || (files.two_level
+                        && matches!(
+                            levels::Addressing::of(self.bios_directory),
+                            levels::Addressing::Offsets { .. }
+                        )) =>
             {
                 0x400_0000
             }
@@ -407,23 +516,27 @@ impl AmdAssembly {
                     }
                     (None, None) => {}
                 }
+                let entry_budget = if files.ish { 128 } else { 64 };
                 if files.flash_size != self.flash_size
                     || files.efs_offset >= files.partition_end
                     || files.partition_end > files.flash_size
-                    || files.psp.len() > 64
-                    || files.bios.len() > 64
+                    || files.psp.len() > entry_budget
+                    || files.bios.len() > entry_budget
                 {
                     return Err("invalid AMD PSP image geometry or budget".into());
                 }
-                if files.two_level {
+                if files.two_level && files.ish {
+                    return Err("AMD image cannot be both two-level and ISH".into());
+                }
+                if files.two_level || files.ish {
                     // The packer checks the entries.
                     if reset_offset.is_none() || files.apcb.is_some() || files.psp_app {
                         return Err(
                             "a two-level partition is a native image with board APCB files".into(),
                         );
                     }
-                    // Picasso's settings; two-level partitions list these
-                    // as entries.
+                    // Picasso's settings; two-level and ISH partitions list
+                    // these as entries.
                     if files.micron
                         || files.soft_fuse.is_some()
                         || files.apob_nv.is_some()
@@ -450,13 +563,32 @@ impl AmdAssembly {
                     }
                 }
                 let mut keys = std::collections::BTreeSet::new();
+                let mut shared = std::collections::BTreeSet::new();
+                let mut slotted = std::collections::BTreeSet::new();
                 for (bios, blobs) in [(false, &files.psp), (true, &files.bios)] {
                     for file in blobs {
                         if file.path.is_empty()
                             || file.path.contains('\0')
-                            || !keys.insert((bios, file.key, file.level))
+                            || (!files.ish && file.slot.is_some())
+                            || (files.ish && file.level != Level::Both)
+                            || !keys.insert((bios, file.key, file.level, file.slot))
                         {
                             return Err("invalid or duplicate AMD file declaration".into());
+                        }
+                        let base = (bios, file.key, file.level);
+                        match file.slot {
+                            None => {
+                                if slotted.contains(&base) {
+                                    return Err("invalid or duplicate AMD file declaration".into());
+                                }
+                                shared.insert(base);
+                            }
+                            Some(_) => {
+                                if shared.contains(&base) {
+                                    return Err("invalid or duplicate AMD file declaration".into());
+                                }
+                                slotted.insert(base);
+                            }
                         }
                     }
                 }
@@ -476,9 +608,9 @@ impl AmdAssembly {
                     .into_iter()
                     .flat_map(|(namespace, blobs)| {
                         blobs.iter().map(move |file| FileBinding {
-                            // A key can be in each level with its own file.
+                            // A key can be in each level or ISH slot with its own file.
                             environment: format!(
-                                "{namespace}_{:02X}_{:02X}_{:02X}{}",
+                                "{namespace}_{:02X}_{:02X}_{:02X}{}{}",
                                 file.key.kind,
                                 file.key.subprogram,
                                 file.key.instance,
@@ -486,6 +618,11 @@ impl AmdAssembly {
                                     Level::Both => "",
                                     Level::One => "_L1",
                                     Level::Two => "_L2",
+                                },
+                                match file.slot {
+                                    None => "",
+                                    Some(ish::IshSlot::A) => "_A",
+                                    Some(ish::IshSlot::B) => "_B",
                                 }
                             ),
                             path: file.path.clone(),
@@ -631,7 +768,15 @@ impl AmdAssembly {
         // an EFS in fstart's bytes.
         let mut flash = vec![0xff; self.flash_size as usize];
         flash[offset as usize..offset as usize + bytes.len()].copy_from_slice(&bytes);
-        let facts = read_bios_directory_as(&flash, kept, self.profile())?;
+        let (image_origin, bios_origin) = match &self.firmware {
+            Firmware::Packed { files, .. } if files.ish => (
+                files.image_origin as usize,
+                Some(files.bios_origin as usize),
+            ),
+            _ => (0, None),
+        };
+        let facts =
+            read_bios_directory_in(&flash, kept, self.profile(), image_origin, bios_origin)?;
         self.check_facts(&facts, reset_offset.unwrap_or(facts.reset_offset))?;
         let start = facts.reset_offset as usize;
         let region = flash.get(start..start + stage.len()).unwrap_or_default();
@@ -659,8 +804,16 @@ impl AmdAssembly {
         reset: Vec<u8>,
         reset_offset: Option<u32>,
     ) -> Result<super::PackedImage, String> {
+        if files.ish {
+            return self.pack_ish(files, sources, reset.len(), reset_offset);
+        }
         if files.two_level {
             return self.pack_two_level(files, sources, reset.len(), reset_offset);
+        }
+        if !files.cxl_regions.is_empty() || !files.apcb_tokens.is_empty() {
+            return Err(
+                "CXL regions and APCB tokens need an APCB v3 (two-level or ISH partition)".into(),
+            );
         }
         let blobs = |declared: &[FileBlob], bytes: &[&[u8]]| {
             declared
@@ -748,9 +901,115 @@ impl AmdAssembly {
             )?
             .pack()
     }
+
+    /// The ISH A/B dual-origin partition of `files`, with the reset image of
+    /// `reset_size` bytes at `reset_offset`.
+    fn pack_ish(
+        &self,
+        files: &PspFiles,
+        sources: &[&[u8]],
+        reset_size: usize,
+        reset_offset: Option<u32>,
+    ) -> Result<super::PackedImage, String> {
+        let reset = levels::Reset {
+            offset: reset_offset.ok_or("an ISH partition needs a reset window")?,
+            size: u32::try_from(reset_size).map_err(|_| "reset image too large")?,
+            destination: self.reset_destination,
+            compressed: self.psp.compress_reset,
+        };
+        let mut sources = sources.iter();
+        files
+            .ish_image(
+                |_| Ok(sources.next().ok_or("missing AMD file")?.to_vec()),
+                reset,
+                self.apob_destination,
+            )?
+            .pack()
+    }
 }
 
 impl PspFiles {
+    /// Write the board's CXL regions and APCB tokens into the APCBs (BIOS
+    /// entries 0x60/0x68) of `entries`, the BIOS directory's `(key,
+    /// content)` ([`super::apcb_tokens::apply`]). Regions or a token that
+    /// no APCB takes are an error: the ABL would see none of them.
+    fn edit_apcbs<'a>(
+        &self,
+        entries: impl Iterator<Item = (Key, &'a mut levels::Content)>,
+    ) -> Result<(), String> {
+        let mut apcbs: Vec<(Key, &mut Vec<u8>)> = entries
+            .filter_map(|(key, content)| match content {
+                levels::Content::File(bytes) if super::apcb_tokens::is_apcb(key) => {
+                    Some((key, bytes))
+                }
+                _ => None,
+            })
+            .collect();
+        super::apcb_tokens::apply(&mut apcbs, &self.cxl_regions, &self.apcb_tokens)
+    }
+
+    /// The ISH A/B dual-origin partition of these files, each file's bytes from
+    /// `read` in [`AmdAssembly::bindings`] order. Explicitly declared BIOS
+    /// microcode entries remain available before the native FFS is mounted.
+    pub fn ish_image(
+        &self,
+        mut read: impl FnMut(&FileBlob) -> Result<Vec<u8>, String>,
+        reset: levels::Reset,
+        apob_destination: u64,
+    ) -> Result<IshImage, String> {
+        if !self.ish || self.apcb.is_some() || self.psp_app {
+            return Err("not an ISH partition of files".into());
+        }
+        let mut entries = |declared: &[FileBlob]| {
+            declared
+                .iter()
+                .map(|file| {
+                    let bytes = read(file)?;
+                    Ok(ish::Entry {
+                        key: file.key,
+                        slot: file.slot,
+                        writable: file.writable,
+                        content: levels::Content::File(bytes),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        };
+        let mut psp = entries(&self.psp)?;
+        let mut bios = entries(&self.bios)?;
+        self.edit_apcbs(bios.iter_mut().map(|e| (e.key, &mut e.content)))?;
+        for fixed in &self.fixed {
+            let entry = ish::Entry {
+                key: fixed.key,
+                slot: fixed.slot,
+                writable: fixed.writable,
+                content: match fixed.content {
+                    Fixed::Erased(size) => levels::Content::Erased(size),
+                    Fixed::Value(value) => levels::Content::Value(value),
+                },
+            };
+            if fixed.psp { &mut psp } else { &mut bios }.push(entry);
+        }
+        Ok(IshImage {
+            generation_mask: self
+                .generation_mask
+                .unwrap_or(Profile::VENICE.generation_mask),
+            psp_id: self
+                .psp_id
+                .or(Profile::VENICE.psp_id)
+                .ok_or("ISH partition requires a PSP ID")?,
+            image_origin: self.image_origin,
+            bios_origin: self.bios_origin,
+            efs_byte_59: self.efs_byte_59,
+            efs_offset: self.efs_offset,
+            partition_end: self.partition_end,
+            espi: self.espi,
+            psp,
+            bios,
+            reset,
+            apob_destination,
+        })
+    }
+
     /// The two-level partition of these files for the PSP of `slot`, each
     /// file's bytes from `read` in [`AmdAssembly::bindings`] order. The
     /// microcode goes into the FFS, not the BIOS directory.
@@ -764,11 +1023,11 @@ impl PspFiles {
         if !self.two_level || self.apcb.is_some() || self.psp_app {
             return Err("not a two-level partition of files".into());
         }
-        let mut entries = |declared: &[FileBlob]| {
+        let mut entries = |declared: &[FileBlob], is_bios: bool| {
             let mut entries = Vec::new();
             for file in declared {
                 let bytes = read(file)?;
-                if file.key.kind != bios::MICROCODE {
+                if !(is_bios && file.key.kind == bios::MICROCODE) {
                     entries.push(levels::Entry {
                         key: file.key,
                         level: file.level,
@@ -778,8 +1037,9 @@ impl PspFiles {
             }
             Ok::<_, String>(entries)
         };
-        let mut psp = entries(&self.psp)?;
-        let mut bios = entries(&self.bios)?;
+        let mut psp = entries(&self.psp, false)?;
+        let mut bios = entries(&self.bios, true)?;
+        self.edit_apcbs(bios.iter_mut().map(|e| (e.key, &mut e.content)))?;
         for fixed in &self.fixed {
             let entry = levels::Entry {
                 key: fixed.key,
@@ -846,4 +1106,114 @@ fn find_unique(haystack: &[u8], needle: &[u8], step: usize) -> Option<usize> {
         .filter(|&o| &haystack[o..o + needle.len()] == needle);
     let first = sites.next()?;
     sites.next().is_none().then_some(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fstart_amdfw_format::efs::BiosDirectorySlot;
+
+    fn sample_ish_assembly(psp: Vec<FileBlob>) -> AmdAssembly {
+        AmdAssembly {
+            firmware: Firmware::Packed {
+                files: PspFiles {
+                    flash_size: 64 << 20,
+                    efs_offset: 0x0102_0000,
+                    partition_end: 0x0400_0000,
+                    image_origin: 0x0100_0000,
+                    bios_origin: 0,
+                    generation_mask: Some(Profile::VENICE.generation_mask),
+                    psp_id: Profile::VENICE.psp_id,
+                    spi_read_mode: None,
+                    spi_speed: None,
+                    espi: None,
+                    efs_byte_59: None,
+                    micron: false,
+                    soft_fuse: None,
+                    apob_nv: None,
+                    psp_nv: None,
+                    two_level: false,
+                    ish: true,
+                    psp_app: false,
+                    cxl_regions: Vec::new(),
+                    apcb_tokens: Vec::new(),
+                    psp,
+                    bios: vec![FileBlob {
+                        key: Key::new(0x63, 0, 0),
+                        path: "bios/type_63_0_0".into(),
+                        level: Level::Both,
+                        slot: None,
+                        writable: false,
+                    }],
+                    fixed: vec![],
+                    apcb: None,
+                    assets: vec![],
+                },
+                reset_offset: Some(0x00d0_0000),
+            },
+            ffs: None,
+            nvram: None,
+            stage_unit: "stage".into(),
+            flash_size: 64 << 20,
+            bios_directory: BiosDirectorySlot::Family19h,
+            reset_size: 0x0030_0000,
+            reset_destination: 0x7000_0000,
+            apob_destination: 0x7700_0000,
+            shared_memory: None,
+            psp: PspOptions::default(),
+        }
+    }
+
+    #[test]
+    fn ish_validate_and_bindings_support_slotted_pairs_and_large_table() {
+        let mut psp = Vec::new();
+        // 60 shared entries + 3 per-slot A/B pairs = 66 declarations (> 64 single-level cap).
+        for i in 0..60u8 {
+            psp.push(FileBlob {
+                key: Key::new(0x10 + i, 0, 0),
+                path: format!("psp/shared_{i:02x}"),
+                level: Level::Both,
+                slot: None,
+                writable: false,
+            });
+        }
+        for kind in [0x00u8, 0x77, 0xa8] {
+            for (slot, suffix) in [(ish::IshSlot::A, "a"), (ish::IshSlot::B, "b")] {
+                psp.push(FileBlob {
+                    key: Key::new(kind, 0, 0),
+                    path: format!("psp/type_{kind:02x}_{suffix}"),
+                    level: Level::Both,
+                    slot: Some(slot),
+                    writable: false,
+                });
+            }
+        }
+        let asm = sample_ish_assembly(psp);
+        let bindings = asm.bindings().expect("ISH assembly should validate");
+        assert!(bindings.iter().any(|b| b.environment == "PSP_00_00_00_A"));
+        assert!(bindings.iter().any(|b| b.environment == "PSP_00_00_00_B"));
+        assert!(bindings.iter().any(|b| b.environment == "PSP_77_00_00_A"));
+        assert!(bindings.iter().any(|b| b.environment == "PSP_77_00_00_B"));
+    }
+
+    #[test]
+    fn ish_validate_rejects_mixed_shared_and_slotted_key() {
+        let asm = sample_ish_assembly(vec![
+            FileBlob {
+                key: Key::new(0x00, 0, 0),
+                path: "psp/type_00_shared".into(),
+                level: Level::Both,
+                slot: None,
+                writable: false,
+            },
+            FileBlob {
+                key: Key::new(0x00, 0, 0),
+                path: "psp/type_00_a".into(),
+                level: Level::Both,
+                slot: Some(ish::IshSlot::A),
+                writable: false,
+            },
+        ]);
+        assert!(asm.validate().is_err());
+    }
 }

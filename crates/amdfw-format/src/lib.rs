@@ -6,13 +6,20 @@
 //! A flash view has an explicit image origin, physical mapping and optional
 //! recovery-slot origin. Directory address modes are never inferred from an
 //! address's magnitude except for the documented legacy offset convention.
+//!
+//! A view holds the whole flash ([`Flash::region`]) or the pieces of it a
+//! reader fetched ([`Flash::sparse`]): firmware that cannot map the flash
+//! reads what a lookup touches and repeats the lookup until it misses
+//! nothing ([`Missing`]).
 #![no_std]
 
 pub mod anchor;
+pub mod apcb;
 pub mod directory;
 pub mod efs;
 pub mod microcode;
 
+use core::cell::Cell;
 use core::ops::Range;
 use directory::{BiosEntry, Directory, Entry, Levels, PspEntry};
 use efs::{BiosDirectorySlot, Efs};
@@ -31,9 +38,20 @@ pub enum Error {
     NestedLevel2,
     ComboSelection,
     UnsupportedTopology(u8),
-    OutsidePrefix { start: usize, end: usize },
+    OutsidePrefix {
+        start: usize,
+        end: usize,
+    },
     AncillaryPointer(u32),
     ResetFlags,
+    DuplicateIshSlot(u8),
+    PspIdMismatch {
+        expected: u32,
+        actual: u32,
+    },
+    RomLayoutSelector(u8),
+    /// The ISH slots name different reset images (BIOS entry `0x62`).
+    ResetImageMismatch,
 }
 
 /// Format policy, not board wiring or a bag of CPU-family conditionals.
@@ -51,6 +69,9 @@ pub struct Profile {
     pub legacy_offsets: bool,
     /// Picasso's APOB-NV uses the fixed 16-MiB mapping even on smaller parts.
     pub apob_nv_alias: bool,
+    /// Platform uses PSP L1 recovery entries (`0x48`/`0x4A`) pointing to
+    /// 32-byte Image Slot Headers (`ImageSlotHeader`) -> `$PL2` -> `0x49` -> `$BL2`.
+    pub ish: bool,
 }
 impl Profile {
     /// Siena's (SP6) boot ROM: the Family 19h BIOS directory slot, but only
@@ -64,6 +85,7 @@ impl Profile {
         chip_id: None,
         legacy_offsets: true,
         apob_nv_alias: false,
+        ish: false,
     };
 
     /// Genoa's (SP5) boot ROM: the Family 19h BIOS directory slot, only
@@ -76,6 +98,21 @@ impl Profile {
         chip_id: None,
         legacy_offsets: true,
         apob_nv_alias: false,
+        ish: false,
+    };
+
+    /// Venice's (SP7) boot ROM: EFS in a 16-MiB bank with `$PSP` L1
+    /// pointing to 32-byte ISH slots (`0x48`/`0x4A`, PSP ID `0xBF00_0000`)
+    /// -> `$PL2` -> type `0x49` -> `$BL2`, and dual-origin mode-1 BIOS
+    /// entries relative to BIOS origin 0.
+    pub const VENICE: Self = Self {
+        bios: BiosDirectorySlot::Family19h,
+        generation_mask: 3,
+        psp_id: Some(0xbf00_0000),
+        chip_id: None,
+        legacy_offsets: true,
+        apob_nv_alias: false,
+        ish: true,
     };
 
     pub const fn for_slot(bios: BiosDirectorySlot) -> Self {
@@ -92,16 +129,45 @@ impl Profile {
             chip_id: None,
             legacy_offsets: true,
             apob_nv_alias: matches!(bios, BiosDirectorySlot::Family17hModel10),
+            ish: false,
         }
     }
+}
+
+/// Flash bytes `[offset, offset + bytes.len())` of a sparse view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Piece<'a> {
+    pub offset: usize,
+    pub bytes: &'a [u8],
+}
+
+/// The first range `(offset, len)` a lookup on a sparse view wanted and did
+/// not find. A lookup that missed anything has no meaning, whatever it
+/// returned (a later EFS probe may have matched where an earlier one was
+/// missing): fetch the range and run it again.
+pub type Missing = Cell<Option<(usize, usize)>>;
+
+/// The bytes behind a view.
+#[derive(Clone, Copy)]
+enum Bytes<'a> {
+    Whole(&'a [u8]),
+    Sparse {
+        len: usize,
+        pieces: &'a [Piece<'a>],
+        missing: &'a Missing,
+    },
 }
 
 /// A view of a whole image. `origin` selects a firmware region in a larger
 /// ROM; addresses relative to the image start at that origin, not at byte 0.
 #[derive(Clone, Copy)]
 pub struct Flash<'a> {
-    bytes: &'a [u8],
+    bytes: Bytes<'a>,
     pub origin: usize,
+    /// Optional separate origin for mode-1 BIOS directory entries (e.g.
+    /// Venice dual-origin images where EFS/PSP live at bank `0x0100_0000`
+    /// while BIOS `0x62` mode-1 offsets are relative to flash offset 0).
+    pub bios_origin: Option<usize>,
     pub physical_base: u64,
     pub slot_origin: Option<usize>,
     pub profile: Profile,
@@ -110,8 +176,9 @@ impl<'a> Flash<'a> {
     /// Legacy top-mapped flash, retained for the existing Gen1 callers.
     pub const fn new(bytes: &'a [u8]) -> Self {
         Self {
-            bytes,
+            bytes: Bytes::Whole(bytes),
             origin: 0,
+            bios_origin: None,
             physical_base: (1u64 << 32).saturating_sub(bytes.len() as u64),
             slot_origin: None,
             profile: Profile::for_slot(BiosDirectorySlot::Family17hModel00),
@@ -125,8 +192,33 @@ impl<'a> Flash<'a> {
         profile: Profile,
     ) -> Self {
         Self {
-            bytes,
+            bytes: Bytes::Whole(bytes),
             origin,
+            bios_origin: None,
+            physical_base,
+            slot_origin: None,
+            profile,
+        }
+    }
+    /// [`Self::region`] over a flash of `len` bytes of which only `pieces`
+    /// were read. A read outside them fails as truncated flash does and
+    /// records itself in `missing` (the first one only).
+    pub const fn sparse(
+        len: usize,
+        pieces: &'a [Piece<'a>],
+        missing: &'a Missing,
+        origin: usize,
+        physical_base: u64,
+        profile: Profile,
+    ) -> Self {
+        Self {
+            bytes: Bytes::Sparse {
+                len,
+                pieces,
+                missing,
+            },
+            origin,
+            bios_origin: None,
             physical_base,
             slot_origin: None,
             profile,
@@ -140,8 +232,87 @@ impl<'a> Flash<'a> {
         self.slot_origin = Some(origin);
         self
     }
-    pub const fn bytes(&self) -> &'a [u8] {
-        self.bytes
+    /// Override/expect the origin used when resolving BIOS directory (`$BL2`)
+    /// mode-1 entries on dual-origin ISH images. For ISH profiles, this is
+    /// checked against the on-flash EFS `+0x58` layout selector.
+    pub const fn with_bios_origin(mut self, origin: usize) -> Self {
+        self.bios_origin = Some(origin);
+        self
+    }
+    /// Effective BIOS mode-1 origin for this flash view.
+    ///
+    /// On ISH profiles, validates EFS `+0x58` (`rom_layout_selector`) against
+    /// `self.origin` and verifies agreement with any explicit `bios_origin`.
+    pub fn checked_bios_origin(&self) -> Result<usize, Error> {
+        if !self.profile.ish {
+            return Ok(self.bios_origin.unwrap_or(self.origin));
+        }
+        let (_, efs) = self.efs_checked()?;
+        let image_origin = u32::try_from(self.origin)
+            .map_err(|_| Error::RomLayoutSelector(efs.rom_layout_selector))?;
+        let derived =
+            efs.venice_bios_origin(image_origin)
+                .ok_or(Error::RomLayoutSelector(efs.rom_layout_selector))? as usize;
+        if let Some(explicit) = self.bios_origin
+            && explicit != derived
+        {
+            return Err(Error::RomLayoutSelector(efs.rom_layout_selector));
+        }
+        Ok(derived)
+    }
+    /// The size of the flash the view covers.
+    pub const fn len(&self) -> usize {
+        match self.bytes {
+            Bytes::Whole(bytes) => bytes.len(),
+            Bytes::Sparse { len, .. } => len,
+        }
+    }
+    /// The view covers no flash.
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// The flash offset of `bytes`, a slice this view handed out (a
+    /// directory's file, [`Self::ish_reset_image`]).
+    pub fn offset_of(&self, bytes: &[u8]) -> Option<usize> {
+        let (start, end) = (
+            bytes.as_ptr() as usize,
+            bytes.as_ptr() as usize + bytes.len(),
+        );
+        let within = |offset: usize, held: &[u8]| {
+            let base = held.as_ptr() as usize;
+            (base <= start && end <= base + held.len()).then(|| offset + (start - base))
+        };
+        match self.bytes {
+            Bytes::Whole(held) => within(0, held),
+            Bytes::Sparse { pieces, .. } => pieces
+                .iter()
+                .find_map(|piece| within(piece.offset, piece.bytes)),
+        }
+    }
+    /// Flash bytes `[offset, offset + len)`, `None` beyond the flash or,
+    /// in a sparse view, outside every piece (then recorded as missing).
+    pub fn slice(&self, offset: usize, len: usize) -> Option<&'a [u8]> {
+        let end = offset.checked_add(len)?;
+        match self.bytes {
+            Bytes::Whole(bytes) => bytes.get(offset..end),
+            Bytes::Sparse {
+                len: size,
+                pieces,
+                missing,
+            } => {
+                if end > size {
+                    return None;
+                }
+                let found = pieces.iter().find_map(|piece| {
+                    let start = offset.checked_sub(piece.offset)?;
+                    piece.bytes.get(start..start + len)
+                });
+                if found.is_none() && missing.get().is_none() {
+                    missing.set(Some((offset, len)));
+                }
+                found
+            }
+        }
     }
     pub fn address(&self, offset: u32) -> u64 {
         self.physical_base + u64::from(offset)
@@ -151,12 +322,26 @@ impl<'a> Flash<'a> {
     }
     pub fn get(&self, address: u64, size: u32) -> Option<&'a [u8]> {
         let start = self.offset(address)?;
-        self.bytes.get(start..start.checked_add(size as usize)?)
+        self.slice(start, size as usize)
     }
     /// Resolve the effective directory/entry mode (AMD #55758): the higher
     /// of the entry override and directory mode. Value entries are not addresses.
     pub fn resolve(&self, encoded: u64, directory_mode: u8, table: usize) -> Result<usize, Error> {
-        let mode = directory_mode.max((encoded >> 62) as u8);
+        self.resolve_with_mode1_origin(encoded, directory_mode, table, self.origin)
+    }
+    pub(crate) fn resolve_with_mode1_origin(
+        &self,
+        encoded: u64,
+        directory_mode: u8,
+        table: usize,
+        mode1_origin: usize,
+    ) -> Result<usize, Error> {
+        let entry_mode = (encoded >> 62) as u8;
+        let mode = if entry_mode != 0 {
+            entry_mode
+        } else {
+            directory_mode
+        };
         let address = encoded & !(3u64 << 62);
         let raw = usize::try_from(address).map_err(|_| Error::Address(encoded))?;
         let offset = match mode {
@@ -170,7 +355,7 @@ impl<'a> Flash<'a> {
                     None
                 }
             }
-            1 => self.origin.checked_add(raw),
+            1 => mode1_origin.checked_add(raw),
             2 => table.checked_add(raw),
             3 => self
                 .slot_origin
@@ -178,7 +363,7 @@ impl<'a> Flash<'a> {
                 .checked_add(raw),
             _ => return Err(Error::AddressMode(mode)),
         }
-        .filter(|&o| o < self.bytes.len())
+        .filter(|&o| o < self.len())
         .ok_or(Error::Address(encoded))?;
         Ok(offset)
     }
@@ -190,7 +375,6 @@ impl<'a> Flash<'a> {
             .iter()
             .find_map(|&probe| {
                 let available = self
-                    .bytes
                     .len()
                     .checked_sub(self.origin)?
                     .min(efs::WINDOW as usize);
@@ -198,7 +382,7 @@ impl<'a> Flash<'a> {
                     .checked_add(probe as usize)?
                     .checked_sub(efs::WINDOW as usize)?;
                 let offset = self.origin.checked_add(local)?;
-                let (efs, _) = Efs::ref_from_prefix(self.bytes.get(offset..)?).ok()?;
+                let (efs, _) = Efs::ref_from_prefix(self.slice(offset, size_of::<Efs>())?).ok()?;
                 (efs.signature.get() == efs::SIGNATURE
                     && efs.generation.get() & self.profile.generation_mask == 0)
                     .then_some((offset, efs))
@@ -234,9 +418,7 @@ impl<'a> Flash<'a> {
             .filter(|(_, entry)| entry.has_data())
             .filter_map(|(dir, entry)| dir.data(entry).ok())
     }
-    pub fn psp_directories(&self) -> Result<Levels<'a, PspEntry>, Error> {
-        let (_, efs) = self.efs_checked()?;
-        let pointer = efs.new_psp_directory.get();
+    fn psp_root_levels(&self, pointer: u32) -> Result<Levels<'a, PspEntry>, Error> {
         if matches!(pointer, 0 | u32::MAX) {
             return Err(Error::MissingDirectory);
         }
@@ -262,6 +444,189 @@ impl<'a> Flash<'a> {
             None => Levels::read_checked(*self, offset),
         }
     }
+    pub fn psp_directories(&self) -> Result<Levels<'a, PspEntry>, Error> {
+        let (_, efs) = self.efs_checked()?;
+        let pointer = [efs.new_psp_directory.get(), efs.psp_directory.get()]
+            .into_iter()
+            .find(|&p| !matches!(p, 0 | u32::MAX))
+            .ok_or(Error::MissingDirectory)?;
+        self.psp_root_levels(pointer)
+    }
+    fn resolve_ish_entry(
+        &self,
+        dir: Directory<'a, PspEntry>,
+        entry: &PspEntry,
+    ) -> Result<ResolvedIsh<'a>, Error> {
+        if !self.profile.ish {
+            return Err(Error::UnsupportedTopology(entry.kind));
+        }
+        let ish_off = self.resolve(entry.source(), dir.header.address_mode(), dir.offset)?;
+        let ish = *directory::ImageSlotHeader::read_checked(*self, ish_off)?;
+        if let Some(expected) = self.profile.psp_id
+            && ish.psp_id.get() != expected
+        {
+            return Err(Error::PspIdMismatch {
+                expected,
+                actual: ish.psp_id.get(),
+            });
+        }
+        let psp_l2_offset = self.resolve(u64::from(ish.location.get()), 1, dir.offset)?;
+        let psp_l2 = Directory::<PspEntry>::read_checked(*self, psp_l2_offset, 1)?;
+        let mut bios_entries = psp_l2
+            .entries
+            .iter()
+            .filter(|e| e.kind == directory::psp::BIOS_TABLE && e.has_data());
+        let bios = match bios_entries.next() {
+            Some(bios_entry) => {
+                if bios_entries.next().is_some() {
+                    return Err(Error::DuplicateLevel2);
+                }
+                let range = psp_l2.range(bios_entry)?;
+                let level = usize::from(self.is_bios_level2(range.start));
+                let bios_flash = self.with_bios_origin(self.checked_bios_origin()?);
+                let bios_dir =
+                    Directory::<BiosEntry>::read_checked(bios_flash, range.start, level)?;
+                if bios_dir.table().len() > range.len() {
+                    return Err(Error::Truncated(range.start));
+                }
+                if level == 1
+                    && bios_dir
+                        .entries
+                        .iter()
+                        .any(|e| e.kind == directory::bios::LEVEL2)
+                {
+                    return Err(Error::NestedLevel2);
+                }
+                let nested_l2 = bios_dir.level2_checked()?;
+                Some(ResolvedIshBios {
+                    range,
+                    dir: bios_dir,
+                    nested_l2,
+                })
+            }
+            None => None,
+        };
+        let slot = IshSlot {
+            kind: entry.kind,
+            ish_offset: ish_off,
+            header: ish,
+            psp_l2_offset,
+            bios_l2_offset: bios.as_ref().map(|b| b.range.start),
+        };
+        Ok(ResolvedIsh { slot, psp_l2, bios })
+    }
+    /// Enumerate and verify all ISH A/B slots (`0x48` / `0x4A`) reachable
+    /// from the selected EFS's PSP L1 directories (primary, legacy, backup,
+    /// and combo), resolving each slot's `$PL2` and optional `$BL2` (`0x49`).
+    pub fn ish_slots_checked(&self) -> Result<([Option<IshSlot>; 2], usize), Error> {
+        let (_, efs) = self.efs_checked()?;
+        if self.profile.ish {
+            let _ = self.checked_bios_origin()?;
+        }
+        let pointers = [
+            efs.new_psp_directory.get(),
+            efs.psp_directory.get(),
+            efs.psp_backup_directory.get(),
+        ];
+        if pointers.iter().all(|&p| matches!(p, 0 | u32::MAX)) {
+            return Err(Error::MissingDirectory);
+        }
+        let mut out: [Option<IshSlot>; 2] = [None; 2];
+        let mut count = 0usize;
+        let mut seen_roots = [None; 3];
+        let mut root_count = 0usize;
+        for pointer in pointers {
+            if matches!(pointer, 0 | u32::MAX) {
+                continue;
+            }
+            let root_off = self.resolve(u64::from(pointer), 0, 0)?;
+            if seen_roots[..root_count].contains(&Some(root_off)) {
+                continue;
+            }
+            seen_roots[root_count] = Some(root_off);
+            root_count += 1;
+            let levels = self.psp_root_levels(pointer)?;
+            for dir in levels.iter() {
+                let mut seen_in_dir = [false; 2];
+                for entry in dir.entries {
+                    let kind_idx = match entry.kind {
+                        directory::psp::RECOVERY_A => 0,
+                        directory::psp::RECOVERY_B => 1,
+                        _ => continue,
+                    };
+                    if seen_in_dir[kind_idx] {
+                        return Err(Error::DuplicateIshSlot(entry.kind));
+                    }
+                    seen_in_dir[kind_idx] = true;
+                    let resolved = self.resolve_ish_entry(dir, entry)?;
+                    if let Some(existing) = out[..count]
+                        .iter()
+                        .flatten()
+                        .find(|s| s.kind == resolved.slot.kind)
+                    {
+                        if existing.ish_offset == resolved.slot.ish_offset {
+                            continue;
+                        }
+                        return Err(Error::DuplicateIshSlot(entry.kind));
+                    }
+                    if count >= out.len() {
+                        return Err(Error::DuplicateIshSlot(entry.kind));
+                    }
+                    out[count] = Some(resolved.slot);
+                    count += 1;
+                }
+            }
+        }
+        Ok((out, count))
+    }
+
+    /// Open the verified `$PL2` and optional `$BL2`/`$BHD` directories of an
+    /// [`IshSlot`] returned by [`Self::ish_slots_checked`].
+    pub fn ish_slot_directories(
+        &self,
+        slot: &IshSlot,
+    ) -> Result<(Directory<'a, PspEntry>, Option<Directory<'a, BiosEntry>>), Error> {
+        let psp_l2 = Directory::<PspEntry>::read_checked(*self, slot.psp_l2_offset, 1)?;
+        let bios = match slot.bios_l2_offset {
+            Some(off) => {
+                let level = usize::from(self.is_bios_level2(off));
+                let bios_flash = self.with_bios_origin(self.checked_bios_origin()?);
+                Some(Directory::<BiosEntry>::read_checked(
+                    bios_flash, off, level,
+                )?)
+            }
+            None => None,
+        };
+        Ok((psp_l2, bios))
+    }
+
+    /// The flash copy of the reset image (BIOS entry `0x62`) of an ISH
+    /// image: the one every ISH slot's `$BL2` names. The x86 side cannot
+    /// tell which slot the PSP booted, so slots that name different bytes
+    /// are an error rather than a guess.
+    pub fn ish_reset_image(&self) -> Result<&'a [u8], Error> {
+        let (slots, _) = self.ish_slots_checked()?;
+        let mut found: Option<&'a [u8]> = None;
+        for slot in slots.iter().flatten() {
+            let (_, bios) = self.ish_slot_directories(slot)?;
+            let bios = bios.ok_or(Error::MissingDirectory)?;
+            let entry = bios
+                .entries
+                .iter()
+                .find(|e| e.kind == directory::bios::RESET_IMAGE)
+                .ok_or(Error::MissingDirectory)?;
+            let data = bios.data(entry)?;
+            match found {
+                None => found = Some(data),
+                Some(previous)
+                    if core::ptr::eq(previous.as_ptr(), data.as_ptr())
+                        && previous.len() == data.len() => {}
+                Some(_) => return Err(Error::ResetImageMismatch),
+            }
+        }
+        found.ok_or(Error::MissingDirectory)
+    }
+
     /// Check every reachable PSP and BIOS table/file before preserving only
     /// `kept` bytes. The replacement reset slot is the sole permitted exception.
     /// EFS ancillary blobs (IMC, GEC, xHCI, Promontory) have no length; one is
@@ -273,10 +638,13 @@ impl<'a> Flash<'a> {
         kept: usize,
         reset: Option<Range<usize>>,
     ) -> Result<(), Error> {
-        if kept > self.bytes.len() {
+        if kept > self.len() {
             return Err(Error::Truncated(kept));
         }
         let (offset, efs) = self.efs_checked()?;
+        if self.profile.ish {
+            let _ = self.checked_bios_origin()?;
+        }
         self.within(offset..offset + size_of::<Efs>(), kept)?;
         let lowest_directory = [
             efs.psp_directory,
@@ -312,14 +680,26 @@ impl<'a> Flash<'a> {
             let pointer = pointer.get();
             if !matches!(pointer, 0 | u32::MAX) {
                 let blob = self.resolve(pointer.into(), 0, 0)?;
-                if kept != self.bytes.len() && blob >= lowest_directory {
+                if kept != self.len() && blob >= lowest_directory {
                     return Err(Error::AncillaryPointer(pointer));
                 }
             }
         }
-        let bios = self.bios_directories_checked(slot)?;
-        for dir in bios.iter() {
-            self.validate_bios_directory(dir, kept, reset.as_ref())?;
+        if !self.profile.ish {
+            let bios = self.bios_directories_checked(slot)?;
+            for dir in bios.iter() {
+                self.validate_bios_directory(dir, kept, reset.as_ref())?;
+            }
+        } else if let Some(pointer) = efs.bios_directory(slot) {
+            let flash = self.with_profile(Profile {
+                bios: slot,
+                ..self.profile
+            });
+            for dir in
+                Levels::<BiosEntry>::read_checked(flash, flash.resolve(pointer, 0, 0)?)?.iter()
+            {
+                self.validate_bios_directory(dir, kept, reset.as_ref())?;
+            }
         }
         // Other populated BIOS slots remain reachable from the retained EFS.
         // Use this EFS, not another generation's first accepted probe.
@@ -355,6 +735,7 @@ impl<'a> Flash<'a> {
         if pointers.iter().all(|p| matches!(p.get(), 0 | u32::MAX)) {
             return Err(Error::MissingDirectory);
         }
+        let mut found_ish_bios = false;
         for pointer in pointers {
             let pointer = pointer.get();
             if matches!(pointer, 0 | u32::MAX) {
@@ -365,15 +746,18 @@ impl<'a> Flash<'a> {
                 Some(combo) => {
                     self.within(combo.extent(), kept)?;
                     for entry in combo.entries() {
-                        self.validate_psp(
+                        found_ish_bios |= self.validate_psp(
                             self.resolve(entry.directory, 0, offset)?,
                             kept,
                             reset.as_ref(),
                         )?;
                     }
                 }
-                None => self.validate_psp(offset, kept, reset.as_ref())?,
+                None => found_ish_bios |= self.validate_psp(offset, kept, reset.as_ref())?,
             }
+        }
+        if self.profile.ish && !found_ish_bios {
+            return Err(Error::MissingDirectory);
         }
         Ok(())
     }
@@ -406,15 +790,44 @@ impl<'a> Flash<'a> {
         offset: usize,
         kept: usize,
         reset: Option<&Range<usize>>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
+        let mut found_ish_bios = false;
         for dir in Levels::<PspEntry>::read_checked(*self, offset)?.iter() {
             self.within(dir.extent()?, kept)?;
+            let mut seen_ish = [false; 2];
             for entry in dir.entries {
-                if matches!(
-                    entry.kind,
-                    directory::psp::RECOVERY_A | directory::psp::RECOVERY_B
-                ) {
-                    return Err(Error::UnsupportedTopology(entry.kind));
+                if let Some(kind_idx) = match entry.kind {
+                    directory::psp::RECOVERY_A => Some(0),
+                    directory::psp::RECOVERY_B => Some(1),
+                    _ => None,
+                } {
+                    if seen_ish[kind_idx] {
+                        return Err(Error::DuplicateIshSlot(entry.kind));
+                    }
+                    seen_ish[kind_idx] = true;
+                    let resolved = self.resolve_ish_entry(dir, entry)?;
+                    let ish_end = resolved
+                        .slot
+                        .ish_offset
+                        .checked_add(size_of::<directory::ImageSlotHeader>())
+                        .ok_or(Error::Truncated(resolved.slot.ish_offset))?;
+                    self.within(resolved.slot.ish_offset..ish_end, kept)?;
+                    self.within(resolved.psp_l2.extent()?, kept)?;
+                    for l2_entry in resolved.psp_l2.entries {
+                        if !l2_entry.has_data() {
+                            continue;
+                        }
+                        self.within(resolved.psp_l2.range(l2_entry)?, kept)?;
+                    }
+                    if let Some(bios) = resolved.bios {
+                        self.within(bios.range, kept)?;
+                        self.validate_bios_directory(bios.dir, kept, reset)?;
+                        if let Some(l2) = bios.nested_l2 {
+                            self.validate_bios_directory(l2, kept, reset)?;
+                        }
+                        found_ish_bios = true;
+                    }
+                    continue;
                 }
                 if !entry.has_data() {
                     continue;
@@ -422,9 +835,7 @@ impl<'a> Flash<'a> {
                 let range = dir.range(entry)?;
                 self.within(range.clone(), kept)?;
                 if entry.kind == directory::psp::BIOS_TABLE {
-                    let level = usize::from(
-                        self.bytes[range.start..].starts_with(&directory::BIOS_LEVEL2_COOKIE),
-                    );
+                    let level = usize::from(self.is_bios_level2(range.start));
                     let bios = Directory::<BiosEntry>::read_checked(*self, range.start, level)?;
                     if bios.table().len() > range.len() {
                         return Err(Error::Truncated(range.start));
@@ -444,7 +855,12 @@ impl<'a> Flash<'a> {
                 }
             }
         }
-        Ok(())
+        Ok(found_ish_bios)
+    }
+    /// A `$BL2` (level 2) BIOS directory starts at `offset`.
+    fn is_bios_level2(&self, offset: usize) -> bool {
+        self.slice(offset, directory::BIOS_LEVEL2_COOKIE.len())
+            .is_some_and(|cookie| cookie == directory::BIOS_LEVEL2_COOKIE)
     }
     fn within(&self, range: Range<usize>, kept: usize) -> Result<(), Error> {
         if range.end > kept {
@@ -456,6 +872,29 @@ impl<'a> Flash<'a> {
             Ok(())
         }
     }
+}
+
+struct ResolvedIshBios<'a> {
+    range: Range<usize>,
+    dir: Directory<'a, BiosEntry>,
+    nested_l2: Option<Directory<'a, BiosEntry>>,
+}
+
+struct ResolvedIsh<'a> {
+    slot: IshSlot,
+    psp_l2: Directory<'a, PspEntry>,
+    bios: Option<ResolvedIshBios<'a>>,
+}
+
+/// A validated Image Slot Header (`0x48` or `0x4A`) and its resolved
+/// PSP L2 (`$PL2`) and optional BIOS L2 (`$BL2`) directory offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IshSlot {
+    pub kind: u8,
+    pub ish_offset: usize,
+    pub header: directory::ImageSlotHeader,
+    pub psp_l2_offset: usize,
+    pub bios_l2_offset: Option<usize>,
 }
 
 /// Size of one flash half of a "Two 16M in 32MB" image (AMD #55758
