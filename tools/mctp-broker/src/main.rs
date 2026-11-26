@@ -22,7 +22,7 @@ use fstart_spdm::{
 };
 use pcapng::PcapNgWriter;
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -139,14 +139,32 @@ fn handle_spdm_emu_client(mut stream: TcpStream) -> io::Result<()> {
             SOCKET_SPDM_COMMAND_NORMAL => {
                 // PCIe DOE payload starts with 8-byte DOE header (vendor_id, type, length_dws).
                 if transport_type == SOCKET_TRANSPORT_TYPE_PCI_DOE && payload.len() >= 8 {
+                    let doe_vid = u16::from_le_bytes([payload[0], payload[1]]);
                     let doe_type = payload[2];
+                    if doe_vid != 0x0001 || (doe_type != 0x01 && doe_type != 0x02) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unexpected DOE protocol",
+                        ));
+                    }
                     let spdm_in = &payload[8..];
-                    let rlen = if doe_type == 0x02 {
+                    let rlen = match if doe_type == 0x02 {
                         rsp.handle_secured_spdm(spdm_in, &mut out_buf)
                     } else {
                         rsp.handle_request(spdm_in, &mut out_buf, &mut rng)
-                    }
-                    .unwrap_or(0);
+                    } {
+                        Ok(n) => n,
+                        Err(_) => {
+                            // Emit a valid SPDM ERROR response instead of an empty DOE object.
+                            fstart_spdm::write_error(
+                                fstart_spdm::SPDM_VERSION_1_2,
+                                fstart_spdm::SpdmErrorCode::Unspecified,
+                                0,
+                                &mut out_buf,
+                            )
+                            .unwrap_or(4)
+                        }
+                    };
                     let dws = 2 + rlen.div_ceil(4);
                     let mut doe_resp = vec![0u8; dws * 4];
                     doe_resp[0..4].copy_from_slice(&payload[0..4]);
@@ -159,9 +177,16 @@ fn handle_spdm_emu_client(mut stream: TcpStream) -> io::Result<()> {
                         &doe_resp,
                     )?;
                 } else {
-                    let rlen = rsp
-                        .handle_request(&payload, &mut out_buf, &mut rng)
-                        .unwrap_or(0);
+                    let rlen = match rsp.handle_request(&payload, &mut out_buf, &mut rng) {
+                        Ok(n) => n,
+                        Err(_) => fstart_spdm::write_error(
+                            fstart_spdm::SPDM_VERSION_1_2,
+                            fstart_spdm::SpdmErrorCode::Unspecified,
+                            0,
+                            &mut out_buf,
+                        )
+                        .unwrap_or(4),
+                    };
                     send_emu_frame(
                         &mut stream,
                         SOCKET_SPDM_COMMAND_NORMAL,
@@ -210,8 +235,13 @@ fn run_bridge(
     transport: TransportKind,
     pcap_path: Option<PathBuf>,
 ) -> io::Result<()> {
-    let _ = std::fs::remove_file(&bmc_sock);
-    let _ = std::fs::remove_file(&host_sock);
+    // Refuse to overwrite existing files/sockets to avoid accidental deletion.
+    if bmc_sock.exists() || host_sock.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "socket path already exists; remove stale socket explicitly before starting bridge",
+        ));
+    }
     let bmc_listener = UnixListener::bind(&bmc_sock)?;
     let host_listener = UnixListener::bind(&host_sock)?;
     let pcap = match pcap_path {
@@ -232,9 +262,13 @@ fn run_bridge(
     let pcap1 = pcap.clone();
     let t1 = thread::spawn(move || forward_stream(&mut bmc_a, &mut host_a, transport, pcap1));
     let t2 = thread::spawn(move || forward_stream(&mut host_b, &mut bmc_b, transport, pcap));
-    let _ = t1.join();
-    let _ = t2.join();
-    Ok(())
+    let r1 = t1
+        .join()
+        .map_err(|_| io::Error::other("bmc->host worker panicked"))?;
+    let r2 = t2
+        .join()
+        .map_err(|_| io::Error::other("host->bmc worker panicked"))?;
+    r1.and(r2)
 }
 
 fn forward_stream(
@@ -248,32 +282,20 @@ fn forward_stream(
     loop {
         let n = src.read(&mut buf)?;
         if n == 0 {
+            let _ = dst.shutdown(Shutdown::Write);
             return Ok(());
         }
         dst.write_all(&buf[..n])?;
         dst.flush()?;
-        if let Some(ref writer) = pcap {
-            if transport == TransportKind::Serial {
-                for &b in &buf[..n] {
-                    if let Ok(Some(pkt)) = serial_dec.push_byte(b)
-                        && let Ok(mut w) = writer.lock()
-                    {
-                        let _ = w.write_mctp_packet(pkt);
-                    }
-                }
-            } else {
-                // Non-serial socket bridges frame one wire packet per write.
-                let decoded: Option<&[u8]> = match transport {
-                    TransportKind::Smbus => smbus::decode(&buf[..n]).ok().map(|(_, p)| p),
-                    TransportKind::I3c => i3c::decode(0x45, false, &buf[..n]).ok(),
-                    TransportKind::Kcs => kcs::decode(&buf[..n]).ok().flatten(),
-                    TransportKind::PcieVdm => pcie_vdm::decode(&buf[..n]).ok().map(|(_, p)| p),
-                    TransportKind::Serial => None,
-                };
-                if let Some(pkt) = decoded
-                    && let Ok(mut w) = writer.lock()
-                {
-                    let _ = w.write_mctp_packet(pkt);
+        if let Some(ref writer) = pcap
+            && transport == TransportKind::Serial
+        {
+            for &b in &buf[..n] {
+                if let Ok(Some(pkt)) = serial_dec.push_byte(b) {
+                    let mut w = writer
+                        .lock()
+                        .map_err(|_| io::Error::other("pcap writer lock poisoned"))?;
+                    w.write_mctp_packet(pkt)?;
                 }
             }
         }

@@ -788,4 +788,33 @@ mod tests {
         assert_eq!(notify.report_on(kcs(&busy), 0xc5), None);
         assert!(busy.into_inner().writes.is_empty());
     }
+
+    #[test]
+    fn raw_transaction_frames_mctp_kcs_and_aborts_on_timeout() {
+        let mctp_kcs_req = [0xB0, 0x01, 0x05, 0x01, 0x0A, 0x08, 0xC8, 0x00, 0x55];
+        let mctp_kcs_rsp = vec![0xB0, 0x01, 0x00, 0xFF];
+        let bmc = RefCell::new(Bmc {
+            answer: mctp_kcs_rsp.clone(),
+            ..Bmc::default()
+        });
+        let mut buf = [0u8; 16];
+        let n = kcs(&bmc).raw_transaction(&mctp_kcs_req, &mut buf).unwrap();
+        assert_eq!(&buf[..n], &mctp_kcs_rsp[..]);
+        let bmc = bmc.into_inner();
+        assert_eq!(bmc.request, mctp_kcs_req);
+        let end = bmc
+            .writes
+            .iter()
+            .position(|&w| w == (true, END_WRITE))
+            .unwrap();
+        assert_eq!(bmc.writes[end + 1], (false, 0x55));
+
+        // Empty payload is rejected without touching the interface.
+        let empty_bmc = RefCell::new(Bmc::default());
+        assert_eq!(
+            kcs(&empty_bmc).raw_transaction(&[], &mut buf),
+            Err(Error::Short)
+        );
+        assert!(empty_bmc.into_inner().writes.is_empty());
+    }
 }
