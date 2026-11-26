@@ -32,11 +32,19 @@
 //! data words, which no standard field names (the vendor adds a section
 //! of its own for a PMIC error, AMD's GUID FD2EBF1F-..., whose layout is
 //! not public). The two are one error: the region has both or neither.
+//!
+//! A SoC whose SMM handles PCIe and CXL errors firmware-first
+//! ([`Apei::firmware_first`], `smm::aer`) adds the PCI Express AER
+//! sources, firmware-first and global, with the AER setup it gave every
+//! function, and a GHES for corrected and one for uncorrected errors whose
+//! blocks its handler fills ([`firmware_first_sources`]); the DSDT gets
+//! the Hardware Error Device and the GPE's method when a GHES is notified
+//! by SCI ([`firmware_first_aml`]). FIRMWARE_FIRST.md §2.3.
 
 use alloc::vec::Vec;
 
 use fstart_acpi::cper::{self, Entry, Severity};
-use fstart_acpi::hest::{self, Bank, MachineCheck};
+use fstart_acpi::hest::{self, Bank, MachineCheck, Source};
 use fstart_driver_amd::apob::event::AblError;
 use fstart_driver_amd::ccx::ras::Record;
 
@@ -58,14 +66,102 @@ pub struct Apei {
     pub threshold: u16,
     /// The boot error region: its address and length.
     pub boot_errors: (u64, u32),
+    /// The PCIe/CXL errors the SoC's SMM handles firmware-first.
+    pub firmware_first: Option<crate::smm::aer::FirmwareFirst>,
+}
+
+/// The AER source IDs (the AMD CPM's: root port, device, bridge) and the
+/// GHES IDs (corrected, uncorrected).
+pub const AER_SOURCE_IDS: [u16; 3] = [0x100, 0x101, 0x102];
+pub const GHES_SOURCE_IDS: [u16; 2] = [0x200, 0x210];
+
+/// The HEST sources of a firmware-first platform `ff`: the root port,
+/// device and bridge AER sources (firmware-first and global, with the
+/// setup `smm::aer` gives every function: Device Control reporting
+/// enables, its masks and severity, a root port's Root Error Command) and
+/// a GHES for corrected and one for uncorrected errors.
+pub fn firmware_first_sources(ff: &crate::smm::aer::FirmwareFirst) -> [Source<'static>; 5] {
+    use crate::smm::aer::{DEVICE, ROOT_PORT};
+    use fstart_acpi::hest::{Aer, AerKind, AerRegisters, FIRMWARE_FIRST, GLOBAL, Ghes};
+    let registers = |setup: &fstart_pci::aer::Setup| AerRegisters {
+        device_control: 7,
+        uncorrectable_mask: setup.uncorrectable_mask,
+        uncorrectable_severity: setup.uncorrectable_severity,
+        correctable_mask: setup.correctable_mask,
+        capabilities_control: 0,
+    };
+    let aer = |kind, source_id, setup| {
+        Source::Aer(Aer {
+            kind,
+            source_id,
+            flags: FIRMWARE_FIRST | GLOBAL,
+            bus: 0,
+            device: 0,
+            function: 0,
+            registers: registers(setup),
+        })
+    };
+    let ghes = |source_id, ghes: &crate::smm::aer::Ghes| {
+        Source::Ghes(Ghes {
+            source_id,
+            related_source_id: 0xffff,
+            max_sections: 16,
+            status_address: ghes.status_address,
+            notify: ghes.hest_notify(),
+            block_length: ghes.length,
+            read_ack: None,
+        })
+    };
+    [
+        aer(
+            AerKind::RootPort {
+                root_error_command: ROOT_PORT.root_command,
+            },
+            AER_SOURCE_IDS[0],
+            &ROOT_PORT,
+        ),
+        aer(AerKind::Device, AER_SOURCE_IDS[1], &DEVICE),
+        aer(
+            AerKind::Bridge {
+                secondary_uncorrectable_mask: DEVICE.uncorrectable_mask,
+                secondary_uncorrectable_severity: DEVICE.uncorrectable_severity,
+                secondary_capabilities_control: 0,
+            },
+            AER_SOURCE_IDS[2],
+            &DEVICE,
+        ),
+        ghes(GHES_SOURCE_IDS[0], &ff.corrected),
+        ghes(GHES_SOURCE_IDS[1], &ff.uncorrected),
+    ]
+}
+
+/// The Hardware Error Device of a firmware-first platform.
+pub const HARDWARE_ERROR_DEVICE: &str = "\\_SB_.AERR";
+
+/// The DSDT objects of `ff` with an SCI-notified GHES: `\_SB.AERR`
+/// (`PNP0C33`) and `\_GPE._Lxx` of its SCI event notifying it (0x80), as
+/// the AMD CPM's CPMRAS SSDT (`_L14`); nothing otherwise.
+#[inline]
+pub fn firmware_first_aml(ff: &crate::smm::aer::FirmwareFirst) -> Vec<u8> {
+    if !ff.enabled() || !ff.sci() {
+        return Vec::new();
+    }
+    let mut aml = hest::hardware_error_device(HARDWARE_ERROR_DEVICE);
+    aml.extend(fstart_acpi::gpe::notify(
+        ff.sci_event,
+        false,
+        &[HARDWARE_ERROR_DEVICE],
+        0x80,
+    ));
+    aml
 }
 
 /// The HEST and the BERT.
 pub fn tables(apei: &Apei) -> Vec<Vec<u8>> {
     let count = (apei.mcg_cap & 0xff).min(64) as u8;
     let banks: Vec<Bank> = (0..count).map(Bank::smca).collect();
-    let sources = [
-        (
+    let mut sources = alloc::vec![
+        Source::MachineCheck(
             MachineCheck::Exception {
                 source_id: 1,
                 flags: 0,
@@ -74,7 +170,7 @@ pub fn tables(apei: &Apei) -> Vec<Vec<u8>> {
             },
             &banks[..],
         ),
-        (
+        Source::MachineCheck(
             MachineCheck::Corrected {
                 source_id: 2,
                 flags: 0,
@@ -84,7 +180,9 @@ pub fn tables(apei: &Apei) -> Vec<Vec<u8>> {
             &banks[..],
         ),
     ];
-    let sources = sources.map(|(kind, banks)| hest::Source::MachineCheck(kind, banks));
+    if let Some(ff) = apei.firmware_first.filter(|ff| ff.enabled()) {
+        sources.extend(firmware_first_sources(&ff));
+    }
     let hest = hest::table(
         fstart_acpi::OEM_ID,
         fstart_acpi::OEM_TABLE_ID,
@@ -272,6 +370,61 @@ fn abl_entries(error: &AblError, cpuid: u32, brand: &[u8; 48]) -> Vec<Entry> {
     alloc::vec![standard, event]
 }
 
+/// fstart's section of a platform error a SoC's firmware finds left from
+/// the last boot outside the MCA banks and the ABL's log (the vendors'
+/// platform RAS DXE records them each its own way: a sync flood in the S5
+/// reset status, an FCH's break events, an IOHC's sync flood from its pin;
+/// DEVICES.md §2.12). 16 bytes, little endian:
+///
+/// | Offset | Size | |
+/// |---|---|---|
+/// | 0 | 4 | what it is ([`PlatformEvent`]) |
+/// | 4 | 1 | socket |
+/// | 5 | 1 | the die, root bridge or FCH it names (FFh: none) |
+/// | 6 | 2 | 0 |
+/// | 8 | 8 | the register as read |
+pub const PLATFORM_EVENT: [u8; 16] = cper::guid(
+    0x0b8f_3c2e,
+    0x5d41,
+    0x4a8e,
+    [0x9c, 0x5a, 0x27, 0x63, 0xd1, 0x0e, 0x84, 0xf2],
+);
+
+/// The kinds of [`PLATFORM_EVENT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum PlatformEvent {
+    /// The last reset was a sync flood's (the FCH's S5 reset status).
+    SyncFloodReset = 1,
+    /// An FCH latched break events (their bits as the register held them).
+    FchBreakEvent = 2,
+    /// An IOHC took a sync flood from its pin.
+    IohcSyncFloodPin = 3,
+    /// An entry of the PSP's S5-domain RAS data with an error (its first
+    /// two data words).
+    S5DomainRas = 4,
+}
+
+/// One [`PLATFORM_EVENT`] error: `severity`, `kind`, where, the register.
+pub fn platform_error(
+    severity: Severity,
+    kind: PlatformEvent,
+    socket: u8,
+    instance: u8,
+    register: u64,
+) -> Vec<Entry> {
+    let mut data = Vec::with_capacity(16);
+    data.extend_from_slice(&(kind as u32).to_le_bytes());
+    data.extend_from_slice(&[socket, instance, 0, 0]);
+    data.extend_from_slice(&register.to_le_bytes());
+    alloc::vec![Entry {
+        section: PLATFORM_EVENT,
+        severity,
+        data,
+        fru_text: None,
+    }]
+}
+
 /// The errors in the ABL's event log of `apob` (every instance), its
 /// DIMMs at `bits`.
 pub fn abl_errors(
@@ -306,11 +459,25 @@ pub fn boot_error_region(
     brand: &[u8; 48],
     capacity: usize,
 ) -> (Vec<u8>, usize) {
+    boot_error_region_with(records, abl, &[], cpuid, brand, capacity)
+}
+
+/// [`boot_error_region`] with the SoC's `platform` errors too (each its
+/// entries, [`platform_error`]).
+pub fn boot_error_region_with(
+    records: &[Record],
+    abl: &[AblError],
+    platform: &[Vec<Entry>],
+    cpuid: [u32; 4],
+    brand: &[u8; 48],
+    capacity: usize,
+) -> (Vec<u8>, usize) {
     let mut errors: Vec<Vec<Entry>> = records
         .iter()
         .flat_map(|record| mca_entries(record, cpuid))
         .map(|entry| alloc::vec![entry])
         .chain(abl.iter().map(|error| abl_entries(error, cpuid[0], brand)))
+        .chain(platform.iter().cloned())
         .collect();
     errors.sort_by_key(|entries| entries.iter().map(|e| rank(e.severity)).min());
     within(errors, capacity)
@@ -874,11 +1041,75 @@ mod tests {
             mcg_cap: 0x120,
             threshold: 10,
             boot_errors: (0x7500_0000, 20),
+            firmware_first: None,
         });
         assert_eq!(&tables[0][..4], b"HEST");
         assert_eq!(tables[0].len(), 40 + 2 * 40 + 8 + 2 * 28 * 32);
         assert_eq!(&tables[1][..4], b"BERT");
         assert_eq!(&tables[1][36..40], &20u32.to_le_bytes());
         assert_eq!(&tables[1][40..48], &0x7500_0000u64.to_le_bytes());
+    }
+
+    /// Firmware-first: the AER sources and the two GHESs after the MCA
+    /// ones, the blocks where `smm::aer` writes; `AERR` and `_L14` with an
+    /// SCI-notified source.
+    #[test]
+    fn firmware_first_sources_in_the_hest() {
+        use crate::smm::aer::{FirmwareFirst, Ghes, notify};
+        let ff = FirmwareFirst {
+            corrected: Ghes {
+                status_address: 0x7600_0000,
+                block: 0x7600_1000,
+                length: 0x1000,
+                notify: notify::SCI,
+                ..Ghes::default()
+            },
+            uncorrected: Ghes {
+                status_address: 0x7600_0008,
+                block: 0x7600_2000,
+                length: 0x1000,
+                notify: notify::NMI,
+                ..Ghes::default()
+            },
+            sci_event: 0x14,
+            ..FirmwareFirst::NONE
+        };
+        let hest = &tables(&Apei {
+            mcg_cap: 0x102,
+            threshold: 10,
+            boot_errors: (0x7500_0000, 20),
+            firmware_first: Some(ff),
+        })[0];
+        assert_eq!(u32::from_le_bytes(hest[36..40].try_into().unwrap()), 7);
+        let mca = 40 + 40 + 2 * 28 + 48 + 2 * 28;
+        let body = &hest[mca..];
+        assert_eq!(body.len(), 0x94 + 2 * 0x40);
+        // Root port AER: firmware-first and global; root error command 0.
+        assert_eq!(&body[..8], &[6, 0, 0, 1, 0, 0, 3, 1]);
+        assert_eq!(&body[0x2c..0x30], &[0; 4]);
+        let corrected = &body[0x94..0xd4];
+        assert_eq!(&corrected[..4], &[9, 0, 0, 2]);
+        assert_eq!(&corrected[0x18..0x20], &0x7600_0000u64.to_le_bytes());
+        assert_eq!(corrected[0x20], 3);
+        assert_eq!(body[0xd4 + 0x20], 4);
+        let aml = firmware_first_aml(&ff);
+        assert!(aml.windows(4).any(|w| w == b"AERR"));
+        assert!(aml.windows(4).any(|w| w == b"_L14"));
+        let polled = FirmwareFirst {
+            corrected: Ghes {
+                notify: notify::POLLED,
+                ..ff.corrected
+            },
+            ..ff
+        };
+        let none = FirmwareFirst {
+            uncorrected: Ghes {
+                notify: notify::POLLED,
+                ..ff.uncorrected
+            },
+            ..polled
+        };
+        assert!(firmware_first_aml(&none).is_empty());
+        assert!(!firmware_first_aml(&ff).is_empty());
     }
 }

@@ -73,9 +73,12 @@ pub(crate) fn acpi(
             }),
             ioapic_features: n.at(IOAPIC_FEATURES_ENABLE.address()),
             iommu: n.iommu_info().map(|info| Iommu {
+                also: None,
                 base: info.base,
                 registers: iommu_registers(&info),
             }),
+            bridges: None,
+            cxl: None,
         })
         .collect();
     let threads_per_core =
@@ -86,7 +89,7 @@ pub(crate) fn acpi(
             (
                 p.domains
                     .iter()
-                    .map(|&socket| acpi::Domain { socket })
+                    .map(|&socket| acpi::Domain::cpu(socket))
                     .collect(),
                 p.memory
                     .iter()
@@ -179,6 +182,8 @@ pub(crate) fn acpi(
             sb_aml: &fch_aml,
             tables: &tables,
             abl: &abl,
+            platform_errors: &[],
+            firmware_first: None,
         },
         ctx.smm.as_ref().map(|smm| &smm.fch),
         facts,

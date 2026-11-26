@@ -107,7 +107,22 @@ pub trait DieSoc: crate::soc::DieInit {
 
 impl<S: DieSoc> crate::flow::Soc for S {
     const TSEG_SIZE: u32 = TSEG_SIZE;
+    const SERVER: bool = <S as DieSoc>::SERVER;
     type Flow = ();
+
+    /// The reset image in the boot flash below 4 GiB, through the BIOS
+    /// directory of the SoC's slot.
+    #[cfg(all(feature = "bundle", target_os = "none"))]
+    fn reset_image(_: &Hw<S>, (): &()) -> Option<&'static [u8]> {
+        // SAFETY: the boot flash below 4 GiB, read only.
+        let flash = unsafe {
+            core::slice::from_raw_parts(
+                S::LAYOUT.flash.base as *const u8,
+                S::LAYOUT.flash.size as usize,
+            )
+        };
+        crate::media::reset_image(flash, S::BIOS_DIRECTORY)
+    }
 
     /// The APOB where the PSP's directory puts it, the e820 with the
     /// firmware's DRAM and TSEG reserved, WB DRAM and WP flash, then the
@@ -116,7 +131,7 @@ impl<S: DieSoc> crate::flow::Soc for S {
     fn map(
         hw: &mut Hw<S>,
         _: &mut S::Config,
-        board: &crate::board::Facts,
+        _: &crate::board::Facts,
         msr: &fstart_arch::x86::cpu::msr::NativeMsr,
         _: fstart_driver_amd::ccx::tsc::Tsc,
     ) -> Result<crate::flow::Mapped<S>, &'static str> {
@@ -196,20 +211,6 @@ impl<S: DieSoc> crate::flow::Soc for S {
         cache::Plan::new(low_top, address_bits, mtrrs)
             .and_then(|plan| cache::install(msr, &plan))
             .map_err(|_| "MTRR setup")?;
-
-        if board.discrete_tpm {
-            // SAFETY: the boot flash below 4 GiB, read only.
-            let flash = unsafe {
-                core::slice::from_raw_parts(
-                    S::LAYOUT.flash.base as *const u8,
-                    S::LAYOUT.flash.size as usize,
-                )
-            };
-            crate::tpm::start(
-                crate::media::reset_image(flash, S::BIOS_DIRECTORY),
-                S::SERVER,
-            )?;
-        }
 
         let ffs = S::LAYOUT.ffs.ok_or("boot media")?;
         fstart_arch::x86::boot::enable_boot_media_rom_cache();

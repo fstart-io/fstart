@@ -35,6 +35,7 @@ pub fn root_bridge(
         // Every die reaches its own NBIO's registers.
         ioapic_features: IOAPIC_FEATURES_ENABLE.address(),
         iommu: iommu.map(|iommu| Iommu {
+            also: None,
             base: iommu.base,
             registers: IommuRegisters {
                 capability: iommu.capability,
@@ -46,6 +47,8 @@ pub fn root_bridge(
                 counter_config: iommu.counter_config,
             },
         }),
+        bridges: None,
+        cxl: None,
     }
 }
 
@@ -112,7 +115,7 @@ pub fn install<S: super::DieSoc>(
         .collect();
     let cpus = cpus(&silicon.cpus.apic_ids, memory.is_some());
     // One socket.
-    let domains: Vec<Domain, MAX_DIES> = dies.iter().map(|_| Domain { socket: 0 }).collect();
+    let domains: Vec<Domain, MAX_DIES> = dies.iter().map(|_| Domain::cpu(0)).collect();
     // SAFETY: the BSP, reading the architectural C-state MSRs; every core
     // runs the BSP's setup.
     let msr = unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() };
@@ -138,6 +141,8 @@ pub fn install<S: super::DieSoc>(
             tables: &silicon.tables,
             // Zeppelin's and Picasso's firmware report none of the ABL's.
             abl: &[],
+            platform_errors: &[],
+            firmware_first: None,
         },
         Some(&S::smi(ctx, &silicon.state)),
         ctx.board,

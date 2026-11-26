@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Measured boot on a discrete TPM, for every SoC
-//! ([`crate::board::Board::DISCRETE_TPM`], `fstart-tcg`).
+//! ([`crate::board::Board::TPM`], `fstart-tcg`), on the bus the board names
+//! and the SoC routed ([`crate::flow::Soc::route_tpm`]).
 //!
 //! The reset image is the static root of trust: the PSP copies it from the
 //! booted flash (BIOS directory entry `0x62`) and releases x86 into it, so
@@ -17,18 +18,34 @@ use fstart_tcg::event::EV_S_CRTM_CONTENTS;
 const LOG_SIZE: usize = 0x1_0000;
 
 static mut TIS: Option<Tis<fstart_arch::x86::Udelay>> = None;
+/// A TPM answered at `FED4_0000h` ([`start`]).
+static PRESENT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// A TPM answered the probe of [`start`]: what the vendors test before the
+/// PSP resets its establishment flag at ReadyToBoot (`byte [FED4_0000h] !=
+/// FFh`, Dell AmdPspDxeV2Wh). `false` without a board TPM or before
+/// [`start`].
+pub fn present() -> bool {
+    PRESENT.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 /// Start measured boot on the TPM, if one answers, and measure the flash
-/// copy of the reset image the PSP loaded, `image`. `server`: the TCG
+/// copy of the reset image the PSP loaded, which `image` finds only once a
+/// TPM answered (reading it can be slow). `server`: the TCG
 /// platform class of the event log.
-pub fn start(image: Option<&'static [u8]>, server: bool) -> Result<(), &'static str> {
-    // SAFETY: the FCH decodes FED4_0xxx to the TPM on LPC (D14F3x7C
-    // Tpm12En, set at reset); nothing else drives it.
+pub fn start(
+    image: impl FnOnce() -> Option<&'static [u8]>,
+    server: bool,
+) -> Result<(), &'static str> {
+    // SAFETY: the FCH decodes FED4_0xxx to the TPM on the board's bus
+    // (LPC: D14F3x7C Tpm12En, set at reset; SPI: routed by the SoC);
+    // nothing else drives it.
     let tis = unsafe { Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
     let Some(id) = tis.probe() else {
         fstart_log::info!("tpm: no TPM at {:#x}", tis::BASE);
         return Ok(());
     };
+    PRESENT.store(true, core::sync::atomic::Ordering::Relaxed);
     if tis.is_crb() {
         fstart_log::warn!("tpm: CRB TPM at {:#x} not supported, left alone", tis::BASE);
         return Ok(());
@@ -62,7 +79,7 @@ pub fn start(image: Option<&'static [u8]>, server: bool) -> Result<(), &'static 
     fstart_tcg::measure_crtm_version(fstart_stage::tcg::CRTM_VERSION);
     // The PSP copied the stage to DRAM, where it already ran and changed its
     // data: the root of trust measures the image where the flash maps it.
-    match image.map(fstart_stage::boot::InPlace::mapped) {
+    match image().map(fstart_stage::boot::InPlace::mapped) {
         Some(image) => {
             let event = fstart_stage::boot::Event {
                 pcr: 0,

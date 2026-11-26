@@ -1,7 +1,9 @@
 //! Forwards the SMM handler image when one
 //! is built, after checking that it fits the TSEG (`host::smm_unit`).
 
-use fstart_smm::{CpuSmmLayout, SMM_IDENTITY_TABLE_SIZE, SmmImageHeader, SmramLayout};
+use fstart_smm::{
+    CpuSmmLayout, SMM_IDENTITY_TABLE_SIZE, SMM_MAPPED_TABLES_MAX, SmmImageHeader, SmramLayout,
+};
 
 /// Save-state bytes per SMBASE window `fstart_arch`'s AMD64 installer
 /// reserves (`cpu::amd::smm::SAVE_STATE_SIZE`; AMD64 uses the top 0x200).
@@ -12,6 +14,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
     println!("cargo:rerun-if-env-changed=FSTART_SMM_TSEG_SIZE");
     println!("cargo:rerun-if-env-changed=FSTART_MP_MAX_CPUS");
+    ras_capacity();
     if let Ok(image) = std::env::var("FSTART_SMM_IMAGE") {
         println!("cargo:rerun-if-changed={image}");
         // A host plan that sets the TSEG size has the image's fit checked.
@@ -23,6 +26,32 @@ fn main() {
         println!("cargo:rustc-env=FSTART_SMM_IMAGE={image}");
         println!("cargo:rustc-cfg=fstart_amd_has_smm_image");
     }
+}
+
+/// The SMM RAS handler's per-CPU tables (`smm::ras`) for the board's CPU
+/// ceiling (`FSTART_MP_MAX_CPUS`, which the host plan sets for the stage
+/// and the SMM image alike), never below what every board had before: 512
+/// CPUs and 8 thresholding blocks each. Only a board with more CPUs (2P
+/// Venice) pays for more SMRAM.
+fn ras_capacity() {
+    const FLOOR: usize = 512;
+    let cpus = std::env::var("FSTART_MP_MAX_CPUS")
+        .ok()
+        .and_then(|cpus| cpus.parse::<usize>().ok())
+        .unwrap_or(FLOOR)
+        .max(FLOOR);
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR set by Cargo"));
+    std::fs::write(
+        out.join("ras_capacity.rs"),
+        format!(
+            "/// Logical CPUs the handler tracks (`build.rs`).\n\
+             const MAX_CPUS: usize = {cpus};\n\
+             /// Thresholding blocks SMM can own (`build.rs`).\n\
+             const BLOCKS: usize = {};\n",
+            8 * cpus
+        ),
+    )
+    .expect("ras_capacity.rs");
 }
 
 fn env<T: std::str::FromStr>(name: &str) -> Result<T, String> {
@@ -59,7 +88,9 @@ fn check_smm_image(path: &str) -> Result<(), String> {
         stack_size: header.stack_size,
         entry_stub_size: stub,
         handler_mem_size: header.handler_mem_size,
-        page_table_size: SMM_IDENTITY_TABLE_SIZE,
+        // With the most tables MMIO above 4 GiB may add (SP7 maps its ECAM
+        // and root bridge windows, `sp7::smm::smm_reach`).
+        page_table_size: SMM_IDENTITY_TABLE_SIZE + SMM_MAPPED_TABLES_MAX,
     };
     let zero = CpuSmmLayout {
         smbase: 0,

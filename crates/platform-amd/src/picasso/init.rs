@@ -386,6 +386,7 @@ impl Init for Picasso {
     fn fabric<'a>(ctx: &Ctx<'_, Self>, state: &'a State) -> Fabric<'a> {
         Fabric {
             segment: Self::pci_segment(ctx.hw),
+            segments: 1,
             bridges: core::slice::from_ref(&state.bridge),
         }
     }

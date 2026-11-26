@@ -7,11 +7,15 @@
 //! Only facts are taken from the vendors' ASL (HIDs, port lists, `_PRT`
 //! values, `_S5` = 5); the structure is fstart's own:
 //!
-//! * one `PNP0A08` per root bridge (die, Rome/Milan NBIO), `_UID` and name
-//!   `PCIn` in bus order (the SP3 donors also number by bus, which is why
-//!   their `_UID`s run opposite to the GSI windows on Rome/Milan);
-//! * `_OSC` grants the OS every control it asks for (OS-first; no CPMRAS
-//!   firmware-first AER);
+//! * one `PNP0A08` per root bridge (die, Rome/Milan NBIO, SP7 IOS), `_UID`
+//!   in bus order and named by it ([`root_bridge_name`]: `PCI0`..`PCI9`,
+//!   then `PC0A`, `PC0B`, ... up to [`MAX_ROOT_BRIDGES`]; the SP3 donors
+//!   also number by bus, which is why their `_UID`s run opposite to the GSI
+//!   windows on Rome/Milan);
+//! * `_OSC` grants the OS every control it asks for (OS-first) or, with
+//!   firmware-first error handling (`Inputs::apei`'s), all but AER and DPC
+//!   (the vendors' `CTRL &= ~0x88`); the Hardware Error Device and its
+//!   GPE method then come with it (`apei::firmware_first_aml`);
 //! * APIC-mode `_PRT` only, from [`super::prt`] and the MADT GSI windows;
 //! * `_PIC(1)` clears `IOAPIC::FEATURES_ENABLE.FCH` on every NBIO through
 //!   that NBIO's own SMN pair (the donor `NAPE` reaches all NBIOs of
@@ -42,16 +46,32 @@ fn name(path: &str, value: &dyn Aml) -> Vec<u8> {
     serialize(&Name::new(Path::new(path), value))
 }
 
-/// Root bridges in bus order, which numbers their `PCIn` names, with their
-/// index in [`Inputs::root_bridges`].
+/// Root bridges in bus order (segment, then bus), which numbers their
+/// `PCIn` names, with their index in [`Inputs::root_bridges`].
 fn ordered<'a>(bridges: &'a [RootBridgeAcpi<'a>]) -> Vec<(usize, &'a RootBridgeAcpi<'a>)> {
     let mut v: Vec<_> = bridges.iter().enumerate().collect();
-    v.sort_unstable_by_key(|(_, r)| *r.root.buses().start());
+    v.sort_unstable_by_key(|(_, r)| (r.root.info().segment, *r.root.buses().start()));
     v
 }
 
+/// The most root bridges a DSDT describes: what one PCI allocator owns.
+pub const MAX_ROOT_BRIDGES: usize = fstart_pci::MAX_PCI_ROOTS;
+
+/// The name of the root bridge with `_UID` `uid`: `PCI0`..`PCI9` as every
+/// board with up to ten has it, `PC0A`..`PCFF` after (two hex digits, which
+/// cannot collide with `PCIn`). `None` past `0xFF`.
+pub fn root_bridge_name(uid: usize) -> Option<[u8; 4]> {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    match uid {
+        0..=9 => Some([b'P', b'C', b'I', b'0' + uid as u8]),
+        10..=0xff => Some([b'P', b'C', HEX[uid >> 4], HEX[uid & 0xf]]),
+        _ => None,
+    }
+}
+
+/// [`root_bridge_name`] of a `uid` [`build`] checked.
 fn pci_name(uid: usize) -> [u8; 4] {
-    [b'P', b'C', b'I', b'0' + uid as u8]
+    root_bridge_name(uid).unwrap_or(*b"PCI0")
 }
 
 fn as_str(n: &[u8; 4]) -> &str {
@@ -92,12 +112,35 @@ pub(super) fn bridge_name(device: u8, function: u8) -> [u8; 4] {
 /// (device 0x14).
 const FCH_INTX_DEVICES: [u8; 2] = [0x00, 0x14];
 
-/// The root bus `_PRT` and one device per bridge with its own.
+/// The root bus `_PRT` and one device per active bridge with its own.
+///
+/// Unset `(0, 0)` bridge entries are omitted; remaining entries must have
+/// valid `(device < 16, function < 8)` coordinates and unique DevFns / AML
+/// `RPxx` names within this root bus.
 fn routing(
     soc: &SocAcpi,
+    bridges: &[prt::Bridge],
     fch_intx_gsi: Option<[u8; 4]>,
     gsi_base: Option<u32>,
 ) -> Result<Vec<u8>, AmlError> {
+    let mut active: Vec<prt::Bridge> = Vec::new();
+    let mut names: Vec<[u8; 4]> = Vec::new();
+    for &b in bridges {
+        if b.device == 0 && b.function == 0 {
+            continue;
+        }
+        if b.device >= 16 || b.function >= 8 {
+            return Err(AmlError::InvalidOperand);
+        }
+        let devfn = (b.device, b.function);
+        let aml_name = bridge_name(b.device, b.function);
+        if active.iter().any(|o| (o.device, o.function) == devfn) || names.contains(&aml_name) {
+            return Err(AmlError::InvalidOperand);
+        }
+        active.push(b);
+        names.push(aml_name);
+    }
+
     let fch = fch_intx_gsi.into_iter().flat_map(|gsi| {
         FCH_INTX_DEVICES.into_iter().flat_map(move |device| {
             (0..4).map(move |pin| (device, pin, gsi[usize::from(pin)].into()))
@@ -105,7 +148,7 @@ fn routing(
     });
     let nbio = gsi_base.into_iter().flat_map(|gsi_base| {
         (soc.root_complex_pin.map(|pin| (0, 0, pin)).into_iter())
-            .chain(prt::root_entries(soc.bridges))
+            .chain(prt::root_entries(&active))
             .map(move |(d, p, pin)| (d, p, gsi_base + u32::from(pin)))
     });
     let mut root = fch.chain(nbio).peekable();
@@ -118,7 +161,7 @@ fn routing(
     let Some(gsi_base) = gsi_base else {
         return Ok(root);
     };
-    soc.bridges.iter().try_fold(root, |mut out, b| {
+    active.iter().try_fold(root, |mut out, b| {
         let at = (b.device, b.function);
         let mut body = [
             name("_ADR", &(u32::from(b.device) << 16 | u32::from(b.function))),
@@ -173,6 +216,14 @@ fn osc() -> Vec<u8> {
         }
     }
     .into()
+}
+
+/// Whether PCIe errors are handled firmware-first.
+fn firmware_first(inputs: &Inputs) -> bool {
+    inputs
+        .apei
+        .and_then(|apei| apei.firmware_first)
+        .is_some_and(|ff| ff.enabled())
 }
 
 /// The LPC bridge (00:14.3): the FCH's ISA devices and the board's.
@@ -231,17 +282,41 @@ fn root_bridge(
 ) -> Result<Vec<u8>, AmlError> {
     let soc = inputs.soc;
     let bus = *rb.root.buses().start();
+    let ids = if rb.cxl.is_some() {
+        fstart_acpi::cedt::host_bridge_ids()
+    } else {
+        [
+            name("_HID", &EISAName::new("PNP0A08")),
+            name("_CID", &EISAName::new("PNP0A03")),
+        ]
+        .concat()
+    };
     let mut body = [
-        name("_HID", &EISAName::new("PNP0A08")),
-        name("_CID", &EISAName::new("PNP0A03")),
+        ids,
         name("_UID", &(uid as u32)),
-        name("_SEG", &0u8),
+        // A byte as before for segment 0; the segment of the root bridge's
+        // buses otherwise (2P_COMPLETE §2.5).
+        match u8::try_from(rb.root.info().segment) {
+            Ok(segment) => name("_SEG", &segment),
+            Err(_) => name("_SEG", &u32::from(rb.root.info().segment)),
+        },
         name("_BBN", &bus),
         rb.domain.map(|d| name("_PXM", &d)).unwrap_or_default(),
         fstart_acpi::pci_root::crs(rb.root),
-        osc(),
+        match (rb.cxl, firmware_first(inputs)) {
+            (Some(cxl), _) => cxl.osc(),
+            (None, true) => {
+                fstart_acpi::osc::pci_host_osc(!fstart_acpi::osc::pci_control::FIRMWARE_FIRST)
+            }
+            (None, false) => osc(),
+        },
         ioapic_acpi::nbio_aml(rb.ioapic_features)?,
-        routing(soc, soc.fch_intx_gsi.filter(|_| rb.fch), gsi_base)?,
+        routing(
+            soc,
+            rb.bridges.unwrap_or(soc.bridges),
+            soc.fch_intx_gsi.filter(|_| rb.fch),
+            gsi_base,
+        )?,
     ]
     .concat();
     if rb.fch {
@@ -250,6 +325,7 @@ fn root_bridge(
     }
     // Next to the bridge: what it decodes itself, which `_CRS` leaves out.
     let mut aml = device_vec(as_str(&pci_name(uid)), &body)?;
+    // `MBR0`..`MBRF`: [`build`] takes at most [`MAX_ROOT_BRIDGES`] (16).
     aml.extend(fstart_acpi::pci_root::motherboard(
         &alloc::format!("MBR{uid:X}"),
         rb.root,
@@ -278,22 +354,22 @@ fn root_objects(soc: &SocAcpi, uids: usize) -> Result<Vec<u8>, AmlError> {
 
 fn processors(inputs: &Inputs) -> Result<Vec<u8>, AmlError> {
     let power = inputs.power.as_ref().map(PowerAml::new);
+    // The MADT's UIDs (`fixed::x86_config` lists the CPUs in this order).
+    let apic_ids: Vec<u32> = inputs.cpus.iter().map(|cpu| cpu.apic_id).collect();
+    let uids = fstart_acpi::platform::x86::processor_uids(&apic_ids);
     inputs
         .cpus
         .iter()
+        .zip(uids)
         .enumerate()
-        .try_fold(Vec::new(), |mut out, (uid, cpu)| {
-            let index = u16::try_from(uid).map_err(|_| AmlError::InvalidOperand)?;
+        .try_fold(Vec::new(), |mut out, (index, (cpu, uid))| {
+            let index = u16::try_from(index).map_err(|_| AmlError::InvalidOperand)?;
             let mut body = power
                 .as_ref()
                 .map(|p| p.for_cpu(cpu.apic_id))
                 .unwrap_or_default();
             body.extend_from_slice(&cpu.aml);
-            out.extend(processor_device(
-                ProcessorName::new(index),
-                uid as u32,
-                &body,
-            )?);
+            out.extend(processor_device(ProcessorName::new(index), uid, &body)?);
             Ok(out)
         })
 }
@@ -301,7 +377,7 @@ fn processors(inputs: &Inputs) -> Result<Vec<u8>, AmlError> {
 /// The DSDT body for `fstart_acpi::platform::assemble*` (inside `\_SB`).
 pub fn build(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError> {
     let bridges = ordered(inputs.root_bridges);
-    if bridges.len() > 10 || inputs.cpus.len() > 0x1000 {
+    if bridges.len() > MAX_ROOT_BRIDGES || inputs.cpus.len() > 0x1000 {
         return Err(AmlError::InvalidOperand);
     }
     let gsi_base = |index| {
@@ -329,6 +405,9 @@ pub fn build(inputs: &Inputs, windows: &[GsiWindow]) -> Result<Vec<u8>, AmlError
         out.extend(root_bridge(inputs, gsi_base(*index), uid, rb, &lpc_aml)?);
     }
     out.extend(fstart_acpi::osc::platform_osc());
+    if let Some(ff) = inputs.apei.and_then(|apei| apei.firmware_first) {
+        out.extend(super::apei::firmware_first_aml(&ff));
+    }
     if let Some(tpm) = inputs.tpm {
         out.extend(tpm.dsdt_aml());
     }

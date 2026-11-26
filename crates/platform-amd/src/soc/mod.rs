@@ -112,19 +112,42 @@ pub fn display_port(
 /// programmed or, on Picasso, the one of the routes its ABL programmed.
 #[derive(Debug, Clone, Copy)]
 pub struct Fabric<'a> {
+    /// The first PCI segment of the ECAM window.
     pub segment: PciRootInfo,
+    /// The segments of the window, 256 MiB each after the first
+    /// ([`fstart_driver_amd::df::root::segment`]); 1 on every SoC but one
+    /// whose bus maps use more (SP7).
+    pub segments: u16,
     pub bridges: &'a [fstart_driver_amd::df::plan::RootBridgePlan],
 }
 
 impl Fabric<'_> {
     /// The root bridges as PCI roots: what the fabric routes to each and
     /// what that is for. The allocator and the tables both take them from
-    /// here.
+    /// here. `None` if one does not describe, or there are more than one
+    /// allocator owns ([`MAX_PCI_ROOTS`]).
     pub fn roots(&self) -> Option<Roots> {
-        (self.bridges.iter())
-            .map(|rb| fstart_driver_amd::df::root::planned(rb, &self.segment))
-            .collect()
+        let mut roots = Roots::new();
+        for rb in self.bridges {
+            let root = fstart_driver_amd::df::root::planned_in(rb, &self.segment, self.segments)?;
+            roots.push(root).ok()?;
+        }
+        Some(roots)
     }
+}
+
+/// Most PCI segments a SoC hands on ([`Init::pci_segments`]).
+pub const MAX_PCI_SEGMENTS: usize = 8;
+
+/// The PCI segments of a SoC's ECAM window.
+pub type Segments = heapless::Vec<PciRootInfo, MAX_PCI_SEGMENTS>;
+
+/// The `count` segments of an ECAM window whose first is `first`
+/// ([`fstart_driver_amd::df::root::segment`]).
+pub fn segments(first: PciRootInfo, count: u16) -> Segments {
+    (0..count.clamp(1, MAX_PCI_SEGMENTS as u16))
+        .filter_map(|s| fstart_driver_amd::df::root::segment(&first, first.segment.checked_add(s)?))
+        .collect()
 }
 
 /// The cold init of a SoC's silicon: the steps a platform's boot flow
@@ -169,8 +192,13 @@ pub trait Init: Sized + 'static {
         clock: Option<Tsc>,
     ) -> Result<Self::Identity, &'static str>;
     /// The PCI segment ECAM decodes: what the allocator, MCFG, the DSDT
-    /// and the payload see.
+    /// and the payload see. The first of [`Init::pci_segments`].
     fn pci_segment(hw: &Self::Hw) -> PciRootInfo;
+    /// Every PCI segment ECAM decodes (MCFG, the payload): the one of
+    /// [`Init::pci_segment`] unless the SoC's window has more.
+    fn pci_segments(hw: &Self::Hw) -> Segments {
+        segments(Self::pci_segment(hw), 1)
+    }
     /// The PSP: its mailbox rules and APOB format.
     fn psp(hw: &Self::Hw) -> psp::Variant;
 
@@ -199,6 +227,11 @@ pub trait Init: Sized + 'static {
     ) -> Result<Self::Cpu, &'static str>;
     /// The threads MP init brings up, the BSP included.
     fn threads(ctx: &Ctx<'_, Self>, chipset: &Self::Chipset) -> Result<u16, &'static str>;
+    /// Whether every CPU runs its LAPIC in x2APIC mode: needed when a
+    /// thread's APIC ID is above 254.
+    fn x2apic(_ctx: &Ctx<'_, Self>, _chipset: &Self::Chipset) -> bool {
+        false
+    }
     /// Release `aps` APs into the reset vector, which the flow routed to
     /// the MP engine. The error is for the MP engine's log.
     fn release_aps(ctx: &Ctx<'_, Self>, chipset: &Self::Chipset, aps: u16) -> Result<(), u32>;

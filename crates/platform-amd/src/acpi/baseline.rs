@@ -11,7 +11,13 @@
 //! (`SRAT`/`SLIT`/`MSCT`), APEI (`BERT`/`HEST`), SP3 `CPPC`/`PCCT`, and
 //! `SocId::Naples` (no current board lists Naples) — are intentionally omitted
 //! from board baselines and covered by unit tests here and in
-//! [`crate::sp3::acpi::tests`].
+//! [`crate::sp3::acpi::tests`]; except Venice's PCI segment and APEI, which
+//! follow the board's SP7 configuration ([`Board::sp7_config`]) as its
+//! stage does: the ECAM window of its MCFG (above 4 GiB on the MD25-CG0)
+//! and, when the AER mechanism in effect is firmware-first
+//! (`sp7::smm::Aer`), the HEST GHESs, Hardware Error Device, `_L14` and
+//! root bridge `_OSC` keeping AER (synthetic block addresses). WDAT, HSMP,
+//! CEDT and HMAT, built from what the stage finds, are not in it.
 
 use alloc::{format, string::String, vec, vec::Vec};
 use fstart_acpi::{
@@ -44,6 +50,7 @@ const BASELINE_TABLE_CAPACITY: usize = 512 * 1024;
 
 /// Representative enabled IOMMU with EFR support so `IVRS` is exercised in host checks.
 const SYNTHETIC_IOMMU: Iommu = Iommu {
+    also: None,
     base: 0xfe60_0000,
     registers: IommuRegisters {
         capability: 1 << 27 | 0x0003_000f,
@@ -55,6 +62,62 @@ const SYNTHETIC_IOMMU: Iommu = Iommu {
         counter_config: 0,
     },
 };
+
+/// A synthetic GHES `n` for [`VENICE_APEI`].
+const fn baseline_ghes(n: u64, notify: u8) -> crate::smm::aer::Ghes {
+    crate::smm::aer::Ghes {
+        status_address: 0x7600_0000 + 8 * n,
+        block: 0x7600_1000 + 0x1000 * n,
+        length: 0x1000,
+        notify,
+        _reserved: [0; 3],
+    }
+}
+
+/// Venice's APEI: the MCA sources and firmware-first PCIe errors as
+/// `sp7::ras::firmware_first` describes them (synthetic addresses; SCI
+/// event 20, `sp7::ras::SCI_EVENT`); [`venice`] drops the firmware-first
+/// part when the AER mechanism in effect is OS-first.
+const VENICE_APEI: acpi::apei::Apei = acpi::apei::Apei {
+    mcg_cap: 0x0100_0016,
+    threshold: 0,
+    boot_errors: (0x7500_0000, 20),
+    firmware_first: Some(crate::smm::aer::FirmwareFirst {
+        corrected: baseline_ghes(0, crate::smm::aer::notify::SCI),
+        uncorrected: baseline_ghes(1, crate::smm::aer::notify::NMI),
+        sci_event: 20,
+        _reserved: [0; 7],
+    }),
+};
+
+/// Venice as `B`'s stage publishes it: its ECAM window and its APEI with
+/// firmware-first PCIe errors if the AER mechanism in effect is (the
+/// policy's, unless the SMM handler cannot reach the ECAM:
+/// `sp7::smm::Aer::decide`).
+fn venice<B: Board>() -> Venice {
+    let config = B::sp7_config();
+    let ecam = config
+        .as_ref()
+        .and_then(|c| c.ecam)
+        .unwrap_or(crate::sp7::DEFAULT_ECAM);
+    venice_of(ecam, &config.map(|c| c.nbio).unwrap_or_default())
+}
+
+/// Venice's ECAM window and APEI.
+type Venice = (fstart_driver_amd::ccx::msr::EcamWindow, acpi::apei::Apei);
+
+/// Venice with the ECAM window `ecam` and the NBIO policy `policy`.
+fn venice_of(
+    ecam: fstart_driver_amd::ccx::msr::EcamWindow,
+    policy: &fstart_driver_amd::nbio::wh::Policy,
+) -> Venice {
+    let aer = crate::sp7::smm::Aer::decide(policy, crate::sp7::smm::smm_reaches(&ecam));
+    let apei = acpi::apei::Apei {
+        firmware_first: VENICE_APEI.firmware_first.filter(|_| aer.firmware_first()),
+        ..VENICE_APEI
+    };
+    (ecam, apei)
+}
 
 /// Representative powered FCH controllers (`FUR0`, `FUR1`, `GPIO`) for SP3 and RS
 /// baselines so board tables such as `DBG2` referencing `\_SB_.FUR1` resolve cleanly.
@@ -96,9 +159,23 @@ pub fn baseline_for_soc<B: Board>(
     board: &acpi::Board,
     base: u64,
 ) -> Result<Vec<u8>, String> {
+    baseline_with::<B>(soc, board, base, venice::<B>())
+}
+
+/// [`baseline_for_soc`] with Venice's ECAM window and APEI.
+fn baseline_with<B: Board>(
+    soc: SocId,
+    board: &acpi::Board,
+    base: u64,
+    (venice_ecam, venice_apei): Venice,
+) -> Result<Vec<u8>, String> {
     let rs_legacy = !board.lpc_aml.is_empty() || board.i8042;
     let genoa_soc = crate::rs::acpi::soc(crate::genoa::Stones::PMBASE, rs_legacy);
     let siena_soc = crate::rs::acpi::soc(crate::siena::Dense::PMBASE, rs_legacy);
+    let venice_soc = crate::sp7::acpi::soc(
+        <crate::venice::Wh as crate::sp7::Variant>::PMBASE,
+        rs_legacy,
+    );
 
     let (soc_acpi, segment, fch_ioapic, nbio_ioapic, acpi_smi, default_fch_aml): (
         &SocAcpi,
@@ -188,10 +265,29 @@ pub fn baseline_for_soc<B: Board>(
             None,
             true,
         ),
+        SocId::Venice => (
+            &venice_soc,
+            PciRootInfo {
+                segment: 0,
+                ecam_base: venice_ecam.base,
+                bus_start: 0,
+                bus_end: 0xff,
+            },
+            crate::sp7::FCH_IOAPIC_ID,
+            crate::sp7::IOAPIC_ID_BASE,
+            None,
+            true,
+        ),
     };
 
     let ecam_size = (u64::from(segment.bus_end) - u64::from(segment.bus_start) + 1) << 20;
-    let mmio_window_base = segment.ecam_base.saturating_sub(0x1000_0000);
+    // Below the ECAM, or where SP7's default ECAM would be when the board's
+    // is above 4 GiB (the window below 4 GiB it leaves to PCI).
+    let mmio_window_base = if segment.ecam_base >= 1 << 32 {
+        crate::sp7::DEFAULT_ECAM.base
+    } else {
+        segment.ecam_base.saturating_sub(0x1000_0000)
+    };
     // Keep the synthetic single-root bus window aligned with the segment MCFG range.
     let root = PciRoot::new(
         segment,
@@ -215,6 +311,8 @@ pub fn baseline_for_soc<B: Board>(
         }),
         ioapic_features: 0,
         iommu: Some(SYNTHETIC_IOMMU),
+        bridges: None,
+        cxl: None,
     }];
 
     let cpu_count = B::MAX_CPUS.clamp(1, 2) as usize;
@@ -233,7 +331,7 @@ pub fn baseline_for_soc<B: Board>(
     };
     sb_aml.extend(B::acpi_soc_sb_aml(soc)?);
 
-    let tpm = B::DISCRETE_TPM.then_some(TpmTisAcpi {
+    let tpm = B::TPM.is_some().then_some(TpmTisAcpi {
         family: TpmFamily::Tpm20,
         server: !matches!(soc, SocId::Picasso),
         log: Some(LogArea {
@@ -258,7 +356,7 @@ pub fn baseline_for_soc<B: Board>(
         ivrs_devices: &[],
         sb_aml: &sb_aml,
         tables: &[],
-        apei: None,
+        apei: matches!(soc, SocId::Venice).then_some(venice_apei),
         board,
     })
     .map_err(|e| format!("AMD ACPI collection ({}): {e:?}", soc.name()))?;
@@ -288,9 +386,10 @@ mod tests {
             SocId::Milan,
             SocId::Genoa,
             SocId::Siena,
+            SocId::Venice,
         ];
         const MAX_CPUS: u16 = 16;
-        const DISCRETE_TPM: bool = true;
+        const TPM: Option<crate::board::TpmBus> = Some(crate::board::TpmBus::Spi);
 
         fn acpi_board() -> acpi::Board {
             acpi::Board::default()
@@ -309,6 +408,59 @@ mod tests {
             let sum: u8 = image.bytes[..20].iter().copied().fold(0, u8::wrapping_add);
             assert_eq!(sum, 0, "RSDP v1 checksum for {}", soc.name());
         }
+    }
+
+    /// The table with `signature` in a baseline image.
+    fn table<'a>(image: &'a [u8], signature: &[u8; 4]) -> Option<&'a [u8]> {
+        let at = image.windows(4).position(|w| w == signature)?;
+        let length = u32::from_le_bytes(image[at + 4..at + 8].try_into().unwrap()) as usize;
+        image.get(at..at + length)
+    }
+
+    /// The MD25-CG0's ECAM above 4 GiB: its MCFG names it, and the SMM
+    /// handler reaches it, so the tables are firmware-first (HEST GHESs,
+    /// the `AERR` Hardware Error Device). An ECAM the handler cannot map
+    /// makes them OS-first.
+    #[test]
+    fn venice_follows_the_boards_ecam_and_aer_in_effect() {
+        use fstart_driver_amd::ccx::msr::EcamWindow;
+        let policy = fstart_driver_amd::nbio::wh::Policy::default();
+        let venice = |base| {
+            let ecam = EcamWindow::new(base, 1).unwrap();
+            let board = acpi::Board::default();
+            baseline_with::<AllSocsBoard>(
+                SocId::Venice,
+                &board,
+                TEST_BASE,
+                venice_of(ecam, &policy),
+            )
+            .unwrap()
+        };
+        let image = &venice(0x2ffc_8000_0000);
+        let mcfg = table(image, b"MCFG").unwrap();
+        assert_eq!(
+            u64::from_le_bytes(mcfg[44..52].try_into().unwrap()),
+            0x2ffc_8000_0000
+        );
+        let hest = table(image, b"HEST").unwrap();
+        // HEST entries after its 40-byte header: GHES (9) and GHESv2 (10).
+        assert!(hest.len() > 40);
+        assert!(
+            table(image, b"DSDT")
+                .unwrap()
+                .windows(4)
+                .any(|w| w == b"AERR")
+        );
+
+        let image = &venice(1 << 48);
+        assert!(
+            !table(image, b"DSDT")
+                .unwrap()
+                .windows(4)
+                .any(|w| w == b"AERR")
+        );
+        let os_first = table(image, b"HEST").map_or(0, <[u8]>::len);
+        assert!(os_first < hest.len(), "no GHES without the handler");
     }
 
     #[test]

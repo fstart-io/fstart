@@ -3,7 +3,7 @@
 //! it and SMM locked, then the SoC's SMI sources enabled
 //! ([`fstart_arch::x86::cpu::amd::smm::SmiControl`]).
 use fstart_arch::x86::{
-    cpu::amd::smm::{AmdSmm, InstalledTseg},
+    cpu::amd::smm::{AmdSmm, InstalledTseg, SetupBits},
     mp::MpHandle,
 };
 
@@ -23,11 +23,25 @@ pub fn install(
     base: u64,
     size: u32,
 ) -> Result<InstalledTseg, &'static str> {
+    install_with(name, mp, smi, base, size, None)
+}
+
+/// [`install`], the CPUs holding `setup` set while they program TSEG
+/// (`fstart_arch::x86::cpu::amd::smm::AmdSmm::with_setup_bits`).
+pub fn install_with(
+    name: &'static str,
+    mp: &MpHandle,
+    smi: &impl fstart_arch::x86::cpu::amd::smm::SmiControl,
+    base: u64,
+    size: u32,
+    setup: Option<SetupBits>,
+) -> Result<InstalledTseg, &'static str> {
     IMAGE
         .ok_or("no SMM image")
         .and_then(|image| {
             crate::tpm::measure_smm(image);
             AmdSmm::new(name, smi)
+                .with_setup_bits(setup)
                 .install(mp, image, base, size)
                 .map_err(|error| error.name())
         })

@@ -21,6 +21,7 @@ pub fn host<V: Variant>(max_cpus: u16) -> Host {
         image: crate::host::Image::Single(single::Image {
             soc: V::NAME,
             bios_directory: BiosDirectorySlot::Family19h,
+            flash_size: None,
             apob_destination: V::APOB.base,
             source: single::Source {
                 reset_offset: Some((layout.flash.size - layout.image.size) as u32),

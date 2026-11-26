@@ -12,10 +12,11 @@ use fstart_acpi_macros::acpi_dsl;
 use super::dsdt::bridge_name;
 
 /// Attach a ROM to the actual display function under the root bridge
-/// `PCI{root}`. The bridges of a root bus already have their `RPdf` nodes
-/// (and `_PRT`); do not duplicate them. Further bridge/function nodes use
-/// their real slot/function `_ADR`, never a hard-coded GPU bus number. The
-/// ROM method itself is platform-independent.
+/// with `_UID` `root` ([`super::dsdt::root_bridge_name`]). The bridges of a
+/// root bus already have their `RPdf` nodes (and `_PRT`); do not duplicate
+/// them. Further bridge/function nodes use their real slot/function `_ADR`,
+/// never a hard-coded GPU bus number. The ROM method itself is
+/// platform-independent.
 pub fn video_rom_aml(
     root: u8,
     path: &[fstart_pci::PciAddress],
@@ -24,12 +25,14 @@ pub fn video_rom_aml(
     if path.is_empty() {
         return Err(AmlError::InvalidPath);
     }
+    let name = super::dsdt::root_bridge_name(usize::from(root)).ok_or(AmlError::InvalidPath)?;
+    let name = core::str::from_utf8(&name).map_err(|_| AmlError::InvalidPath)?;
     let mut body = fstart_acpi::video::rom_aml(rom)?;
     for (index, address) in path.iter().enumerate().rev() {
         if index == 0 && path.len() > 1 {
             let bridge = bridge_name(address.device(), address.function());
             let bridge = core::str::from_utf8(&bridge).map_err(|_| AmlError::InvalidPath)?;
-            return scope_vec(&format!(r"\_SB.PCI{root}.{bridge}"), &body);
+            return scope_vec(&format!(r"\_SB.{name}.{bridge}"), &body);
         }
         let devfn = fstart_pci::devfn(address.device(), address.function());
         let adr = u32::from(address.device()) << 16 | u32::from(address.function());
@@ -38,5 +41,5 @@ pub fn video_rom_aml(
         content.extend(body);
         body = device_vec(&format!("D{devfn:03X}"), &content)?;
     }
-    scope_vec(&format!(r"\_SB.PCI{root}"), &body)
+    scope_vec(&format!(r"\_SB.{name}"), &body)
 }

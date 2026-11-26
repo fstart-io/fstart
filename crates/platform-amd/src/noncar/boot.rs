@@ -2,7 +2,9 @@
 //! The payload's page tables: the reset entry maps the first 512 GiB only.
 use fstart_core::services::{ServiceError, memory_detect::E820State};
 
-/// Identity map the memory map and assigned PCI BARs before the payload.
+/// Identity map the memory map, assigned PCI BARs and the ECAM of every
+/// root bridge's segment (which may be above 4 GiB, SP7) before the
+/// payload.
 pub fn map_ram(e820: &E820State, pci: &fstart_pci::PciEcam) -> Result<(), ServiceError> {
     let spans = e820
         .entries()
@@ -11,7 +13,11 @@ pub fn map_ram(e820: &E820State, pci: &fstart_pci::PciEcam) -> Result<(), Servic
         .chain(
             pci.assigned_memory_windows()
                 .map(|window| (window.base, window.size)),
-        );
+        )
+        .chain(pci.roots().iter().map(|root| {
+            let info = root.info();
+            (info.ecam_base, (u64::from(info.bus_end) + 1) << 20)
+        }));
     // SAFETY: BSP only, before the payload; the tables come from the heap in
     // the reserved early region.
     let tables = unsafe { fstart_arch::x86::boot::paging::IdentityTables::build(spans)? };

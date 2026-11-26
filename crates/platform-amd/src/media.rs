@@ -8,6 +8,24 @@ use alloc::vec::Vec;
 use fstart_core::services::memory_detect::{E820Entry, E820Kind};
 use fstart_stage::boot::{Codec, MemoryPolicy, MemoryWindow};
 
+/// Physical memory the identity map covers, read byte-wise: the flash
+/// windows (ROM2, ROM3) and read-only device memory, for
+/// [`fstart_driver_amd::fch::rom3::FlashMap`]'s probes.
+pub fn read_phys(address: u64, buf: &mut [u8]) {
+    buf.iter_mut().zip(address..).for_each(|(b, a)| {
+        // SAFETY: callers pass flash windows, read-only device memory or the
+        // reset image's own data, all identity-mapped by its page tables.
+        *b = unsafe { fstart_core::mmio::read8(a as *const u8) }
+    });
+}
+
+/// `len` bytes of flash windows at `address` as a slice.
+pub fn flash_slice(address: u64, len: u32) -> &'static [u8] {
+    // SAFETY: a ROM2/ROM3 range `FlashMap::address` vouched for; nothing
+    // writes flash during boot.
+    unsafe { core::slice::from_raw_parts(address as *const u8, len as usize) }
+}
+
 /// The flash copy of the reset image the PSP loaded (BIOS directory entry
 /// 0x62) in `flash`, the boot ROM's view of the booted 16 MiB, found
 /// through the BIOS directory of `slot`.

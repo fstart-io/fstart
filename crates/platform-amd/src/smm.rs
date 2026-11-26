@@ -196,7 +196,8 @@ pub mod status {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmmConfig<S = ()> {
     pub fch: smi::Config,
-    /// ECAM base for the handler's config accesses (SMN on bus 0).
+    /// ECAM base for the handler's config accesses (SMN on bus 0); 0 for
+    /// CF8/CFC when the window is not below 4 GiB ([`Ecam`]).
     pub ecam_base: u64,
     /// Sleep-state notification to the BMC, if the board has one.
     pub bmc: Option<SleepNotify>,
@@ -237,8 +238,9 @@ pub use fstart_smm::SmmContext;
 #[cfg(feature = "bundle-smm")]
 pub use fstart_smm::smm_bin;
 #[cfg(feature = "smm")]
-pub use handler::{Ecam, SmmFch, handle, handle_with, with, with_fch};
+pub use handler::{Ecam, SmmFch, handle, handle_with, with, with_fch, with_fch_in};
 
+pub mod aer;
 #[cfg(feature = "smm")]
 pub(crate) mod psp;
 pub mod ras;
@@ -264,17 +266,46 @@ mod handler {
     /// installer's base on every SMI) without `GlobalEcam`'s panic on an
     /// unmapped register, which the SMM image builder rejects. Such an
     /// access reads all ones and drops the write, like a master abort.
+    ///
+    /// Without an ECAM base (0: the SoC's window is above the 4 GiB the
+    /// handler maps, SP7) segment 0's standard headers go through CF8/CFC
+    /// ([`with_fch`] keeps the interrupted code's selector).
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Ecam;
 
+    /// The CF8 dword selector of `offset` in `address`, if CF8 is the way
+    /// there (no ECAM, segment 0, a dword of the first 256 bytes).
+    fn legacy(address: PciAddress, offset: u16) -> Option<(u8, u8, u8, u8)> {
+        (fstart_pci::ecam::base() == 0
+            && address.segment() == 0
+            && offset < 0x100
+            && offset & 3 == 0)
+            .then(|| {
+                (
+                    address.bus(),
+                    address.device(),
+                    address.function(),
+                    offset as u8,
+                )
+            })
+    }
+
     impl ConfigRegionAccess for Ecam {
         unsafe fn read(&self, address: PciAddress, offset: u16) -> u32 {
+            if let Some((bus, device, function, offset)) = legacy(address, offset) {
+                // SAFETY: SMM owns the CPU and the CF8 selector (saved).
+                return unsafe { fstart_pci::cf8::read32(bus, device, function, offset) };
+            }
             EcamDevice::new_address(address)
                 .try_read32(offset)
                 .unwrap_or(u32::MAX)
         }
 
         unsafe fn write(&self, address: PciAddress, offset: u16, value: u32) {
+            if let Some((bus, device, function, offset)) = legacy(address, offset) {
+                // SAFETY: as for `read`.
+                return unsafe { fstart_pci::cf8::write32(bus, device, function, offset, value) };
+            }
             let _ = EcamDevice::new_address(address).try_write32(offset, value);
         }
     }
@@ -301,7 +332,14 @@ mod handler {
     /// the SMN index of bus 0 saved around `f`.
     #[inline(always)]
     pub fn with_fch<R>(ecam_base: u64, f: impl FnOnce(&SmmFch) -> R) -> R {
-        fstart_pci::ecam::init(ecam_base as usize);
+        with_fch_in(ecam_base, 1, f)
+    }
+
+    /// [`with_fch`] with an ECAM window of `segments` PCI segments at
+    /// `ecam_base` (SP7's 2P bus maps), each of them reached.
+    #[inline(always)]
+    pub fn with_fch_in<R>(ecam_base: u64, segments: u16, f: impl FnOnce(&SmmFch) -> R) -> R {
+        fstart_pci::ecam::init_segments(ecam_base as usize, segments);
         // SAFETY: ring 0 in SMM; the P-state MSRs.
         let timer = Tsc::native(&unsafe { fstart_arch::x86::cpu::msr::NativeMsr::new() });
         // SAFETY: SMM owns the CPU; the FCH ACPI-MMIO block, MMIO and ports
@@ -316,12 +354,20 @@ mod handler {
                 timer,
             }
         };
+        // SAFETY: SMM owns the CPU; the interrupted code's CF8 selector is
+        // restored below.
+        let selector = (ecam_base == 0)
+            .then(|| unsafe { fstart_core::pio::inl(fstart_pci::cf8::ADDRESS_PORT) });
         let host = PciAddress::default();
         // SAFETY: SMM owns the CPU; the index is restored below.
         let saved = unsafe { Ecam.read(host, fstart_driver_amd::smn::SMN_INDEX) };
         let result = f(&fch);
         // SAFETY: as above.
         unsafe { Ecam.write(host, fstart_driver_amd::smn::SMN_INDEX, saved) };
+        if let Some(selector) = selector {
+            // SAFETY: as above.
+            unsafe { fstart_core::pio::outl(fstart_pci::cf8::ADDRESS_PORT, selector) };
+        }
         result
     }
 

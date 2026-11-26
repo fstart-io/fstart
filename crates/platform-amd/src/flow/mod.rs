@@ -79,8 +79,26 @@ pub struct Mapped<S: Soc> {
 pub trait Soc: Init {
     /// TSEG size.
     const TSEG_SIZE: u32;
+    /// The TCG platform class of the event log: server, or client.
+    const SERVER: bool = true;
     /// What the SoC's services here keep between the phases.
     type Flow;
+
+    #[cfg(all(feature = "bundle", target_os = "none"))]
+    /// Route the board's discrete TPM on `bus` before measured boot probes
+    /// it: `false` if the SoC cannot, and the TPM stays hidden. An LPC/eSPI
+    /// TPM is decoded at reset; a SoC with an SPI TPM chip select routes it.
+    fn route_tpm(_hw: &Self::Hw, bus: crate::board::TpmBus) -> bool {
+        bus == crate::board::TpmBus::Lpc
+    }
+
+    #[cfg(all(feature = "bundle", target_os = "none"))]
+    /// The flash copy of the reset image the PSP loaded (BIOS directory
+    /// entry `0x62`), as the CPU sees the flash after [`Soc::map`]: the
+    /// static root of trust measures it ([`crate::tpm::start`]). Every SoC
+    /// answers; `None` if the flash does not show it, which the flow
+    /// records as a measurement error.
+    fn reset_image(hw: &Self::Hw, flow: &Self::Flow) -> Option<&'static [u8]>;
 
     #[cfg(all(feature = "bundle", target_os = "none"))]
     /// With the console: the APOB, the memory map with TSEG, the cache
@@ -144,6 +162,16 @@ pub trait Soc: Init {
         acpi: crate::acpi::Board,
     ) -> Tables;
     #[cfg(all(feature = "bundle", target_os = "none"))]
+    /// RAM of the memory map the OS must not take as RAM after all, known
+    /// only once the tables are built (memory nothing decodes, or the CPUs
+    /// do not cache): the flow makes it soft-reserved before the payload.
+    fn not_ram(
+        _ctx: &Ctx<'_, Self>,
+        _state: &Self::State,
+    ) -> alloc::vec::Vec<core::ops::Range<u64>> {
+        alloc::vec::Vec::new()
+    }
+    #[cfg(all(feature = "bundle", target_os = "none"))]
     /// Page tables for what the payload reaches beyond the reset entry's
     /// identity map.
     fn map_payload_ram(
@@ -157,6 +185,11 @@ pub trait Soc: Init {
     #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
     fn peripherals(_ctx: &Ctx<'_, Self>, _config: &Self::Config) -> Peripherals {
         Peripherals::new()
+    }
+    /// The SoC's resets for the payload's reset service (UEFI
+    /// `ResetSystem`), when they are not CF9h's.
+    fn system_reset() -> Option<fstart_core::description::SystemReset> {
+        None
     }
     /// Start the payload with `handoff`.
     #[cfg(all(feature = "bundle", target_os = "none"))]

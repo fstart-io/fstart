@@ -162,14 +162,18 @@ impl crate::flow::Soc for Naples {
     const TSEG_SIZE: u32 = crate::sp3::smm::TSEG_SIZE as u32;
     type Flow = sp3::Flow;
 
+    fn reset_image(hw: &sp3::Hw, flow: &sp3::Flow) -> Option<&'static [u8]> {
+        sp3::reset_image(hw, flow)
+    }
+
     fn map(
         hw: &mut sp3::Hw,
         config: &mut sp3::Config,
-        board: &crate::board::Facts,
+        _: &crate::board::Facts,
         msr: &NativeMsr,
         _: Tsc,
     ) -> Result<Mapped<Self>, &'static str> {
-        sp3::map(hw, config, board, msr)
+        sp3::map(hw, config, msr)
     }
 
     /// EINJ's scratch pages, selected with the live routing map.

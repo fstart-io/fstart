@@ -144,12 +144,15 @@ fn root_bridges(s: &System) -> Vec<RootBridgeAcpi<'static>> {
                 }),
                 ioapic_features: 0x1430_0000 + (u32::from(bridge.index) << 20),
                 iommu: Some(Iommu {
+                    also: None,
                     base: 0xB000_0000 + (u64::from(n) << 19),
                     registers: IommuRegisters {
                         capability: 1 << 27,
                         ..Default::default()
                     },
                 }),
+                bridges: None,
+                cxl: None,
             }
         })
         .collect()
@@ -374,7 +377,7 @@ fn srat_slit_only_with_several_domains() {
     let g = Generation::Rome;
     let mut s = system(g, 2, 64);
     s.cpus.iter_mut().for_each(|c| c.domain = c.apic_id >> 7);
-    let domains = [Domain { socket: 0 }, Domain { socket: 1 }];
+    let domains = [Domain::cpu(0), Domain::cpu(1)];
     let memory = [
         MemoryAffinity {
             base: 0,
@@ -551,7 +554,7 @@ fn tables_are_pinned() {
             rb.iter_mut()
                 .zip(&s.bridges)
                 .for_each(|(rb, bridge)| rb.domain = Some(bridge.socket.into()));
-            let domains = [Domain { socket: 0 }, Domain { socket: 1 }];
+            let domains = [Domain::cpu(0), Domain::cpu(1)];
             let memory = [
                 MemoryAffinity {
                     base: 0,
@@ -698,7 +701,7 @@ fn memory_covers_both_sockets_without_replicated_ranges() {
 #[test]
 fn one_domain_emits_nothing() {
     let one = Numa {
-        domains: &[Domain { socket: 0 }],
+        domains: &[Domain::cpu(0)],
         memory: &[],
         phys_addr_bits: 48,
     };
@@ -707,7 +710,7 @@ fn one_domain_emits_nothing() {
 
 #[test]
 fn nps4_on_two_sockets() {
-    let domains: Vec<Domain> = (0..8).map(|d| Domain { socket: d / 4 }).collect();
+    let domains: Vec<Domain> = (0..8).map(|d| Domain::cpu(d / 4)).collect();
     let memory = [
         MemoryAffinity {
             base: 0,
@@ -738,11 +741,7 @@ fn nps4_on_two_sockets() {
 
 #[test]
 fn naples_die_distances() {
-    let (a, b, c) = (
-        Domain { socket: 0 },
-        Domain { socket: 0 },
-        Domain { socket: 1 },
-    );
+    let (a, b, c) = (Domain::cpu(0), Domain::cpu(0), Domain::cpu(1));
     assert_eq!(numa::distance(of(Generation::Naples), a, b), 16);
     assert_eq!(numa::distance(of(Generation::Naples), a, c), 32);
     assert_eq!(numa::distance(of(Generation::Rome), a, b), 12);

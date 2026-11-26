@@ -135,6 +135,8 @@ mod tests {
             }),
             ioapic_features: 0,
             iommu: None,
+            bridges: None,
+            cxl: None,
         };
         // NBIO3 (bus 0, the FCH NBIO) has ID 0xF4 on the SP3 donors: GSI
         // 120. A root bridge without an IOAPIC has no window.

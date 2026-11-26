@@ -139,6 +139,12 @@ pub struct Bucket {
 }
 
 impl Bucket {
+    /// Empty.
+    pub const EMPTY: Self = Self {
+        level: 0,
+        last_us: 0,
+    };
+
     /// Count an SMI at `now_us`, after leaking one per `window_ms / smis`
     /// since the bucket last leaked: whole SMIs, the rest of the time
     /// carried over to the next hit, so arrivals closer than that still
@@ -203,6 +209,9 @@ pub enum Event<'a> {
     AblEvent(&'a AblError, u8, u8),
     /// The one benign transport check the diagnostic ABI requests.
     Probe,
+    /// A PCIe or CXL error the firmware-first handler recorded
+    /// (`smm::aer`).
+    Pcie(&'a crate::smm::aer::PcieEvent),
 }
 
 /// A board without a BMC to report to.
@@ -305,6 +314,17 @@ pub fn sel(event: &Event<'_>) -> SelRecord {
         // Entry added to auxiliary log, OEM data 'FS': a transport
         // check, never a manufactured machine-check record.
         Event::Probe => return self::event(0x12, [0xa3, b'F', b'S']),
+        // Critical interrupt: bus correctable (07h), uncorrectable (08h)
+        // or fatal (0Ah) error; OEM data: the bus and the device/function.
+        Event::Pcie(error) => {
+            use fstart_acpi::cper::Severity;
+            let offset = match error.severity {
+                Severity::Corrected | Severity::Informational => 0x07,
+                Severity::Recoverable => 0x08,
+                Severity::Fatal => 0x0a,
+            };
+            return self::event(0x13, [0xa0 | offset, error.bus, error.devfn]);
+        }
     };
     let (sensor, offset) = match (record.memory(), record.uncorrected()) {
         (true, true) => (0x0c, 0x01),
@@ -342,6 +362,8 @@ pub use handler::{
     DELIVERY_US, DIAG_COMMAND, DIAG_REQUEST, HOLD_US, MCE_SMI_COMMAND, RETRY_MS, RETRY_SMIS,
     SEL_PER_BOOT, SEL_PER_SMI, enter, own,
 };
+#[cfg(feature = "smm")]
+pub(crate) use handler::{POLL_REQUEST, TryLock};
 
 #[cfg(feature = "smm")]
 mod handler {
@@ -362,9 +384,14 @@ mod handler {
 
     use super::{Bucket, Delivery, Event, Policy};
 
-    /// Logical CPUs the handler tracks: two Genoa sockets of 96 cores and
-    /// two threads fit. Indices beyond stay OS-first, never armed.
-    const MAX_CPUS: usize = 512;
+    // `MAX_CPUS`, the logical CPUs the handler tracks, and `BLOCKS`, the
+    // thresholding blocks SMM can own: the board's CPU ceiling
+    // (`FSTART_MP_MAX_CPUS`), at least 512 CPUs (two 96-core Genoa
+    // sockets with SMT) and 8 blocks per CPU (every thread's core banks,
+    // every L3 slice and socket bank), so only a board with more CPUs (2P
+    // Venice: 1024) grows them (`build.rs`). A CPU or block beyond stays
+    // OS-first, never armed.
+    include!(concat!(env!("OUT_DIR"), "/ras_capacity.rs"));
     const RECORDS: usize = 64;
     /// Events sent to the BMC per boot.
     pub const SEL_PER_BOOT: u32 = 16;
@@ -379,9 +406,6 @@ mod handler {
     /// Periodic SMIs a waiting report gets, from its record or the last
     /// event that went out ([`Retry`]).
     pub const RETRY_SMIS: u32 = 16;
-    /// Thresholding blocks SMM can own: every thread's core banks, every
-    /// L3 slice and socket bank of two 96-core sockets.
-    const BLOCKS: usize = 4096;
     /// How long the rendezvous owner waits for every CPU to be in SMM, its
     /// local work done (EDK2 waits up to its PcdCpuSmmApSyncTimeout). A CPU
     /// that never comes (wait-for-SIPI) makes it give up each time: the
@@ -452,9 +476,13 @@ mod handler {
     static HOLD_LONGEST_US: AtomicU32 = AtomicU32::new(0);
     static HOLD_TOTAL: AtomicU32 = AtomicU32::new(0);
 
+    /// Another handler (the firmware-first AER storm, `sp7::smm`) wants
+    /// the periodic SMI the storm clock runs ([`clock`]) to poll.
+    pub(crate) static POLL_REQUEST: AtomicBool = AtomicBool::new(false);
+
     /// A value one CPU at a time works on; a CPU that finds it taken goes
     /// on without it (it never spins: a sibling may wait in a #MC).
-    struct TryLock<T> {
+    pub(crate) struct TryLock<T> {
         locked: AtomicBool,
         value: UnsafeCell<T>,
     }
@@ -464,14 +492,14 @@ mod handler {
     unsafe impl<T: Send> Sync for TryLock<T> {}
 
     impl<T> TryLock<T> {
-        const fn new(value: T) -> Self {
+        pub(crate) const fn new(value: T) -> Self {
             Self {
                 locked: AtomicBool::new(false),
                 value: UnsafeCell::new(value),
             }
         }
 
-        fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        pub(crate) fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
             if self
                 .locked
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -1157,7 +1185,8 @@ mod handler {
         // switches on the next SMI. That every CPU was held proves only
         // that its local work ended, not that it switched.
         // Reports alone retry at their own period.
-        let polls = STORM.load(Ordering::Acquire) || lagging();
+        let polls =
+            STORM.load(Ordering::Acquire) || lagging() || POLL_REQUEST.load(Ordering::Acquire);
         let wanted = polls || reports;
         let period = if polls {
             policy.storm.poll_ms
@@ -1789,6 +1818,28 @@ mod handler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PCIe error is a critical interrupt event: bus correctable,
+    /// uncorrectable or fatal, with its bus and device/function.
+    #[test]
+    fn a_pcie_error_for_the_sel() {
+        use crate::smm::aer::PcieEvent;
+        use fstart_acpi::cper::Severity;
+        use zerocopy::IntoBytes;
+        let error = |severity| PcieEvent {
+            segment: 0,
+            bus: 0x41,
+            devfn: 0x08,
+            severity,
+        };
+        let bytes = |severity| sel(&Event::Pcie(&error(severity))).as_bytes()[10..].to_vec();
+        assert_eq!(
+            bytes(Severity::Corrected),
+            [0x13, 0xff, 0x6f, 0xa7, 0x41, 0x08]
+        );
+        assert_eq!(bytes(Severity::Recoverable)[3], 0xa8);
+        assert_eq!(bytes(Severity::Fatal)[3], 0xaa);
+    }
 
     #[test]
     fn the_bucket_takes_the_vendors_five_smis_per_second() {

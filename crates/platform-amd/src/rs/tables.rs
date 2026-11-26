@@ -52,6 +52,7 @@ pub fn acpi<V: Variant>(
                 }),
                 ioapic_features: IOAPIC_FEATURES_ENABLE.address() + (u32::from(rb.index) << 20),
                 iommu: bars.iommu.map(|iommu| Iommu {
+                    also: None,
                     base: iommu.base,
                     registers: IommuRegisters {
                         capability: iommu.capability,
@@ -63,6 +64,8 @@ pub fn acpi<V: Variant>(
                         counter_config: iommu.counter_config,
                     },
                 }),
+                bridges: None,
+                cxl: None,
             }
         })
         .collect();
@@ -81,7 +84,7 @@ pub fn acpi<V: Variant>(
     cpus.sort_unstable_by_key(|cpu| (cpu.apic_id & 1, cpu.apic_id));
     let domains = numa
         .as_ref()
-        .map(|numa| alloc::vec![crate::acpi::Domain { socket: 0 }; numa.domains]);
+        .map(|numa| alloc::vec![crate::acpi::Domain::cpu(0); numa.domains]);
     let memory: alloc::vec::Vec<_> = numa
         .iter()
         .flat_map(|numa| &numa.memory)
@@ -124,6 +127,8 @@ pub fn acpi<V: Variant>(
             sb_aml: &sb_aml,
             tables: &silicon.tables,
             abl: &abl,
+            platform_errors: &[],
+            firmware_first: None,
         },
         // Direct ACPI mode: no SMI command port.
         None,

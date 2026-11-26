@@ -220,6 +220,7 @@ impl Init for Zeppelin {
     fn fabric<'a>(ctx: &Ctx<'_, Self>, up: &'a Up) -> Fabric<'a> {
         Fabric {
             segment: Self::pci_segment(ctx.hw),
+            segments: 1,
             bridges: &up.silicon.bridges,
         }
     }

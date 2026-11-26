@@ -47,14 +47,17 @@ impl fstart_platform_amd::board::Board for Board {
 /// behind its AST1150 bridge (lane 134).
 const REQUIRED: [Soldered; 3] = [
     Soldered {
+        socket: 0,
         lane: mpio::LAN[0],
         behind: Behind::Device,
     },
     Soldered {
+        socket: 0,
         lane: mpio::LAN[1],
         behind: Behind::Device,
     },
     Soldered {
+        socket: 0,
         lane: mpio::BMC_VGA.0,
         behind: Behind::BridgedDisplay,
     },

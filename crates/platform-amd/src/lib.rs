@@ -34,6 +34,8 @@ pub mod host;
 pub mod iod;
 /// The reset image's DRAM layout and boot flash, for every SoC.
 pub mod layout;
+/// The devices a board soldered behind its ports, for the SoCs with MPIO.
+pub mod links;
 /// The boot media mount every AMD flow shares.
 #[cfg(feature = "media")]
 pub mod media;
@@ -44,6 +46,9 @@ pub mod milan;
 pub mod mp;
 pub mod naples;
 pub mod noncar;
+/// The non-PCI MMIO of a root bridge (NBIO BARs, CXL RCRBs), for the SoCs
+/// that place it.
+pub mod nonpci;
 /// The user's option overrides, for every SoC.
 pub mod options;
 pub mod picasso;
@@ -60,12 +65,15 @@ pub mod smm;
 pub mod soc;
 /// The SP3 socket: Naples, Rome and Milan.
 pub mod sp3;
+/// The SP7 socket: Venice (WH I/O die + Qilian FCH).
+pub mod sp7;
 /// Measured boot on a discrete TPM, for every SoC.
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod tpm;
 /// The SMM handler's installation in TSEG, for every SoC.
 #[cfg(all(feature = "bundle", target_os = "none"))]
 pub mod tseg;
+pub mod venice;
 pub mod zeppelin;
 #[cfg(feature = "bundle")]
 #[doc(hidden)]

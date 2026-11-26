@@ -22,9 +22,8 @@
 //! | 13 | CPU identity |
 //! | 14 | APOB |
 //! | 15 | memory map, MTRRs |
-//! | 16 | TPM: measured boot starts (`Board::DISCRETE_TPM`) |
 //! | 48 | boot media (the FFS, with the microcode MP loads) |
-//! | 32 | the memory map is done (the flow's) |
+//! | 32 | the memory map is done; measured boot starts (`Board::TPM`, the flow's) |
 //! | 20/21 | DF plan + maps / DF init |
 //! | 30/31/32 | NBIO / SMU / FCH secondaries and USB; board pads and GPIO |
 //! | 38 | DXIO |
@@ -120,6 +119,8 @@ pub struct Flow {
     tseg: Region,
     /// The size of the flash part.
     rom_size: u32,
+    /// The booted half, for the reset image the TPM measures.
+    efs: &'static [u8],
 }
 
 /// CPUID → revision: the generation picks the silicon steps. An unknown
@@ -263,6 +264,7 @@ impl<F> State<F> {
     pub fn fabric(&self) -> crate::soc::Fabric<'_> {
         crate::soc::Fabric {
             segment: self.soc.pci_root,
+            segments: 1,
             bridges: &self.soc.plan.root_bridges,
         }
     }
@@ -295,13 +297,17 @@ impl<F> State<F> {
     }
 }
 
+/// The reset image the PSP loaded, from the booted half's BIOS directory.
+pub(crate) fn reset_image(hw: &Hw, flow: &Flow) -> Option<&'static [u8]> {
+    parts::reset_image(flow.efs, Generation::of(hw.identity.silicon()))
+}
+
 /// The flash as this boot sees it, the APOB its BIOS directory names,
 /// the stored options over the board's policy, the memory map with
-/// TSEG, the TPM, then the FFS the flash anchor names.
+/// TSEG, then the FFS the flash anchor names.
 pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
     hw: &mut Hw,
     config: &mut Config,
-    board: &crate::board::Facts,
     msr: &NativeMsr,
 ) -> Result<Mapped<S>, &'static str> {
     let generation = Generation::of(hw.identity.silicon());
@@ -352,11 +358,6 @@ pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
     let e820 = crate::memory::build("sp3", &regions, tops, &reservations).map_err(|_| "e820")?;
     parts::cache_ram(&regions);
 
-    if board.discrete_tpm {
-        step(0x16, "TPM");
-        crate::tpm::start(parts::reset_image(flash, generation), true)?;
-    }
-
     step(0x48, "boot media");
     crate::media::mount(e820.entries(), &layout::LAYOUT, ffs).map_err(|error| error.step())?;
 
@@ -376,6 +377,7 @@ pub(crate) fn map<S: crate::flow::Soc<Flow = Flow>>(
             ffs_offset,
             tseg,
             rom_size,
+            efs: flash,
         },
     })
 }

@@ -17,7 +17,7 @@ pub(crate) fn storage(ctx: &Ctx<'_>) -> Option<crate::options::FlashStorage> {
         offset: nvram.offset,
         size: nvram.size,
     };
-    let probe = super::flash_slice(ctx.ffs.base, 64);
+    let probe = crate::media::flash_slice(ctx.ffs.base, 64);
     // SAFETY: the FCH decodes SPI100 at its fixed base (FCH reset tasks);
     // the payload launcher is the only user of the command engine, and the
     // stage runs from DRAM.

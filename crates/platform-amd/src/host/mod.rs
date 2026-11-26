@@ -376,9 +376,10 @@ pub fn host<B: Board>() -> Result<Host, String> {
         }
         [SocId::Genoa] => crate::rs::host::host::<crate::genoa::Stones>(B::MAX_CPUS),
         [SocId::Siena] => crate::rs::host::host::<crate::siena::Dense>(B::MAX_CPUS),
+        [SocId::Venice] => crate::sp7::host::host::<crate::venice::Wh>(B::MAX_CPUS),
         _ => {
             return Err(format!(
-                "{} carries SoCs one image cannot: one of Picasso, Zeppelin, Genoa and Siena, or the SP3 SoCs",
+                "{} carries SoCs one image cannot: one of Picasso, Zeppelin, Genoa, Siena and Venice, or the SP3 SoCs",
                 B::NAME
             ));
         }

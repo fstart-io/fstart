@@ -13,6 +13,7 @@
 //! | FADT, MADT, HPET | [`SocAcpi`], the NBIO IOAPICs | [`fixed`] |
 //! | MCFG | the PCI segment | `fstart_acpi::build_mcfg` |
 //! | SRAT, MSCT, SLIT | only with more than one domain | [`numa`] |
+//! | HMAT | the SoC's (SP7: DRAM latency and bandwidth per domain) | [`hmat`] |
 //! | IVRS | per IOMMU, types 10h/11h (40h for ACPI-only requesters) | [`ivrs`] |
 //! | SPMI | board IPMI KCS | `fstart_acpi::devices::IpmiKcsAcpi` |
 //! | TPM2 / TCPA | discrete TPM and its event log ([`Inputs::tpm`]) | `fstart_acpi::devices::tpm` |
@@ -49,12 +50,14 @@ pub mod apei;
 pub mod baseline;
 pub mod dsdt;
 pub mod fixed;
+pub mod hmat;
+pub mod hsmp;
 pub mod ivrs;
 pub mod numa;
 pub mod prt;
 mod video;
 
-pub use numa::{Domain, MemoryAffinity, Numa};
+pub use numa::{Domain, DomainKind, MemoryAffinity, Numa};
 pub use video::video_rom_aml;
 
 /// FCH `_S5` type, shared by AML and the payload's handoff.
@@ -87,8 +90,10 @@ pub struct SocAcpi {
     pub xhci: Option<((u8, u8), u32)>,
     /// The sleep states, `(state, SLP_TYP)`. S3 needs a resume path.
     pub sleep_states: &'static [(u8, u8)],
-    /// SLIT distance between two domains of a socket (32 between sockets).
+    /// SLIT distance between two domains of a socket.
     pub socket_distance: u8,
+    /// SLIT distance between domains of different sockets.
+    pub remote_socket_distance: u8,
 }
 
 /// PME wake of the internal bridges: `_PRW` on each and the GPE's handler
@@ -100,8 +105,9 @@ pub struct Wake {
     pub bridges: &'static [(u8, u8)],
 }
 
-/// An enabled thread. The slice order is the ACPI processor UID (MADT and
-/// processor-device `_UID`).
+/// An enabled thread. The slice order is the MADT's and numbers the
+/// processor devices (`Cnnn`); their ACPI processor UIDs (MADT and `_UID`)
+/// are `fstart_acpi::platform::x86::processor_uids` of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cpu {
     pub apic_id: u32,
@@ -125,6 +131,11 @@ pub struct Iommu {
     pub base: u64,
     /// Capability/MMIO register values read from the enabled IOMMU.
     pub registers: IommuRegisters,
+    /// Another root bridge (its index in [`Inputs::root_bridges`]) without
+    /// an IOMMU of its own whose requesters this one translates: its buses
+    /// and its NBIO IOAPIC are in this IOMMU's IVHD (WH B0: the IOMMU of
+    /// root bridge `n` covers `n + 2` of its IOD, `NbioGetBusDecodeRange`).
+    pub also: Option<usize>,
 }
 
 /// A root bridge, a die's root complex (Naples, Zeppelin, Picasso) or an
@@ -146,6 +157,51 @@ pub struct RootBridgeAcpi<'a> {
     /// root bus.
     pub ioapic_features: u32,
     pub iommu: Option<Iommu>,
+    /// Per-root-bridge PCIe/internal bridge routing override (`None` uses
+    /// `SocAcpi::bridges`). Unset `(0, 0)` entries are omitted when emitting
+    /// `_PRT` and `RPxx` devices.
+    pub bridges: Option<&'a [prt::Bridge]>,
+    /// A CXL host bridge: `ACPI0016` (compatible with `PNP0A08`/`PNP0A03`)
+    /// with the CXL `_OSC` of this policy.
+    pub cxl: Option<CxlHost>,
+}
+
+/// What a CXL host bridge's `_OSC` grants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CxlHost {
+    /// PCIe errors are handled firmware-first (`AmdPcieAerReportMechanism`
+    /// 2): the OS gets no AER nor DPC control, as the vendors' `_OSC`
+    /// (`CDW3 & ~0x88`). Otherwise it gets every PCI control it asks for.
+    /// CXL memory error reporting (component events) it gets either way
+    /// when it reaches CXL registers (CDW4 bit 0 or 1): firmware handles
+    /// CXL protocol errors with the AER ones, not the devices' event
+    /// records, which is the vendor's "Force F/W First (not all devices
+    /// support the secondary mailbox), grant OS control" case
+    /// (`AmdCxlOscCallback`, FIRMWARE_FIRST.md §2.5).
+    pub firmware_first: bool,
+    /// The OS may take CXL.mem isolation (CDW5 bits 1, 5) when it supports
+    /// timeout and isolation: the firmware does not run isolation itself
+    /// (the vendor's platform byte 0, `PcdAmdCxlMemIsolationEnable` 0).
+    pub isolation: bool,
+}
+
+impl CxlHost {
+    /// The `_OSC` method (CDW5 as AMD's `CxlOscSwSmiHandler` decides).
+    pub fn osc(self) -> Vec<u8> {
+        use fstart_acpi::osc::{CxlControls, cxl_host_osc, pci_control};
+        let pci = if self.firmware_first {
+            !pci_control::FIRMWARE_FIRST
+        } else {
+            !0
+        };
+        cxl_host_osc(
+            pci,
+            CxlControls {
+                memory_error_reporting: true,
+                isolation: self.isolation,
+            },
+        )
+    }
 }
 
 /// Processor power data for `_PSS`/`_PCT`/`_PSD`/`_CST` (BSP's view;
@@ -230,6 +286,13 @@ pub struct Soc<'a> {
     /// The errors the ABL found before x86 ran (its APOB event log), for
     /// the BERT and the BMC.
     pub abl: &'a [fstart_driver_amd::apob::event::AblError],
+    /// The SoC's own errors left from the last boot, for the BERT (each
+    /// its entries, `apei::platform_error`).
+    pub platform_errors: &'a [Vec<fstart_acpi::cper::Entry>],
+    /// The PCIe/CXL errors its SMM handles firmware-first: the HEST's
+    /// AER sources and GHESs, the root bridges' `_OSC` keeping AER and
+    /// DPC (`apei::firmware_first_sources`).
+    pub firmware_first: Option<crate::smm::aer::FirmwareFirst>,
 }
 
 /// Build the tables of `soc` with what every SoC adds: the HPET, the BSP's
@@ -258,7 +321,8 @@ pub fn install(
             fstart_arch::x86::cpu::msr::MCG_CAP.index(),
         ),
         threshold: facts.ras.threshold,
-        boot_errors: boot_errors(facts.bmc_event, soc.abl),
+        boot_errors: boot_errors(facts.bmc_event, soc.abl, soc.platform_errors),
+        firmware_first: soc.firmware_first,
     });
     let tables = build(&Inputs {
         soc: soc.soc,
@@ -316,6 +380,7 @@ const BOOT_EVENTS: u32 = 24;
 fn boot_errors(
     bmc: Option<crate::board::BmcEvent>,
     abl: &[fstart_driver_amd::apob::event::AblError],
+    platform: &[Vec<fstart_acpi::cper::Entry>],
 ) -> (u64, u32) {
     use crate::smm::ras::{Delivery, Event};
     #[repr(align(16))]
@@ -420,8 +485,14 @@ fn boot_errors(
     // SAFETY: BSP only, before the payload; the region is reserved.
     let storage = unsafe { &mut (*core::ptr::addr_of_mut!(REGION)).0 };
     let capacity = storage.len().min(apei::PRINTABLE);
-    let (region, omitted) =
-        apei::boot_error_region(&records, abl, [eax, ebx, ecx, edx], &brand, capacity);
+    let (region, omitted) = apei::boot_error_region_with(
+        &records,
+        abl,
+        platform,
+        [eax, ebx, ecx, edx],
+        &brand,
+        capacity,
+    );
     if omitted != 0 {
         // Linux decodes a region under 1 KiB only: the worst are in it;
         // every error went to the log above (and the BMC).
@@ -459,6 +530,25 @@ impl Tables {
     }
 }
 
+/// The MCFG's allocations: the SoC's PCI segment ([`Inputs::pci`]) and every
+/// other segment a root bridge is on, buses 0..=FF each (as both donors'
+/// MCFG, one per segment, 2P_COMPLETE §2.4).
+fn mcfg_segments(inputs: &Inputs) -> Vec<PciRootInfo> {
+    let mut segments = alloc::vec![inputs.pci];
+    for rb in inputs.root_bridges {
+        let info = rb.root.info();
+        if !segments.iter().any(|s| s.segment == info.segment) {
+            segments.push(PciRootInfo {
+                bus_start: 0,
+                bus_end: 0xff,
+                ..info
+            });
+        }
+    }
+    segments.sort_unstable_by_key(|s| s.segment);
+    segments
+}
+
 /// Build every table from `inputs`.
 pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
     if inputs.cpus.is_empty() {
@@ -467,7 +557,7 @@ pub fn build(inputs: &Inputs) -> Result<Tables, AmlError> {
     let windows = fixed::gsi_windows(inputs.fch_ioapic_id, inputs.root_bridges);
     let dsdt = dsdt::build(inputs, &windows)?;
     let board = inputs.board;
-    let extra = core::iter::once(fstart_acpi::build_mcfg(&[inputs.pci]))
+    let extra = core::iter::once(fstart_acpi::build_mcfg(&mcfg_segments(inputs)))
         .chain(
             inputs
                 .numa

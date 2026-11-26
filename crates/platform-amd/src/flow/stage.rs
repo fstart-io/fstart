@@ -88,6 +88,12 @@ impl<S: Soc> Early<S> {
         &self.entered.hw
     }
 
+    /// Mutable access to the SoC configuration before entering the console phase
+    /// (for board-detected early facts such as BMC KCS decode availability).
+    pub fn config_mut(&mut self) -> &mut S::Config {
+        &mut self.config
+    }
+
     /// Stop the boot: the board's `what` failed. There is no console yet.
     pub fn fail(&self, what: &'static str) -> ! {
         fail::<S>(what)
@@ -151,6 +157,16 @@ impl<S: Soc> Early<S> {
         } = S::map(&mut hw, &mut soc_config, &board, &msr, clock)
             .unwrap_or_else(|what| fail::<S>(what));
         post(0x32);
+        // Measured boot starts here for every SoC: before the SMM handler,
+        // the microcode or anything from the FFS is loaded (mounting the
+        // FFS only verified it).
+        if let Some(bus) = board.tpm {
+            if !S::route_tpm(&hw, bus) {
+                fstart_log::error!("{}: TPM bus not routed", S::NAME);
+            } else if let Err(what) = crate::tpm::start(|| S::reset_image(&hw, &flow), S::SERVER) {
+                fail::<S>(what)
+            }
+        }
 
         Stage {
             machine: Machine {
@@ -418,6 +434,7 @@ fn bring_up_cpus<S: Soc>(
         || S::cpu_errors(&cpu),
         threads,
         ctx.board.max_cpus,
+        S::x2apic(&ctx, &chipset),
         |aps| S::release_aps(&ctx, &chipset, aps),
     )?;
     let state = S::cpus_up(&ctx, chipset, &cpus.mp, &cpus.apic_ids)?;
@@ -532,7 +549,7 @@ impl<S: Soc> Stage<S, Ready<S>> {
     /// identity `smbios`.
     pub fn emit_tables(self, smbios: &crate::acpi::SmbiosIdentity<'_>) -> Stage<S, Published<S>> {
         let Stage {
-            machine,
+            mut machine,
             phase: Ready { mut silicon, pci },
         } = self;
         let ctx = machine.ctx();
@@ -541,6 +558,13 @@ impl<S: Soc> Stage<S, Ready<S>> {
         let tables = S::tables(&ctx, &mut silicon, &pci, &machine.flow, smbios, acpi);
         #[cfg(feature = "payload-uefi-basic")]
         let peripherals = S::peripherals(&ctx, &machine.config);
+        for range in S::not_ram(&ctx, &silicon.state) {
+            use fstart_core::services::memory_detect::E820Kind;
+            machine
+                .e820
+                .reserve_range_as(range.start, range.end - range.start, E820Kind::SoftReserved)
+                .unwrap_or_else(|_| fail::<S>("memory map"));
+        }
         Stage {
             machine,
             phase: Published {
@@ -599,9 +623,14 @@ impl<S: Soc> Stage<S, Published<S>> {
         let acpi_s5 = [tables.s5];
         description.acpi_s5 = &acpi_s5;
         description.smbios = tables.smbios;
+        description.reset = S::system_reset();
         description.acpi_devices = &silicon.devices;
         description.framebuffer = silicon.framebuffer;
         description.pci_root = Some(S::pci_segment(&machine.hw));
+        let segments = S::pci_segments(&machine.hw);
+        if segments.len() > 1 {
+            description.pci_segments = &segments;
+        }
         #[allow(unused_mut)]
         let mut handoff = Handoff::new(description, Placement::default());
         #[cfg(feature = "payload-uefi-basic")]

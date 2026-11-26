@@ -95,7 +95,7 @@ fn dies(numa: bool) -> [RootBridgeAcpi<'static>; 2] {
 }
 
 /// EPYC 3151 P-states: 2.7, 1.9 and 1.2 GHz.
-fn power() -> power::Power<'static> {
+pub(crate) fn power() -> power::Power<'static> {
     static PSTATES: std::sync::LazyLock<[power::Pstate; 3]> = std::sync::LazyLock::new(|| {
         [(0, 0x6c, 8), (1, 0x98, 0x10), (2, 0x60, 0x10)].map(|(i, fid, did)| {
             power::decode_pstate(i, 1 << 63 | 0x50 << 22 | 0x40 << 14 | did << 8 | fid).unwrap()
@@ -808,7 +808,7 @@ fn two_dies_are_two_domains() {
     let board = Board::default();
     let tables = build(&Inputs {
         numa: Some(Numa {
-            domains: &[Domain { socket: 0 }; 2],
+            domains: &[Domain::cpu(0); 2],
             memory: &memory,
             phys_addr_bits: 48,
         }),
@@ -836,9 +836,13 @@ fn signature<'a>(tables: &'a [u8], signature: &[u8; 4]) -> &'a [u8] {
         .unwrap()
 }
 
-fn iasl_disassemble(dsdt: &[u8]) -> std::io::Result<std::string::String> {
-    let dir =
-        std::env::temp_dir().join(std::format!("fstart-zeppelin-dsdt-{}", std::process::id()));
+pub(crate) fn iasl_disassemble(dsdt: &[u8]) -> std::io::Result<std::string::String> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(std::format!(
+        "fstart-zeppelin-dsdt-{}-{seq}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("dsdt.aml"), dsdt)?;
@@ -852,4 +856,190 @@ fn iasl_disassemble(dsdt: &[u8]) -> std::io::Result<std::string::String> {
         "iasl: {log}"
     );
     std::fs::read_to_string(dir.join("dsdt.dsl"))
+}
+
+#[test]
+fn per_root_bridges_emit_distinct_devfns_omit_empty_and_reject_duplicates() {
+    use crate::acpi::prt::Bridge;
+    use fstart_driver_amd::nbio::wh::ROUTES;
+
+    let mut rb0_devfns = [(0u8, 0u8); 24];
+    rb0_devfns[0] = (1, 1); // RP11 on IOD0
+    rb0_devfns[16] = (5, 1); // RP51 bonus on IOD0
+    rb0_devfns[22] = (7, 1); // RP71 internal
+    let rb0_bridges = crate::sp7::acpi::bridges_from_devfns(rb0_devfns);
+
+    let mut rb1_devfns = [(0u8, 0u8); 24];
+    rb1_devfns[0] = (3, 2); // RP32 on IOD1 (different DevFn!)
+    rb1_devfns[23] = (8, 1); // RP81 internal
+    let rb1_bridges = crate::sp7::acpi::bridges_from_devfns(rb1_devfns);
+
+    let [mut d0, mut d1] = dies(true);
+    d0.bridges = Some(&rb0_bridges);
+    d1.bridges = Some(&rb1_bridges);
+    let rbs = [d0, d1];
+
+    let soc = crate::sp7::acpi::soc(0x800, true);
+    let cpus = [Cpu {
+        apic_id: 0,
+        domain: 0,
+        aml: Vec::new(),
+    }];
+    let board = Board::default();
+    let tables = build(&inputs(&soc, &cpus, &rbs, &board)).unwrap();
+
+    // No RP00 device may be emitted for unset (0, 0) slots.
+    assert!(
+        !tables.dsdt.windows(4).any(|w| w == b"RP00"),
+        "unset (0,0) slot emitted RP00"
+    );
+    // Distinct DevFns from both root bridges must appear.
+    assert!(tables.dsdt.windows(4).any(|w| w == b"RP11"));
+    assert!(tables.dsdt.windows(4).any(|w| w == b"RP51"));
+    assert!(tables.dsdt.windows(4).any(|w| w == b"RP32"));
+    assert!(tables.dsdt.windows(4).any(|w| w == b"RP81"));
+
+    // Verify iasl disassembly + strict recompilation when iasl is present.
+    if let Ok(dsl) = iasl_disassemble(&fstart_acpi::platform::build_dsdt(&tables.dsdt)) {
+        let pci0 = dsl.find("Device (PCI0)").expect("PCI0 in DSDT");
+        let pci1 = dsl.find("Device (PCI1)").expect("PCI1 in DSDT");
+        assert!(pci0 < pci1);
+        let pci0_slice = &dsl[pci0..pci1];
+        let pci1_slice = &dsl[pci1..];
+        assert!(pci0_slice.contains("Device (RP11)"));
+        assert!(pci0_slice.contains("Device (RP51)"));
+        assert!(!pci0_slice.contains("Device (RP32)"));
+        assert!(!pci0_slice.contains("Device (RP00)"));
+        assert!(pci1_slice.contains("Device (RP32)"));
+        assert!(pci1_slice.contains("Device (RP81)"));
+        assert!(!pci1_slice.contains("Device (RP11)"));
+        assert!(!pci1_slice.contains("Device (RP00)"));
+    }
+
+    // Duplicate non-zero (device, function) on the same root bridge is rejected.
+    let dup = [
+        Bridge {
+            device: 1,
+            function: 1,
+            route: ROUTES[0],
+            internal: false,
+        },
+        Bridge {
+            device: 1,
+            function: 1,
+            route: ROUTES[1],
+            internal: false,
+        },
+    ];
+    d0.bridges = Some(&dup);
+    let bad_rbs = [d0, d1];
+    assert!(build(&inputs(&soc, &cpus, &bad_rbs, &board)).is_err());
+}
+
+/// A CXL host bridge: `ACPI0016` compatible with PCIe/PCI, the CXL `_OSC`,
+/// and the `ACPI0017` root device beside it.
+#[test]
+fn cxl_host_bridges_are_acpi0016_with_the_cxl_osc() {
+    let mut dies = dies(false);
+    dies[1].cxl = Some(CxlHost {
+        firmware_first: false,
+        isolation: true,
+    });
+    let cpus = cpus(&[0, 1], false);
+    let board = Board::default();
+    let cxl_root = fstart_acpi::cedt::root_device("CXLD").unwrap();
+    let tables = build(&Inputs {
+        sb_aml: &cxl_root,
+        ..inputs(&ACPI, &cpus, &dies, &board)
+    })
+    .unwrap();
+    let count = |needle: &[u8]| {
+        tables
+            .dsdt
+            .windows(needle.len())
+            .filter(|w| *w == needle)
+            .count()
+    };
+    assert_eq!(count(b"ACPI0016"), 1);
+    assert_eq!(count(b"ACPI0017"), 1);
+    let Ok(dsl) = iasl_disassemble(&fstart_acpi::platform::build_dsdt(&tables.dsdt)) else {
+        std::eprintln!("iasl not found, skipping the DSDT disassembly");
+        return;
+    };
+    for object in [
+        "Name (_HID, \"ACPI0016\"",
+        "EisaId (\"PNP0A08\")",
+        "ToUUID (\"68f2d50b-c469-4d8a-bd3d-941a103fd3fc\")",
+        "Device (CXLD)",
+        "Name (_HID, \"ACPI0017\"",
+    ] {
+        assert!(dsl.contains(object), "{object} missing:\n{dsl}");
+    }
+    // OS-first: every PCI control; firmware-first: no AER/DPC (CDW3 &
+    // ~0x88), no CXL isolation (CDW5 & ~0x3E); memory error reporting
+    // stays the OS's (the firmware handles no CXL event records).
+    assert!(dsl.contains("CDW3 &= 0xFFFFFFFF") || dsl.contains("CDW3 & 0xFFFFFFFF"));
+    dies[1].cxl = Some(CxlHost {
+        firmware_first: true,
+        isolation: false,
+    });
+    let tables = build(&inputs(&ACPI, &cpus, &dies, &board)).unwrap();
+    let dsl = iasl_disassemble(&fstart_acpi::platform::build_dsdt(&tables.dsdt)).unwrap();
+    assert!(
+        dsl.contains("0xFFFFFF77") && dsl.contains("0xFFFFFFC1"),
+        "{dsl}"
+    );
+}
+
+/// Firmware-first PCIe errors: every root bridge's `_OSC` keeps AER and
+/// DPC, the DSDT has the Hardware Error Device and the SCI's `_L14`, the
+/// HEST the AER sources and GHESs.
+#[test]
+fn firmware_first_keeps_aer_and_dpc_and_notifies_the_error_device() {
+    use crate::smm::aer::{FirmwareFirst, Ghes, notify};
+    let dies = dies(false);
+    let cpus = cpus(&[0, 1], false);
+    let board = Board::default();
+    let ff = FirmwareFirst {
+        corrected: Ghes {
+            status_address: 0x7600_0000,
+            block: 0x7600_1000,
+            length: 0x1000,
+            notify: notify::SCI,
+            ..Ghes::default()
+        },
+        uncorrected: Ghes {
+            status_address: 0x7600_0008,
+            block: 0x7600_2000,
+            length: 0x1000,
+            notify: notify::NMI,
+            ..Ghes::default()
+        },
+        sci_event: 0x14,
+        ..FirmwareFirst::NONE
+    };
+    let tables = build(&Inputs {
+        apei: Some(super::apei::Apei {
+            mcg_cap: 0x102,
+            threshold: 0,
+            boot_errors: (0x7500_0000, 20),
+            firmware_first: Some(ff),
+        }),
+        ..inputs(&ACPI, &cpus, &dies, &board)
+    })
+    .unwrap();
+    assert!(tables.extra.iter().any(|t| t.starts_with(b"HEST")));
+    let Ok(dsl) = iasl_disassemble(&fstart_acpi::platform::build_dsdt(&tables.dsdt)) else {
+        std::eprintln!("iasl not found, skipping the DSDT disassembly");
+        return;
+    };
+    for object in [
+        "Device (\\_SB.AERR)",
+        "EisaId (\"PNP0C33\")",
+        "Method (_L14",
+        "Notify (\\_SB.AERR, 0x80)",
+    ] {
+        assert!(dsl.contains(object), "{object} missing:\n{dsl}");
+    }
+    assert!(dsl.contains("0xFFFFFF77"), "{dsl}");
 }

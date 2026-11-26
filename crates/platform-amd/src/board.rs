@@ -24,11 +24,13 @@ pub enum SocId {
     Milan,
     Genoa,
     Siena,
+    Venice,
 }
 
 impl SocId {
     /// The name of the SoC's firmware tables
     /// (`[package.metadata.fstart.amd.<name>]`) and of its log prefix.
+    #[inline]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Picasso => "picasso",
@@ -38,6 +40,7 @@ impl SocId {
             Self::Milan => "milan",
             Self::Genoa => "genoa",
             Self::Siena => "siena",
+            Self::Venice => "venice",
         }
     }
 
@@ -49,6 +52,11 @@ impl SocId {
     /// The SoC is made of the RS I/O die.
     pub const fn rs(self) -> bool {
         matches!(self, Self::Genoa | Self::Siena)
+    }
+
+    /// The SoC is in the SP7 socket (WH I/O die).
+    pub const fn sp7(self) -> bool {
+        matches!(self, Self::Venice)
     }
 }
 
@@ -62,10 +70,11 @@ pub trait Board: 'static {
     /// Logical CPU ceiling over every SoC the board carries (all sockets):
     /// sizes the AP stacks and the SMM image.
     const MAX_CPUS: u16;
-    /// A discrete TPM may be fitted (FIFO interface at `0xFED4_0000`, on
-    /// LPC or eSPI): probe it, measure the boot (`fstart-tcg`) and describe
-    /// it and its event log in ACPI. Off leaves a TPM untouched and hidden.
-    const DISCRETE_TPM: bool = false;
+    /// A discrete TPM may be fitted (FIFO interface at `0xFED4_0000`) on
+    /// this bus: route it there, probe it, measure the boot (`fstart-tcg`)
+    /// and describe it and its event log in ACPI. `None` leaves a TPM
+    /// untouched and hidden.
+    const TPM: Option<TpmBus> = None;
     /// BMC sleep-state notification through SMM (ACPI and the handler).
     const BMC_SX_NOTIFY: Option<crate::smm::SleepNotify> = None;
     /// The option sets the board offers, in the order its boot resolves
@@ -94,6 +103,25 @@ pub trait Board: 'static {
     fn acpi_soc_sb_aml(_soc: SocId) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
         Ok(alloc::vec::Vec::new())
     }
+
+    /// The board's SP7 configuration, for the host ACPI baseline of Venice:
+    /// its ECAM window (MCFG) and its AER mechanism in effect (HEST GHESs,
+    /// `AERR`/`_L14`, `_OSC`) as its stage publishes them. `None`: the
+    /// SoC's defaults.
+    fn sp7_config() -> Option<crate::sp7::Config> {
+        None
+    }
+}
+
+/// The bus a board's discrete TPM sits on ([`Board::TPM`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TpmBus {
+    /// LPC or eSPI: the FCH decodes `FED4_xxxx` there at reset (D14F3x7C
+    /// Tpm12En).
+    Lpc,
+    /// The SPI controller's TPM chip select, which the SoC routes
+    /// ([`crate::flow::Soc::route_tpm`]).
+    Spi,
 }
 
 /// A board's BMC report of a RAS event ([`Board::BMC_EVENT`]).
@@ -105,7 +133,7 @@ pub type BmcEvent =
 pub struct Facts {
     pub name: &'static str,
     pub max_cpus: u16,
-    pub discrete_tpm: bool,
+    pub tpm: Option<TpmBus>,
     pub bmc_sx_notify: Option<crate::smm::SleepNotify>,
     pub ras: crate::smm::ras::Policy,
     pub bmc_event: Option<BmcEvent>,
@@ -117,7 +145,7 @@ impl Facts {
         Self {
             name: B::NAME,
             max_cpus: B::MAX_CPUS,
-            discrete_tpm: B::DISCRETE_TPM,
+            tpm: B::TPM,
             bmc_sx_notify: B::BMC_SX_NOTIFY,
             ras: B::RAS,
             bmc_event: B::BMC_EVENT,

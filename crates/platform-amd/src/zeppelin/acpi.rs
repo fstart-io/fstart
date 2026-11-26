@@ -42,4 +42,5 @@ pub const ACPI: SocAcpi = SocAcpi {
     sleep_states: &[(0, 0), (1, 1), (4, 4), (5, S5_SLEEP_TYPE)],
     // The vendor's SLIT: 16 between the dies of the socket.
     socket_distance: 16,
+    remote_socket_distance: 32,
 };
