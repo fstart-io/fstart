@@ -1,5 +1,6 @@
 //! Separate runtime mechanisms and boot-firmware memory ownership.
 use super::{MemoryRegion, MemoryType, RuntimePlatformConfig};
+use fstart_core::description::RuntimeReset;
 
 pub(super) const EMPTY_REGION: MemoryRegion = MemoryRegion {
     base: 0,
@@ -7,13 +8,43 @@ pub(super) const EMPTY_REGION: MemoryRegion = MemoryRegion {
     region_type: MemoryType::Reserved,
 };
 
-pub(super) fn runtime_platform_config() -> RuntimePlatformConfig<'static> {
+/// The MMIO the run-time reset mechanism of `platform` writes, retained
+/// for the OS's run-time services: an AMD FCH's ACPI-MMIO page.
+pub(super) fn external_range(
+    platform: Option<RuntimeReset>,
+) -> Option<crabefi::RuntimeExternalRange> {
+    match platform? {
+        RuntimeReset::AmdFch { acpi_mmio } => Some(crabefi::RuntimeExternalRange {
+            physical_base: acpi_mmio & !0xfff,
+            byte_len: 0x1000,
+            // Uncached, reachable at run time.
+            attributes: 1 | 1 << 63,
+        }),
+        _ => None,
+    }
+}
+
+/// The run-time mechanisms; the reset per `platform` (its ACPI-MMIO page
+/// among `external`, [`external_range`]).
+pub(super) fn runtime_platform_config(
+    platform: Option<RuntimeReset>,
+    external: &[crabefi::RuntimeExternalRange],
+) -> RuntimePlatformConfig<'_> {
     #[cfg(target_arch = "x86_64")]
-    let (time, reset, reset_port) = (
-        crabefi::time_mechanism::X86_CMOS,
-        crabefi::reset_mechanism::X86_LEGACY,
-        0xcf9,
-    );
+    let (time, reset, reset_port) = match platform {
+        Some(RuntimeReset::AmdFch { acpi_mmio }) => (
+            crabefi::time_mechanism::X86_CMOS,
+            crabefi::reset_mechanism::X86_AMD_FCH,
+            acpi_mmio,
+        ),
+        _ => (
+            crabefi::time_mechanism::X86_CMOS,
+            crabefi::reset_mechanism::X86_LEGACY,
+            0xcf9,
+        ),
+    };
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = platform;
     #[cfg(target_arch = "aarch64")]
     let (time, reset, reset_port) = (
         // No runtime-MMIO reservation API is available at the pinned revision.
@@ -40,7 +71,7 @@ pub(super) fn runtime_platform_config() -> RuntimePlatformConfig<'static> {
             reserved: 0,
             io_or_mmio_base: reset_port,
         },
-        external_ranges: &[],
+        external_ranges: external,
         // Literal old library-mode behavior: no configured deferred buffer and
         // no platform-entry linker symbols. This is not a durable NV policy.
         deferred_buffer: crabefi::DeferredBufferConfig::disabled(),
@@ -203,9 +234,32 @@ mod tests {
         );
     }
 
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn an_amd_fch_resets_through_its_retained_acpi_mmio_page() {
+        let platform = Some(RuntimeReset::AmdFch {
+            acpi_mmio: 0xfed8_0000,
+        });
+        let range = external_range(platform).unwrap();
+        assert_eq!((range.physical_base, range.byte_len), (0xfed8_0000, 0x1000));
+        assert_ne!(range.attributes & 1 << 63, 0);
+        let config = runtime_platform_config(platform, core::slice::from_ref(&range));
+        assert_eq!(
+            config.reset.mechanism,
+            crabefi::reset_mechanism::X86_AMD_FCH
+        );
+        assert_eq!(config.reset.io_or_mmio_base, 0xfed8_0000);
+        assert_eq!(config.external_ranges, [range]);
+        // Without one, CF9h.
+        assert_eq!(external_range(Some(RuntimeReset::Cf9)), None);
+        let config = runtime_platform_config(None, &[]);
+        assert_eq!(config.reset.mechanism, crabefi::reset_mechanism::X86_LEGACY);
+        assert_eq!(config.reset.io_or_mmio_base, 0xcf9);
+    }
+
     #[test]
     fn no_unbacked_runtime_mmio_or_implicit_retained_journal() {
-        let config = runtime_platform_config();
+        let config = runtime_platform_config(None, &[]);
         assert!(config.external_ranges.is_empty());
         assert_eq!(config.deferred_buffer.base, 0);
         assert_eq!(config.deferred_buffer.size, 0);

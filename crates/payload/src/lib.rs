@@ -208,7 +208,7 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
         fstart_arch::aarch64::boot_bl31_and_resume(entry, boot.fdt_addr());
         fstart_log::info!("aarch64 uefi: BL31 returned, launching CrabEFI");
 
-        let ecam = uefi_ecam(description.pci_root);
+        let ecam = uefi_ecam(&description);
         let static_entries = static_regions(&description);
         crate::crabefi::launch_flat_uefi(
             UefiLaunchConfig {
@@ -225,6 +225,7 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
                 settings: handoff.settings,
+                reset: description.reset,
             },
             &static_entries,
             ram.base,
@@ -339,7 +340,7 @@ impl Riscv64UefiPayload {
             fdt.map(|bytes| (placement.device_tree, (bytes.len() as u64 + 0xfff) & !0xfff));
         crate::crabefi::set_riscv_boot_hartid(hart_id);
 
-        let ecam = uefi_ecam(description.pci_root);
+        let ecam = uefi_ecam(&description);
         // OpenSBI stays resident in the RAM it was loaded to.
         let mut static_entries = static_regions(&description);
         static_entries.push(MemoryRegion {
@@ -362,6 +363,7 @@ impl Riscv64UefiPayload {
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
                 settings: handoff.settings,
+                reset: description.reset,
             },
             &static_entries,
             ram.base,
@@ -591,7 +593,7 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
         #[cfg(feature = "tcg")]
         fstart_stage::tcg::handoff(fstart_stage::tcg::Handoff::Locked);
 
-        let ecam = uefi_ecam(description.pci_root);
+        let ecam = uefi_ecam(&description);
         fstart_stage::timestamps::handoff();
         crate::crabefi::launch_x86_uefi(
             UefiLaunchConfig {
@@ -622,6 +624,7 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
                 settings: handoff.settings,
+                reset: description.reset,
             },
             description.memory,
             &platform_entries,
@@ -630,11 +633,37 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
 }
 
 #[cfg(feature = "crabefi-basic")]
-fn uefi_ecam(root: Option<PciRootInfo>) -> Option<crate::crabefi::PciEcamRegion> {
-    root.map(|root| crate::crabefi::PciEcamRegion {
+/// The ECAM regions of `description`: every PCI segment when the platform
+/// lists several, else its one root segment; at most [`UEFI_ECAM_REGIONS`],
+/// with a warning for those left out.
+fn uefi_ecam(
+    description: &fstart_core::description::Description<'_>,
+) -> heapless::Vec<crate::crabefi::PciEcamRegion, UEFI_ECAM_REGIONS> {
+    let region = |root: &PciRootInfo| crate::crabefi::PciEcamRegion {
         base: root.ecam_base,
         segment: root.segment,
         bus_start: root.bus_start,
         bus_end: root.bus_end,
-    })
+    };
+    match description.pci_segments {
+        [] => description.pci_root.iter().map(region).collect(),
+        segments => {
+            if segments.len() > UEFI_ECAM_REGIONS {
+                fstart_log::warn!(
+                    "payload: {} PCI segments, UEFI is told of the first {}",
+                    segments.len(),
+                    UEFI_ECAM_REGIONS
+                );
+            }
+            segments
+                .iter()
+                .take(UEFI_ECAM_REGIONS)
+                .map(region)
+                .collect()
+        }
+    }
 }
+
+#[cfg(feature = "crabefi-basic")]
+/// The PCI segments CrabEFI is told of (an AMD ECAM window has at most 8).
+const UEFI_ECAM_REGIONS: usize = 8;

@@ -84,6 +84,7 @@ pub fn tables(apei: &Apei) -> Vec<Vec<u8>> {
             &banks[..],
         ),
     ];
+    let sources = sources.map(|(kind, banks)| hest::Source::MachineCheck(kind, banks));
     let hest = hest::table(
         fstart_acpi::OEM_ID,
         fstart_acpi::OEM_TABLE_ID,

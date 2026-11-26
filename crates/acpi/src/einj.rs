@@ -19,6 +19,9 @@ pub enum Action {
     GetCommandStatus = 7,
     SetErrorTypeWithAddress = 8,
     GetExecuteOperationTimings = 9,
+    /// EINJv2 (ACPI 6.6): the EINJv2 error types (table revision 2;
+    /// Linux `ACPI_EINJV2_GET_ERROR_TYPE`).
+    Einjv2GetErrorType = 0x11,
     /// Only in a trigger action table.
     TriggerError = 0xff,
 }
@@ -151,7 +154,26 @@ pub fn table(
     oem_revision: u32,
     entries: &[Entry],
 ) -> Vec<u8> {
-    let mut sdt = Sdt::new(*b"EINJ", HEADER, 1, oem_id, oem_table_id, oem_revision);
+    table_revision(1, oem_id, oem_table_id, oem_revision, entries)
+}
+
+/// [`table`] with table revision `revision` (2 for the EINJv2 actions,
+/// [`Action::Einjv2GetErrorType`]).
+pub fn table_revision(
+    revision: u8,
+    oem_id: [u8; 6],
+    oem_table_id: [u8; 8],
+    oem_revision: u32,
+    entries: &[Entry],
+) -> Vec<u8> {
+    let mut sdt = Sdt::new(
+        *b"EINJ",
+        HEADER,
+        revision,
+        oem_id,
+        oem_table_id,
+        oem_revision,
+    );
     // Injection header size (from the start of the table to the entries'
     // count), flags and the entry count.
     sdt.write_u32(36, 12);
@@ -203,6 +225,11 @@ mod tests {
         assert_eq!(u32::from_le_bytes(t[36..40].try_into().unwrap()), 12);
         assert_eq!(u32::from_le_bytes(t[44..48].try_into().unwrap()), 2);
         assert_eq!(t.iter().fold(0u8, |a, b| a.wrapping_add(*b)), 0);
+        assert_eq!(t[8], 1);
+        let v2 = table_revision(2, *b"FSTART", *b"TESTEINJ", 1, &[entry]);
+        assert_eq!(v2[8], 2);
+        assert_eq!(v2.iter().fold(0u8, |a, b| a.wrapping_add(*b)), 0);
+        assert_eq!(Action::Einjv2GetErrorType as u8, 0x11);
         let trigger = trigger(&[Entry::new(
             Action::TriggerError,
             Instruction::WriteRegisterValue,

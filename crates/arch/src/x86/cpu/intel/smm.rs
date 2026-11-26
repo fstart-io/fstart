@@ -205,6 +205,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
                     num_cpus,
                     save_state_size: SAVE_STATE_SIZE,
                     handler_config: &handler_config,
+                    mapped: &[],
                 },
                 layouts,
             )

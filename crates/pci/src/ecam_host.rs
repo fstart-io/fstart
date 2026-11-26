@@ -405,8 +405,10 @@ impl Root {
     }
 }
 
-/// The most root bridges one allocator owns.
-pub const MAX_PCI_ROOTS: usize = 8;
+/// The most root bridges one allocator owns: 16, the most a fabric of the
+/// platforms has (2P SP7: 2 sockets × 2 IODs × up to 4 IOS). More are
+/// refused ([`PciEcam::new`]), never cut short.
+pub const MAX_PCI_ROOTS: usize = 16;
 
 /// PCI ECAM host bridge driver.
 pub struct PciEcam {

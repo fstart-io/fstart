@@ -20,6 +20,8 @@ use crate::x86::mp::{MAX_CPUS, MpHandle};
 const SAVE_STATE_SIZE: u32 = 0x400;
 /// Smallest TSEG the SMM_MASK granularity allows.
 const MIN_TSEG: u32 = 128 << 10;
+/// CPUID `8000_0001h` EDX\[26\]: 1 GiB pages.
+const PAGE_1GB: u32 = 1 << 26;
 
 /// Southbridge SMI control.
 pub trait SmiControl {
@@ -33,6 +35,13 @@ pub trait SmiControl {
     fn disable_smi(&self);
     /// Program the permanent SMI sources and let the chipset generate SMIs.
     fn enable_smi(&self);
+    /// MMIO above 4 GiB the permanent handler reaches (an ECAM window, root
+    /// bridge windows), mapped uncached in its SMRAM page tables besides
+    /// the low 4 GiB ([`fstart_smm::build_identity_tables_with`]). None by
+    /// default.
+    fn smm_mapped_ranges(&self) -> &[fstart_smm::MappedRange] {
+        &[]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,19 +106,43 @@ fn free_range(cpus: &[fstart_smm::CpuSmmLayout]) -> Range<u64> {
     start..(windows & !0xfff).max(start)
 }
 
-/// Program this CPU's TSEG and SMBASE and lock them. Returns SMM_ADDR,
-/// SMM_MASK, SMM_BASE and HWCR.SmmLock as read back afterwards.
+/// Model-specific bits a CPU's vendor code holds set while it programs
+/// TSEG and clears once SMM is locked (Zen 6: `C001_1023[27]`, see the SoC),
+/// and the HWCR bits it sets with SmmLock (Zen 6: bit 31, [`Hwcr::LOCK_31`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetupBits {
+    pub msr: u32,
+    pub bits: u64,
+    /// HWCR bits set in the same write as SmmLock.
+    pub hwcr_lock: u64,
+}
+
+/// The HWCR bits the lock sets: SmmLock and `setup`'s.
+fn hwcr_lock(setup: Option<SetupBits>) -> u64 {
+    setup.map_or(0, |s| s.hwcr_lock) | Hwcr::SMM_LOCK::SET.value
+}
+
+/// Program this CPU's TSEG and SMBASE and lock them, `setup` held set
+/// around it. Returns SMM_ADDR, SMM_MASK, SMM_BASE and HWCR.SmmLock as
+/// read back afterwards.
 ///
 /// # Safety
 /// AMD64 CPU in normal mode, with SMM not locked and nothing on this CPU
-/// accessing TSEG from normal mode afterwards.
-unsafe fn program_cpu(base: u64, mask: u64, smbase: u64) -> [u64; 4] {
+/// accessing TSEG from normal mode afterwards; `setup` names bits of an
+/// MSR of this CPU that may be set and cleared here.
+unsafe fn program_cpu(base: u64, mask: u64, smbase: u64, setup: Option<SetupBits>) -> [u64; 4] {
     // SAFETY: the caller's contract; these MSRs exist on every AMD64 CPU.
     let cpu = unsafe { NativeMsr::new() };
+    if let Some(SetupBits { msr, bits, .. }) = setup {
+        cpu.write(msr, cpu.read(msr) | bits);
+    }
     cpu.reg(SMM_ADDR).set(base);
     cpu.reg(SMM_MASK).set(mask);
     cpu.reg(SMM_BASE).set(smbase);
-    cpu.reg(HWCR).modify(Hwcr::SMM_LOCK::SET);
+    cpu.reg(HWCR).set(cpu.reg(HWCR).get() | hwcr_lock(setup));
+    if let Some(SetupBits { msr, bits, .. }) = setup {
+        cpu.write(msr, cpu.read(msr) & !bits);
+    }
     [
         cpu.reg(SMM_ADDR).get(),
         cpu.reg(SMM_MASK).get(),
@@ -131,11 +164,23 @@ const ZERO_CPU_LAYOUT: fstart_smm::CpuSmmLayout = fstart_smm::CpuSmmLayout {
 pub struct AmdSmm<'a, S: SmiControl> {
     name: &'static str,
     smi: &'a S,
+    setup: Option<SetupBits>,
 }
 
 impl<'a, S: SmiControl> AmdSmm<'a, S> {
     pub const fn new(name: &'static str, smi: &'a S) -> Self {
-        Self { name, smi }
+        Self {
+            name,
+            smi,
+            setup: None,
+        }
+    }
+
+    /// Hold `setup` set on every CPU while it programs its TSEG, until
+    /// it locked SMM.
+    pub const fn with_setup_bits(mut self, setup: Option<SetupBits>) -> Self {
+        self.setup = setup;
+        self
     }
 
     /// Install the handler `image` in the TSEG at `base`, point every online
@@ -176,6 +221,11 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
         // installer validates every placement before writing.
         unsafe { core::ptr::write_bytes(base as *mut u8, 0, size as usize) };
         let handler_config = self.smi.smm_handler_config();
+        let mapped = self.smi.smm_mapped_ranges();
+        // A whole GiB of a range takes a 1 GiB page.
+        if !mapped.is_empty() && crate::x86::cpuid(0x8000_0001).3 & PAGE_1GB == 0 {
+            return Err(AmdSmmError::InstallFailed);
+        }
         let mut layouts = [ZERO_CPU_LAYOUT; MAX_CPUS];
         let installed = unsafe {
             fstart_smm::install_pic_image(
@@ -186,6 +236,7 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
                     num_cpus,
                     save_state_size: SAVE_STATE_SIZE,
                     handler_config: &handler_config,
+                    mapped,
                 },
                 &mut layouts,
             )
@@ -205,6 +256,7 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
         let mask = smm_mask(size, crate::x86::physical_address_bits());
         let failures = AtomicU32::new(0);
         let cpus = installed.cpus;
+        let setup = self.setup;
         // The APs run before the BSP, which locks last as the vendor does.
         mp.scope(|scope| {
             scope.scatter(&|cpu| {
@@ -214,7 +266,7 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
                 };
                 // SAFETY: normal mode, SMM not locked; after this nothing
                 // touches TSEG from normal mode.
-                let read = unsafe { program_cpu(base, mask, layout.smbase) };
+                let read = unsafe { program_cpu(base, mask, layout.smbase, setup) };
                 if read != [base, mask, layout.smbase, 1] {
                     fstart_log::error!(
                         "CPU {}: SMM_ADDR {:#x} SMM_MASK {:#x} SMM_BASE {:#x} SmmLock {}",
@@ -265,6 +317,17 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lock_sets_smm_lock_and_the_soc_bits() {
+        assert_eq!(hwcr_lock(None), 1);
+        let zen6 = SetupBits {
+            msr: 0xc001_1023,
+            bits: 1 << 27,
+            hwcr_lock: Hwcr::LOCK_31::SET.value,
+        };
+        assert_eq!(hwcr_lock(Some(zen6)), 0x8000_0001);
+    }
 
     #[test]
     fn tseg_must_be_a_size_aligned_power_of_two_below_4g() {

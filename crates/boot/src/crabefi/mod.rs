@@ -92,6 +92,9 @@ pub struct UefiLaunchConfig<'a> {
     pub variable_storage: Option<&'a mut dyn StorageBackend>,
     /// The options the firmware settings menu shows.
     pub settings: Option<settings::FirmwareSettings>,
+    /// The platform's resets for `ResetSystem` (cold and warm, boot and
+    /// run time); `None`, CF9h (x86).
+    pub reset: Option<fstart_core::description::SystemReset>,
 }
 
 fn init_platform_raw(config: PlatformConfig<'_>) -> ! {
@@ -177,6 +180,7 @@ pub fn launch_x86_uefi(
     let timer = TscTimer::new();
     let reset = X86Reset {
         controls: launch.acpi_s5,
+        platform: launch.reset,
     };
     let rng = X86Rng::new();
     let mut memory_map_buf: [MemoryRegion; 64] = [MemoryRegion {
@@ -241,6 +245,7 @@ pub fn launch_x86_memory_map(launch: UefiLaunchConfig<'_>, memory_map: &[MemoryR
     let timer = TscTimer::new();
     let reset = X86Reset {
         controls: launch.acpi_s5,
+        platform: launch.reset,
     };
     let rng = X86Rng::new();
     crabefi::drivers::pci::set_ecam_regions(launch.ecam_regions).expect("PCI ECAM regions");
@@ -278,6 +283,7 @@ fn launch_with_adapters(
     ));
     let mut variable_storage = launch.variable_storage;
     let mut launch_settings = launch.settings;
+    let external = runtime::external_range(launch.reset.map(|r| r.runtime));
     let hooks = launch_settings
         .as_mut()
         .is_some_and(settings::install)
@@ -307,7 +313,7 @@ fn launch_with_adapters(
         // This constant follows the effective dependency features, including
         // full/basic unification. The loader checks ABI and exact capabilities.
         runtime_image: crabefi::BUNDLED_RUNTIME_IMAGE,
-        runtime: runtime_platform_config(),
+        runtime: runtime_platform_config(launch.reset.map(|r| r.runtime), external.as_slice()),
         heap_pre_initialized: false,
         acpi_devices: launch.acpi_devices,
     })
@@ -333,6 +339,33 @@ fn crabefi_level(
         Level::Debug => LevelFilter::Debug,
         Level::Trace => LevelFilter::Trace,
     }
+}
+
+#[cfg(test)]
+#[test]
+fn soft_reserved_memory_is_specific_purpose() {
+    use fstart_core::services::memory_detect::E820Kind;
+    let e820 = [
+        E820Entry::new(0x1_0000_0000, 0x1_0000_0000, E820Kind::Ram),
+        E820Entry::new(0x40_0000_0000, 0x10_0000_0000, E820Kind::SoftReserved),
+    ];
+    let mut buf = [MemoryRegion {
+        base: 0,
+        size: 0,
+        region_type: MemoryType::Reserved,
+    }; 4];
+    let n = build_efi_memory_map_from_e820(&e820, &[], &mut buf);
+    assert_eq!(n, 2);
+    assert_eq!(buf[1].base, 0x40_0000_0000);
+    assert_eq!(buf[1].region_type, MemoryType::SpecificPurpose);
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[test]
+fn payload_resets_go_to_the_platform() {
+    use fstart_core::description::ResetRequest;
+    assert_eq!(reset_request(crabefi::ResetType::Warm), ResetRequest::Warm);
+    assert_eq!(reset_request(crabefi::ResetType::Cold), ResetRequest::Cold);
 }
 
 #[cfg(test)]
@@ -745,20 +778,34 @@ impl crabefi::Timer for TscTimer {
 // x86 platform reset mechanisms → CrabEFI ResetHandler
 // ---------------------------------------------------------------------------
 
-/// Boot-lifetime reset adapter: platform-owned ACPI shutdown controls and
-/// the shared x86 CF9 reboot mechanism (also advertised by runtime and FADT).
+/// Boot-lifetime reset adapter: platform-owned ACPI shutdown controls, and
+/// the platform's resets or else the shared x86 CF9 reboot mechanism (also
+/// advertised by runtime and FADT).
 #[cfg(target_arch = "x86_64")]
 pub struct X86Reset<'a> {
     controls: &'a [fstart_core::description::AcpiSleepControl],
+    platform: Option<fstart_core::description::SystemReset>,
+}
+
+/// The platform reset for a CrabEFI reset type other than shutdown: warm
+/// for warm, cold for the rest (platform-specific included).
+#[cfg(target_arch = "x86_64")]
+fn reset_request(reset_type: crabefi::ResetType) -> fstart_core::description::ResetRequest {
+    use fstart_core::description::ResetRequest;
+    match reset_type {
+        crabefi::ResetType::Warm => ResetRequest::Warm,
+        _ => ResetRequest::Cold,
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
 impl crabefi::ResetHandler for X86Reset<'_> {
     fn reset(&self, reset_type: crabefi::ResetType) -> ! {
-        match reset_type {
-            crabefi::ResetType::Shutdown => {
+        match (reset_type, self.platform) {
+            (crabefi::ResetType::Shutdown, _) => {
                 fstart_arch::x86::legacy_pc::enter_acpi_s5(self.controls);
             }
+            (_, Some(platform)) => (platform.reset)(reset_request(reset_type)),
             _ => fstart_arch::x86::boot::system_reset(true),
         }
     }
@@ -852,6 +899,10 @@ impl crabefi::Rng for X86Rng {
 /// - `buf`: output buffer for EFI memory regions
 ///
 /// Panics if bounded buffers cannot represent the map; never drops a reservation.
+/// The e820 kind of soft-reserved memory
+/// ([`fstart_core::services::memory_detect::E820Kind::SoftReserved`]).
+const SOFT_RESERVED: u32 = fstart_core::services::memory_detect::E820Kind::SoftReserved as u32;
+
 pub fn build_efi_memory_map_from_e820(
     e820: &[E820Entry],
     rom_entries: &[MemoryRegion],
@@ -885,6 +936,11 @@ pub fn build_efi_memory_map_from_e820(
             2 => MemoryType::Reserved,
             3 => MemoryType::AcpiReclaimable,
             4 => MemoryType::AcpiNvs,
+            // Soft-reserved (specific-purpose) memory, CXL windows among it:
+            // EfiConventionalMemory with EFI_MEMORY_SP in the UEFI map,
+            // which the OS hands to its dax/CXL drivers and boot services
+            // never allocate.
+            SOFT_RESERVED => MemoryType::SpecificPurpose,
             _ => MemoryType::Reserved,
         };
 

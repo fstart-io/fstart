@@ -12,6 +12,10 @@ ufmt = { workspace = true }
 tock-registers = { workspace = true }
 heapless = { workspace = true }
 pci_types = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+fstart-core = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

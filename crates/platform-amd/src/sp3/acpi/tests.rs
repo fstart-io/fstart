@@ -361,7 +361,8 @@ fn x2apic_entries_for_256_threads() {
     let x2: Vec<_> = e.iter().filter(|(k, _)| *k == 9).collect();
     assert_eq!(x2.len(), 1);
     assert_eq!(&x2[0].1[4..8], &0xFFu32.to_le_bytes());
-    assert_eq!(&x2[0].1[12..16], &255u32.to_le_bytes(), "UID");
+    // UID FFh is the NMI entry's "all processors": never a CPU's.
+    assert_eq!(&x2[0].1[12..16], &256u32.to_le_bytes(), "UID");
     assert_eq!(e.iter().filter(|(k, _)| *k == 0xA).count(), 1);
     let dsdt = get(&t, b"DSDT").unwrap();
     assert!(dsdt.windows(4).any(|w| w == b"C0FF"));

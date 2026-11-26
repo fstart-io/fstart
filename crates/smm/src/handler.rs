@@ -90,6 +90,21 @@ impl<'a> SmmContext<'a> {
         Some((held + 1, runtime.num_cpus.into()))
     }
 
+    /// SMRAM as the installer recorded it (the TSEG on AMD64): what no
+    /// address code outside SMM names may reach
+    /// ([`crate::buffer::permitted`]). All of the address space without
+    /// the runtime block, so that every check then fails.
+    #[inline(always)]
+    pub fn smram(&self) -> crate::buffer::Region {
+        if self.params.runtime == 0 {
+            return crate::buffer::Region::new(0, u64::MAX);
+        }
+        // SAFETY: `from_raw`'s contract: the installer's runtime block,
+        // in locked SMRAM for the whole SMI.
+        let runtime = unsafe { &*(self.params.runtime as *const SmmRuntime) };
+        crate::buffer::Region::new(runtime.smram_base, runtime.smram_size)
+    }
+
     #[cfg(any(feature = "stage-bin", test))]
     #[inline(always)]
     pub(crate) fn runtime_ptr(&self) -> Option<*mut SmmRuntime> {
@@ -454,8 +469,18 @@ mod tests {
         ));
         assert_eq!(unsafe { ctx.handler_config::<[u16; 2]>() }, None);
 
+        assert_eq!(
+            ctx.smram(),
+            crate::buffer::Region::new(base, size_of::<Fixture>() as u64)
+        );
+
         fixture.runtime.smram_size = 8;
         let ctx = SmmContext::at(&mut entry);
         assert_eq!(unsafe { ctx.handler_config::<Config>() }, None);
+
+        // Without a runtime block, SMRAM is everything: no check passes.
+        let mut orphan = params(0, 0);
+        let ctx = SmmContext::at(&mut orphan);
+        assert!(ctx.smram().overlaps(0x1000, 4));
     }
 }

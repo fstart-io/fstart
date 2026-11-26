@@ -7,9 +7,11 @@
 
 #![no_std]
 
+pub mod aer;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod cf8;
 pub mod config;
+pub mod cxl;
 pub mod ecam;
 pub mod ecam_host;
 pub mod overlay;
@@ -26,7 +28,7 @@ pub use overlay::{PciType0Config, PciType1Config};
 pub use pci_types::{
     ConfigRegionAccess, EndpointHeader, HeaderType, PciAddress, PciHeader, capability,
 };
-pub use register::{ConfigRegister, bdf, devfn, devfn_parts};
+pub use register::{ConfigRegister, address, bdf, devfn, devfn_parts};
 pub use window::{PciWindow, PciWindowKind};
 
 #[doc(hidden)]

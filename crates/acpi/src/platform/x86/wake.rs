@@ -197,6 +197,24 @@ mod tests {
     }
 
     #[test]
+    fn finds_a_table_by_signature() {
+        let mem = valid_mem();
+        let read = mem.reader();
+        assert_eq!(
+            crate::wake::table_from_rsdp_with(&read, 0x9F000, *b"FACP"),
+            Some((0x2_0000, FADT_LEN as u32))
+        );
+        assert_eq!(
+            crate::wake::table_from_rsdp_with(&read, 0x9F000, *b"IVRS"),
+            None
+        );
+        assert_eq!(
+            crate::wake::table_from_rsdp_with(&read, 0x9F010, *b"FACP"),
+            None
+        );
+    }
+
+    #[test]
     fn accepts_a_legacy_32bit_facs_pointer() {
         let mut mem = valid_mem();
         mem.write(0x2_0000, &fadt_legacy(0x3_0000));

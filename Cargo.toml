@@ -53,7 +53,9 @@ portable-atomic = "1"
 spin = { version = "0.12", default-features = false, features = ["spin_mutex", "portable-atomic"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive"] }
 tock-registers = "0.10"
-pci_types = "0.10.1"
+# `fstart_pci::address` builds a `PciAddress` from its u32 (its test pins
+# the layout): an upgrade is a deliberate, re-tested step.
+pci_types = "=0.10.1"
 x86 = { version = "0.52", default-features = false }
 x86_64_crate = { package = "x86_64", version = "0.15", default-features = false }
 zeroize = { version = "1", default-features = false }
@@ -69,8 +71,8 @@ aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "5849
 
 # CrabEFI's EFI types and X.509 parsing, for host tools; the same revision
 # as crabefi-core in crates/boot.
-crabefi-efi-types = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "b26754578ae23bdd7a2397047489530d2fb28140" }
-crabefi-pkcs7 = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "b26754578ae23bdd7a2397047489530d2fb28140" }
+crabefi-efi-types = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "e4b4ae42bd74d4d8182f97dce4368bd4c51e66ad" }
+crabefi-pkcs7 = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "e4b4ae42bd74d4d8182f97dce4368bd4c51e66ad" }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }

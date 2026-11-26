@@ -29,6 +29,9 @@ pub enum LayoutError {
     SmramTooSmall,
     /// Address arithmetic overflowed.
     Overflow,
+    /// A range to map lies above what 4-level paging reaches
+    /// ([`MAPPED_LIMIT`]), or its tables exceed [`SMM_MAPPED_TABLES_MAX`].
+    Unmappable,
 }
 
 /// Inputs for computing the permanent SMRAM layout.
@@ -219,6 +222,76 @@ pub const SMM_RELOCATION_TABLE_OFFSET: u64 = 0x9000;
 pub const SMM_IDENTITY_TABLE_SIZE: u32 = 6 * 4096;
 pub const SMM_RELOCATION_TABLE_SIZE: u64 = SMM_IDENTITY_TABLE_SIZE as u64;
 
+/// A range above 4 GiB the permanent tables map besides the low 4 GiB
+/// (MMIO a handler must reach: an ECAM window, a root bridge's windows).
+pub type MappedRange = crate::buffer::Region;
+
+/// What 4-level paging (the SMM entry stubs' mode) maps: below 256 TiB.
+pub const MAPPED_LIMIT: u64 = 1 << 48;
+
+/// The most bytes of tables [`MappedRange`]s may add to
+/// [`SMM_IDENTITY_TABLE_SIZE`]: 64 pages (256 KiB of SMRAM), what a build
+/// that checks an image's fit reserves for them.
+pub const SMM_MAPPED_TABLES_MAX: u32 = 64 * 4096;
+
+const PAGE: u64 = 4096;
+const GIB: u64 = 1 << 30;
+const MIB2: u64 = 1 << 21;
+/// Bytes one PML4 entry maps.
+const SLOT: u64 = 1 << 39;
+
+/// The part of `range` above the low 4 GiB, rounded out to 2 MiB pages:
+/// `[base, end)`, `None` if nothing is left. An `Err` for a range above
+/// [`MAPPED_LIMIT`] or one that wraps.
+fn high_part(range: &MappedRange) -> Result<Option<(u64, u64)>, LayoutError> {
+    if range.is_empty() {
+        return Ok(None);
+    }
+    let end = range.end().ok_or(LayoutError::Unmappable)?;
+    if end > MAPPED_LIMIT {
+        return Err(LayoutError::Unmappable);
+    }
+    let base = range.base.max(1 << 32) & !(MIB2 - 1);
+    let end = end.next_multiple_of(MIB2);
+    Ok((base < end).then_some((base, end)))
+}
+
+/// Bytes of the permanent identity tables for the low 4 GiB and `mapped`:
+/// [`SMM_IDENTITY_TABLE_SIZE`] and, per range, a PDPT for each 512 GiB it
+/// touches above the first and a page directory for each GiB it covers
+/// only in part (whole GiBs take 1 GiB pages). An upper bound: ranges that
+/// share tables are counted each.
+///
+/// An error for a range above [`MAPPED_LIMIT`], or tables beyond
+/// [`SMM_MAPPED_TABLES_MAX`].
+pub fn identity_table_size(mapped: &[MappedRange]) -> Result<u32, LayoutError> {
+    let mut pages = 0u64;
+    for range in mapped {
+        let Some((base, end)) = high_part(range)? else {
+            continue;
+        };
+        let (first, last) = (base / SLOT, (end - 1) / SLOT);
+        pages += last - first + 1 - u64::from(first == 0);
+        let (head, tail) = (base / GIB, (end - 1) / GIB);
+        let partial_head = !base.is_multiple_of(GIB) || (head == tail && !end.is_multiple_of(GIB));
+        let partial_tail = head != tail && !end.is_multiple_of(GIB);
+        pages += u64::from(partial_head) + u64::from(partial_tail);
+    }
+    let extra = pages.checked_mul(PAGE).ok_or(LayoutError::Unmappable)?;
+    if extra > u64::from(SMM_MAPPED_TABLES_MAX) {
+        return Err(LayoutError::Unmappable);
+    }
+    Ok(SMM_IDENTITY_TABLE_SIZE + extra as u32)
+}
+
+const PTE_PRESENT: u64 = 1 << 0;
+const PTE_WRITABLE: u64 = 1 << 1;
+/// PWT and PCD: uncached by the default PAT, whatever the MTRRs say.
+const PTE_UNCACHED: u64 = 1 << 3 | 1 << 4;
+const PTE_PAGE_SIZE: u64 = 1 << 7;
+const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
+const ENTRIES: u64 = 512;
+
 /// Build a 4 GiB identity map with 2 MiB pages at an explicitly reserved base.
 ///
 /// # Safety
@@ -226,34 +299,94 @@ pub const SMM_RELOCATION_TABLE_SIZE: u64 = SMM_IDENTITY_TABLE_SIZE as u64;
 /// `base..base + SMM_IDENTITY_TABLE_SIZE` must be writable and exclusively
 /// owned by the caller.
 pub unsafe fn build_identity_tables(base: u64) -> u64 {
-    const PTE_PRESENT: u64 = 1 << 0;
-    const PTE_WRITABLE: u64 = 1 << 1;
-    const PTE_PAGE_SIZE: u64 = 1 << 7;
-    const ENTRIES: usize = 512;
+    // SAFETY: the caller's contract; no ranges need no more than
+    // SMM_IDENTITY_TABLE_SIZE.
+    match unsafe { build_identity_tables_with(base, &[]) } {
+        Ok(cr3) => cr3,
+        Err(_) => base,
+    }
+}
 
-    let pml4 = base as *mut u64;
-    let pdpt = (base + 4096) as *mut u64;
-    let pds = (base + 2 * 4096) as *mut u64;
+/// Build the identity map of the low 4 GiB (2 MiB pages, cached by the
+/// MTRRs) and of the ranges `mapped` above it (1 GiB pages where a range
+/// covers a whole GiB, 2 MiB pages, rounded out, elsewhere; uncached:
+/// they are MMIO) at an explicitly reserved base. Returns the CR3.
+///
+/// # Safety
+///
+/// `base..base + identity_table_size(mapped)` must be writable and
+/// exclusively owned by the caller, `base` page aligned; the CPUs that
+/// load the tables support 1 GiB pages if a range covers a whole GiB.
+pub unsafe fn build_identity_tables_with(
+    base: u64,
+    mapped: &[MappedRange],
+) -> Result<u64, LayoutError> {
+    let size = u64::from(identity_table_size(mapped)?);
+    let limit = base.checked_add(size).ok_or(LayoutError::Overflow)?;
+    let pml4 = base;
+    let pdpt = base + PAGE;
+    let pds = base + 2 * PAGE;
+    let entry = |table: u64, index: u64| (table + 8 * index) as *mut u64;
 
     // SAFETY: caller guarantees the region is writable; all offsets stay within
-    // SMM_IDENTITY_TABLE_SIZE. Zero every unused PML4/PDPT entry so stale
-    // SMRAM contents cannot create unintended translations.
+    // `size`. Zero every unused entry so stale SMRAM contents cannot create
+    // unintended translations.
     unsafe {
-        core::ptr::write_bytes(base as *mut u8, 0, SMM_IDENTITY_TABLE_SIZE as usize);
-        pml4.write((pdpt as u64) | PTE_PRESENT | PTE_WRITABLE);
+        core::ptr::write_bytes(base as *mut u8, 0, size as usize);
+        entry(pml4, 0).write(pdpt | PTE_PRESENT | PTE_WRITABLE);
         for i in 0..4 {
-            pdpt.add(i)
-                .write(((pds as u64) + (i as u64) * 4096) | PTE_PRESENT | PTE_WRITABLE);
+            entry(pdpt, i).write((pds + i * PAGE) | PTE_PRESENT | PTE_WRITABLE);
         }
-        for pd in 0..4 {
-            for entry in 0..ENTRIES {
-                let phys = ((pd * ENTRIES + entry) as u64) << 21;
-                pds.add(pd * ENTRIES + entry)
-                    .write(phys | PTE_PRESENT | PTE_WRITABLE | PTE_PAGE_SIZE);
+        for i in 0..4 * ENTRIES {
+            entry(pds, i).write(i << 21 | PTE_PRESENT | PTE_WRITABLE | PTE_PAGE_SIZE);
+        }
+    }
+
+    let mut next = base + u64::from(SMM_IDENTITY_TABLE_SIZE);
+    // The table an entry points to, a new zeroed one if it is empty.
+    let mut table_of = |at: *mut u64| -> Result<u64, LayoutError> {
+        // SAFETY: `at` is an entry of a table inside the region.
+        let value = unsafe { at.read() };
+        if value & PTE_PRESENT != 0 {
+            return Ok(value & ADDRESS);
+        }
+        if next >= limit {
+            return Err(LayoutError::SmramTooSmall);
+        }
+        let table = next;
+        next += PAGE;
+        // SAFETY: a fresh (zeroed) page of the region.
+        unsafe { at.write(table | PTE_PRESENT | PTE_WRITABLE) };
+        Ok(table)
+    };
+    let leaf = PTE_PRESENT | PTE_WRITABLE | PTE_UNCACHED | PTE_PAGE_SIZE;
+    for range in mapped {
+        let Some((from, to)) = high_part(range)? else {
+            continue;
+        };
+        for gib in from / GIB..=(to - 1) / GIB {
+            let table = table_of(entry(pml4, gib / ENTRIES))?;
+            let at = entry(table, gib % ENTRIES);
+            let (start, stop) = (gib * GIB, (gib + 1) * GIB);
+            // SAFETY: an entry of a PDPT inside the region.
+            let value = unsafe { at.read() };
+            if value & PTE_PAGE_SIZE != 0 {
+                // Already a 1 GiB page.
+                continue;
+            }
+            if value & PTE_PRESENT == 0 && from <= start && to >= stop {
+                // SAFETY: as above.
+                unsafe { at.write(start | leaf) };
+                continue;
+            }
+            let pd = table_of(at)?;
+            for page in from.max(start) / MIB2..to.min(stop) / MIB2 {
+                // SAFETY: an entry of a page directory inside the region.
+                unsafe { entry(pd, page % ENTRIES).write((page * MIB2) | leaf) };
             }
         }
     }
-    base
+    Ok(base)
 }
 
 /// Build the temporary default-SMBASE identity tables.
@@ -415,6 +548,128 @@ mod tests {
 
         assert!(tables[8..4096].iter().all(|&byte| byte == 0));
         assert!(tables[4096 + 4 * 8..8192].iter().all(|&byte| byte == 0));
+    }
+
+    /// Walk the tables at `cr3` (host memory) for `address`: the leaf's
+    /// physical address and flags, `None` if unmapped.
+    fn walk(cr3: u64, address: u64) -> Option<(u64, u64)> {
+        let read = |table: u64, index: u64| unsafe { *((table + 8 * index) as *const u64) };
+        let pml4e = read(cr3, address >> 39 & 511);
+        if pml4e & PTE_PRESENT == 0 {
+            return None;
+        }
+        let pdpte = read(pml4e & ADDRESS, address >> 30 & 511);
+        if pdpte & PTE_PRESENT == 0 {
+            return None;
+        }
+        if pdpte & PTE_PAGE_SIZE != 0 {
+            return Some((
+                (pdpte & ADDRESS & !(GIB - 1)) | (address & (GIB - 1)),
+                pdpte,
+            ));
+        }
+        let pde = read(pdpte & ADDRESS, address >> 21 & 511);
+        if pde & PTE_PRESENT == 0 {
+            return None;
+        }
+        Some(((pde & ADDRESS & !(MIB2 - 1)) | (address & (MIB2 - 1)), pde))
+    }
+
+    fn build(mapped: &[MappedRange]) -> (std::vec::Vec<u64>, u64) {
+        let size = identity_table_size(mapped).unwrap() as usize;
+        // Page aligned: one spare page to align in.
+        let mut tables = std::vec![u64::MAX; size / 8 + 512];
+        let base = (tables.as_mut_ptr() as u64).next_multiple_of(PAGE);
+        let cr3 = unsafe { build_identity_tables_with(base, mapped) }.unwrap();
+        (tables, cr3)
+    }
+
+    /// The MD25-CG0's ECAM (256 MiB at 0x2FFC_8000_0000, in PML4 slot 95):
+    /// a PDPT and a page directory more, 2 MiB uncached pages, the 4 GiB
+    /// below as before, nothing else above.
+    #[test]
+    fn a_high_ecam_window_is_mapped_uncached() {
+        let ecam = MappedRange::new(0x2ffc_8000_0000, 256 << 20);
+        assert_eq!(
+            identity_table_size(&[ecam]),
+            Ok(SMM_IDENTITY_TABLE_SIZE + 2 * 4096)
+        );
+        let (_tables, cr3) = build(&[ecam]);
+        for address in [ecam.base, ecam.base + 0x123_4567, ecam.end().unwrap() - 4] {
+            let (phys, flags) = walk(cr3, address).unwrap();
+            assert_eq!(phys, address);
+            assert_eq!(flags & PTE_UNCACHED, PTE_UNCACHED);
+            assert_ne!(flags & PTE_WRITABLE, 0);
+        }
+        assert_eq!(walk(cr3, ecam.end().unwrap()), None);
+        assert_eq!(walk(cr3, ecam.base - 4), None);
+        assert_eq!(walk(cr3, 1 << 32), None);
+        let (phys, flags) = walk(cr3, 0xfed8_0000).unwrap();
+        assert_eq!(phys, 0xfed8_0000);
+        assert_eq!(flags & PTE_UNCACHED, 0, "the low 4 GiB as before");
+    }
+
+    /// Whole GiBs take 1 GiB pages; ranges sharing tables share them; an
+    /// 8-segment ECAM (2 GiB, aligned) costs a PDPT only.
+    #[test]
+    fn whole_gibs_take_1gib_pages_and_tables_are_shared() {
+        let ecam = MappedRange::new(0x1000_0000_0000, 8 << 28);
+        assert_eq!(
+            identity_table_size(&[ecam]),
+            Ok(SMM_IDENTITY_TABLE_SIZE + 4096)
+        );
+        // A window from 4 GiB + 3 MiB over 2.5 GiB: slot 0, two partial GiBs.
+        let window = MappedRange::new((1 << 32) + (3 << 20), 5 << 29);
+        // Overlapping, in the same GiBs.
+        let inner = MappedRange::new((1 << 32) + (1 << 30), 1 << 20);
+        let mapped = [ecam, window, inner];
+        assert_eq!(
+            identity_table_size(&mapped),
+            Ok(SMM_IDENTITY_TABLE_SIZE + (1 + 2 + 1) * 4096)
+        );
+        let (_tables, cr3) = build(&mapped);
+        let (_, flags) = walk(cr3, ecam.base + (3 << 30) / 2).unwrap();
+        assert_ne!(flags & PTE_PAGE_SIZE, 0);
+        // The window's head is 2 MiB granular, rounded out.
+        assert_eq!(walk(cr3, 1 << 32), None);
+        assert!(walk(cr3, (1 << 32) + (2 << 20)).is_some());
+        // Its middle GiB was whole: a 1 GiB page, the inner range in it.
+        let (phys, _) = walk(cr3, (1 << 32) + (1 << 30) + 0x1234).unwrap();
+        assert_eq!(phys, (1 << 32) + (1 << 30) + 0x1234);
+        let end = window.end().unwrap();
+        assert!(walk(cr3, end - 1).is_some());
+        assert_eq!(walk(cr3, end.next_multiple_of(MIB2)), None);
+    }
+
+    /// Nothing at or above 256 TiB, nothing that wraps, no more tables than
+    /// the reserve; the low 4 GiB need nothing more.
+    #[test]
+    fn unmappable_ranges_are_refused() {
+        assert_eq!(
+            identity_table_size(&[MappedRange::new(MAPPED_LIMIT - (1 << 28), 1 << 28)]),
+            Ok(SMM_IDENTITY_TABLE_SIZE + 2 * 4096)
+        );
+        assert_eq!(
+            identity_table_size(&[MappedRange::new(MAPPED_LIMIT, 1 << 28)]),
+            Err(LayoutError::Unmappable)
+        );
+        assert_eq!(
+            identity_table_size(&[MappedRange::new(u64::MAX - 4, 8)]),
+            Err(LayoutError::Unmappable)
+        );
+        assert_eq!(
+            identity_table_size(&[MappedRange::new(0xe000_0000, 256 << 20)]),
+            Ok(SMM_IDENTITY_TABLE_SIZE)
+        );
+        // 65 partial GiBs, each a page directory.
+        let many: std::vec::Vec<_> = (0..65u64)
+            .map(|i| MappedRange::new((8 + i) << 30, 1 << 21))
+            .collect();
+        assert_eq!(identity_table_size(&many), Err(LayoutError::Unmappable));
+        assert_eq!(
+            identity_table_size(&many[..64]),
+            Ok(SMM_IDENTITY_TABLE_SIZE + SMM_MAPPED_TABLES_MAX)
+        );
     }
 
     #[test]

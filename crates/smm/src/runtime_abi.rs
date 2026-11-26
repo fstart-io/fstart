@@ -1,7 +1,9 @@
 use core::sync::atomic::AtomicU64;
 
-/// Bytes reserved in every image for the concrete handler's configuration.
-pub const HANDLER_CONFIG_CAPACITY: usize = 256;
+/// Bytes reserved in every image for the concrete handler's configuration
+/// (SP7's carries its root bridges' PCI windows, which bound what its
+/// handler reaches for the OS).
+pub const HANDLER_CONFIG_CAPACITY: usize = 1024;
 /// Alignment of the handler configuration block.
 pub const HANDLER_CONFIG_ALIGNMENT: usize = 16;
 

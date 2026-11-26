@@ -43,6 +43,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 pub mod aml_linker;
+#[cfg(feature = "pci")]
+pub mod cedt;
 pub mod cper;
 pub mod dbg2;
 pub mod descriptors;
@@ -54,6 +56,7 @@ pub mod ext;
 pub mod gpe;
 pub mod gtdt;
 pub mod hest;
+pub mod hmat;
 pub mod iort;
 pub mod ivrs;
 pub mod msct;
@@ -74,6 +77,7 @@ pub mod tock_bridge;
 pub mod vfct;
 pub mod video;
 pub mod wake;
+pub mod wdat;
 pub mod wsmt;
 
 // Re-export commonly used types from acpi_tables.

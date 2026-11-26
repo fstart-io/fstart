@@ -8,6 +8,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::{ConfigRegionAccess, PciAddress};
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
+/// PCI segments the window at [`BASE`] decodes, 256 MiB each ([`init_segments`]).
+static SEGMENTS: AtomicUsize = AtomicUsize::new(1);
 
 #[cfg(test)]
 #[path = "ecam_caps_tests.rs"]
@@ -26,9 +28,39 @@ pub(crate) fn function_offset(address: PciAddress) -> usize {
 /// Set the ECAM base address. Call exactly once after the CF8/CFC
 /// write that programs PCIEXBAR.
 pub fn init(base: usize) {
+    init_segments(base, 1);
+}
+
+/// Bytes of one segment's ECAM (256 buses).
+pub const SEGMENT_SIZE: usize = 256 << 20;
+
+/// Set the base of an ECAM window of `segments` PCI segments, segment `s`
+/// at `base + s * 256 MiB` (AMD's `MMIO_CFG_BASE` with a bus range above
+/// 256). [`GlobalEcam`] and [`EcamDevice`] handles then reach every
+/// segment below `segments`.
+pub fn init_segments(base: usize, segments: u16) {
     // Mask off low 20 bits — callers may pass the raw PCIEXBAR value
     // which includes enable/size bits. ECAM addresses are 1 MiB-aligned.
+    SEGMENTS.store(usize::from(segments.max(1)), Ordering::Release);
     BASE.store(base & !0xF_FFFF, Ordering::Release);
+}
+
+/// Segments of the global window ([`init_segments`]).
+#[inline]
+pub fn segments() -> u16 {
+    SEGMENTS.load(Ordering::Acquire) as u16
+}
+
+/// Where the function `address` is mapped in a window of `segments` at
+/// `base` (0: unmapped).
+#[inline]
+fn global_address(base: usize, segments: usize, address: PciAddress) -> Option<usize> {
+    let segment = usize::from(address.segment());
+    if base == 0 || segment >= segments {
+        return None;
+    }
+    base.checked_add(segment.checked_mul(SEGMENT_SIZE)?)?
+        .checked_add(function_offset(address))
 }
 
 /// Return the current ECAM base (0 if uninitialised).
@@ -144,13 +176,11 @@ impl EcamDevice {
         }
         let base = match self.config_base {
             Some(base) => base,
-            None => {
-                let base = BASE.load(Ordering::Acquire);
-                if base == 0 || self.address.segment() != 0 {
-                    return None;
-                }
-                base.checked_add(function_offset(self.address))?
-            }
+            None => global_address(
+                BASE.load(Ordering::Acquire),
+                SEGMENTS.load(Ordering::Acquire),
+                self.address,
+            )?,
         };
         let address = base.checked_add(offset)?;
         address.checked_add(width.checked_sub(1)?)?;
@@ -190,6 +220,46 @@ impl EcamDevice {
             pointer = self.read8(u16::from(pointer) + 1);
         }
         None
+    }
+
+    /// The PCIe extended capabilities of this function, in list order, as
+    /// `(offset, header)`: a bounded walk from 0x100 that stops at an empty
+    /// or all-ones header, a misaligned or out-of-range pointer, or a cycle.
+    pub fn ext_capabilities(&self) -> ExtCapabilities<'_> {
+        ExtCapabilities {
+            device: self,
+            offset: if self.is_present() { 0x100 } else { 0 },
+            seen: [0; 16],
+        }
+    }
+
+    /// Find PCIe extended capability `id` (the header's low 16 bits).
+    pub fn find_ext_capability(&self, id: u16) -> Option<u16> {
+        self.ext_capabilities()
+            .find(|&(_, header)| header as u16 == id)
+            .map(|(offset, _)| offset)
+    }
+
+    /// Find a Designated Vendor-Specific Extended Capability (ID 0x23) of
+    /// `vendor` with DVSEC ID `id` whose declared span fits in config space
+    /// and holds at least `min_bytes` (including the DVSEC headers). A next
+    /// pointer into its own span is a malformed list.
+    pub fn find_dvsec(&self, vendor: u16, id: u16, min_bytes: u16) -> Option<u16> {
+        self.ext_capabilities().find_map(|(offset, header)| {
+            if header as u16 != EXT_CAP_DVSEC || offset > 0xff4 {
+                return None;
+            }
+            let next = (header >> 20) as u16;
+            let dvsec = self.read32(offset + 4);
+            let bytes = (dvsec >> 20) as u16;
+            let end = offset + bytes;
+            (dvsec as u16 == vendor
+                && bytes >= min_bytes.max(12)
+                && usize::from(end) <= FUNCTION_CONFIG_BYTES
+                && !(offset..end).contains(&next)
+                && self.read16(offset + 8) == id)
+                .then_some(offset)
+        })
     }
 
     /// Return a typed config-space overlay for this device.
@@ -466,8 +536,48 @@ impl EcamDevice {
     }
 }
 
-/// Config access to any segment-0 function through the global ECAM base
-/// (see [`init`]), for chipset code that addresses several functions.
+/// PCIe extended capability ID of a Designated Vendor-Specific Extended
+/// Capability (PCIe 6.0 §7.9.6).
+pub const EXT_CAP_DVSEC: u16 = 0x23;
+
+/// The walk of [`EcamDevice::ext_capabilities`].
+pub struct ExtCapabilities<'a> {
+    device: &'a EcamDevice,
+    offset: u16,
+    /// One bit per dword of extended configuration space already visited.
+    seen: [u64; 16],
+}
+
+impl Iterator for ExtCapabilities<'_> {
+    type Item = (u16, u32);
+
+    fn next(&mut self) -> Option<(u16, u32)> {
+        let offset = self.offset;
+        if !(0x100..=0xffc).contains(&offset) || offset & 3 != 0 {
+            return None;
+        }
+        let dword = usize::from(offset / 4);
+        let (slot, bit) = (&mut self.seen[dword / 64], 1u64 << (dword % 64));
+        if *slot & bit != 0 {
+            self.offset = 0;
+            return None;
+        }
+        *slot |= bit;
+        let header = self.device.read32(offset);
+        // 0: no list at 0x100, or a last capability of ID 0 elsewhere; a
+        // null capability (ID 0) with a next pointer is walked through.
+        if matches!(header, 0 | u32::MAX) {
+            self.offset = 0;
+            return None;
+        }
+        self.offset = (header >> 20) as u16;
+        Some((offset, header))
+    }
+}
+
+/// Config access to any function of the global ECAM window's segments
+/// (see [`init`], [`init_segments`]), for chipset code that addresses
+/// several functions.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GlobalEcam;
 
@@ -618,6 +728,26 @@ mod tests {
         assert_eq!(bridge.find_capability(0x0d), None);
         init(0);
         unsafe { dealloc(memory, layout) };
+    }
+
+    /// Segment `s` of a window is `s * 256 MiB` above its base; a segment
+    /// the window does not have, or no window, is unmapped.
+    #[test]
+    fn segments_are_256_mib_slices_of_the_window() {
+        let base = 0x1000_0000_0000usize;
+        let at = |segment, bus, device, function| {
+            global_address(base, 2, PciAddress::new(segment, bus, device, function))
+        };
+        assert_eq!(at(0, 0, 0, 0), Some(base));
+        assert_eq!(at(0, 0xff, 0x1f, 7), Some(base + 0x0fff_f000));
+        assert_eq!(at(1, 0, 0, 0), Some(base + 0x1000_0000));
+        assert_eq!(
+            at(1, 0x42, 1, 2),
+            Some(base + 0x1000_0000 + (0x42 << 20 | 1 << 15 | 2 << 12))
+        );
+        assert_eq!(at(2, 0, 0, 0), None);
+        assert_eq!(global_address(0, 2, PciAddress::new(0, 0, 0, 0)), None);
+        assert_eq!(global_address(base, 1, PciAddress::new(1, 0, 0, 0)), None);
     }
 
     #[test]

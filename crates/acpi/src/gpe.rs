@@ -31,12 +31,19 @@ pub fn prw(gpe: u8, sleep_state: u8) -> Vec<u8> {
 /// `Scope(\_GPE) { Method(_Lgg) { Notify(target, 2) ... } }` (`_Egg` when
 /// `edge`). `targets` are absolute ACPI paths. Empty without targets.
 pub fn notify_wake(gpe: u8, edge: bool, targets: &[&str]) -> Vec<u8> {
+    notify(gpe, edge, targets, DEVICE_WAKE)
+}
+
+/// `Scope(\_GPE) { Method(_Lgg) { Notify(target, value) ... } }` (`_Egg`
+/// when `edge`): e.g. the Hardware Error Device's 0x80 of a firmware-first
+/// platform's error SCI. Empty without targets.
+pub fn notify(gpe: u8, edge: bool, targets: &[&str], value: u8) -> Vec<u8> {
     if targets.is_empty() {
         return Vec::new();
     }
     let method = format!("_{}{:02X}", if edge { 'E' } else { 'L' }, gpe);
     let paths: Vec<Path> = targets.iter().map(|t| Path::new(t)).collect();
-    let notifies: Vec<Notify> = paths.iter().map(|p| Notify::new(p, &DEVICE_WAKE)).collect();
+    let notifies: Vec<Notify> = paths.iter().map(|p| Notify::new(p, &value)).collect();
     let body: Vec<&dyn Aml> = notifies.iter().map(|n| n as &dyn Aml).collect();
     let handler = Method::new(Path::new(&method), 0, false, body);
     let mut bytes = Vec::new();

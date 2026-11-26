@@ -70,6 +70,38 @@ impl AcpiSleepControl {
     }
 }
 
+/// A reset of the machine a payload asks for (UEFI `ResetSystem`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetRequest {
+    /// Everything reset, power-good signals included where the platform
+    /// can (`EfiResetCold`).
+    Cold,
+    /// The processors and the chipset reset, power kept (`EfiResetWarm`).
+    Warm,
+}
+
+/// How the payload's run-time services (after the OS took the machine)
+/// reset it: register-level, as they run without the firmware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RuntimeReset {
+    /// CF9h 06h for both (x86).
+    Cf9,
+    /// An AMD FCH, whose ACPI-MMIO block at `acpi_mmio` says which reset
+    /// CF9h 06h makes: PMx10 ToggleAllPwrGood set for a cold one, clear
+    /// (and the full-reset status cleared) for a warm one.
+    AmdFch { acpi_mmio: u64 },
+}
+
+/// A platform's own resets, when they are not the architecture's.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemReset {
+    /// While the payload runs on the firmware's code (boot services).
+    pub reset: fn(ResetRequest) -> !,
+    /// What the payload's run-time services do.
+    pub runtime: RuntimeReset,
+}
+
 /// The ACPI tables the firmware built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpiTables {
@@ -108,6 +140,9 @@ pub struct Description<'a> {
     /// The console UART, for tables (coreboot, device tree, SPCR).
     pub uart: Option<UartPort>,
     pub pci_root: Option<PciRootInfo>,
+    /// Every PCI segment's ECAM when there are several (the first is
+    /// [`Self::pci_root`]'s); empty for a single segment.
+    pub pci_segments: &'a [PciRootInfo],
     pub framebuffer: Option<FramebufferInfo>,
     pub acpi: Option<AcpiTables>,
     /// Legacy ACPI shutdown controls, matching this platform's FADT and `_S5`.
@@ -123,6 +158,9 @@ pub struct Description<'a> {
     /// Firmware tables payloads scan (ACPI, SMBIOS, ...), reported to
     /// coreboot payloads as table memory.
     pub tables: &'a [Range],
+    /// The platform's resets for a payload's reset service (UEFI
+    /// `ResetSystem`); `None`, the payload's own (x86: CF9h).
+    pub reset: Option<SystemReset>,
 }
 
 impl<'a> Description<'a> {
@@ -138,6 +176,7 @@ impl<'a> Description<'a> {
             console: None,
             uart: None,
             pci_root: None,
+            pci_segments: &[],
             framebuffer: None,
             acpi: None,
             acpi_s5: &[],
@@ -146,6 +185,7 @@ impl<'a> Description<'a> {
             acpi_devices: &[],
             mainboard: ("", ""),
             tables: &[],
+            reset: None,
         }
     }
 

@@ -300,6 +300,10 @@ pub struct MpConfig<'a> {
     pub num_cpus: u16,
     /// Capacity of the platform's per-CPU storage and embedded SMM image.
     pub max_cpus: u16,
+    /// Run every CPU's LAPIC in x2APIC mode: required when an APIC ID is
+    /// above 254. The BSP switches before the APs start, each AP at its
+    /// entry; a CPU without x2APIC fails MP init.
+    pub x2apic: bool,
 }
 
 /// Errors from MP initialization.
@@ -319,6 +323,8 @@ pub enum MpError {
     CacheabilitySetupFailed,
     /// The platform's AP release (instead of INIT/SIPI) failed.
     PlatformLaunchFailed(u32),
+    /// x2APIC mode was requested on a CPU without it.
+    X2ApicUnsupported,
     /// SIPI trampoline placement failed.
     TrampolinePlacementFailed,
     /// No CPU driver matched one or more CPUs.
@@ -404,6 +410,8 @@ static AP_IN_MAILBOX_LOOP: AtomicU8 = AtomicU8::new(0);
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(1);
 /// BSP's hardware ID, captured before releasing APs (zero before MP init).
 static BSP_APIC_ID: AtomicUsize = AtomicUsize::new(0);
+/// The APs switch to x2APIC at entry ([`MpConfig::x2apic`]).
+static AP_X2APIC: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Flight plan (internal)
@@ -622,8 +630,14 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
     unsafe {
         core::arch::asm!("lidt [{}]", in(reg) core::ptr::addr_of!(BSP_IDTR), options(readonly, nostack));
     }
-    // Enable the local APIC and set up virtual wire.
-    let lapic = Lapic::from_msr();
+    // Enable the local APIC (in the BSP's mode) and set up virtual wire.
+    // The BSP checked x2APIC support on itself; a sibling without it is
+    // the same CPU model, so the fallback is unreachable in practice.
+    let lapic = if AP_X2APIC.load(Ordering::Acquire) {
+        Lapic::enable_x2apic().unwrap_or_else(Lapic::from_msr)
+    } else {
+        Lapic::from_msr()
+    };
     lapic.enable();
     lapic.setup_virtual_wire(false);
 
@@ -818,7 +832,12 @@ fn mp_init_inner(
     }
 
     // --- Step 1: BSP LAPIC setup ---
-    let lapic = Lapic::from_msr();
+    let lapic = if config.x2apic {
+        Lapic::enable_x2apic().ok_or(MpError::X2ApicUnsupported)?
+    } else {
+        Lapic::from_msr()
+    };
+    AP_X2APIC.store(lapic.is_x2apic(), Ordering::Release);
     lapic.enable();
     lapic.setup_virtual_wire(true);
 

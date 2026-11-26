@@ -21,7 +21,10 @@ register_bitfields![u64,
         /// Secure memory encryption enable.
         SMEE OFFSET(23) NUMBITS(1) [],
         /// SEV-SNP VM permission levels (16-byte RMP entries).
-        VMPL_EN OFFSET(25) NUMBITS(1) []
+        VMPL_EN OFFSET(25) NUMBITS(1) [],
+        /// Host multi-key memory encryption enable (SME-MK; CPUID
+        /// `8000_0023h` EAX\[0\] says the part has it).
+        HMKEE OFFSET(26) NUMBITS(1) []
     ],
     pub Hwcr [
         SMM_LOCK OFFSET(0) NUMBITS(1) [],
@@ -31,7 +34,12 @@ register_bitfields![u64,
         /// The TSC counts at the P0 frequency (fixed to 1 from Family 10h).
         TSC_FREQ_SEL OFFSET(24) NUMBITS(1) [],
         /// Core performance boost disable.
-        CPB_DIS OFFSET(25) NUMBITS(1) []
+        CPB_DIS OFFSET(25) NUMBITS(1) [],
+        /// Bit 31, which the Zen 6 vendor code sets together with SmmLock
+        /// (`HWCR |= 0x8000_0001`, Dell AmdCcxZen6Dxe `0xe85d..0xe872`,
+        /// instruction-read; GIGABYTE DXE `0x7ed8`). Its meaning is not
+        /// public: the Family 17h/19h PPRs mark it reserved.
+        LOCK_31 OFFSET(31) NUMBITS(1) []
     ],
     /// TOP_MEM: DRAM below 4 GiB ends here.
     pub TopMem [
@@ -46,8 +54,9 @@ register_bitfields![u64,
         ENABLE OFFSET(0) NUMBITS(1) [],
         /// log2 of the bus count.
         BUS_RANGE OFFSET(2) NUMBITS(4) [],
-        /// Base address bits [47:20].
-        ADDRESS OFFSET(20) NUMBITS(28) []
+        /// Base address bits [51:20] (the vendor masks `[63:20]` to the
+        /// physical address width, 52 bits on Zen 6).
+        ADDRESS OFFSET(20) NUMBITS(32) []
     ],
     /// PStateCurLim.
     pub PstateCurLim [
@@ -72,6 +81,14 @@ register_bitfields![u64,
         T_VALID OFFSET(1) NUMBITS(1) [],
         TM_TYPE_DRAM OFFSET(12) NUMBITS(3) [WriteBack = 6],
         MASK OFFSET(17) NUMBITS(35) []
+    ],
+    /// VM_CR (C001_0114, APM vol. 2 §15.30.1).
+    pub VmCr [
+        /// SVMDIS and itself are read-only until reset or the SVM_KEY
+        /// unlocks them.
+        LOCK OFFSET(3) NUMBITS(1) [],
+        /// EFER.SVME cannot be set.
+        SVMDIS OFFSET(4) NUMBITS(1) []
     ]
 ];
 
@@ -86,6 +103,10 @@ pub const PSTATE_0: Msr<PstateDef::Register> = Msr::new(0xc001_0064);
 pub const SMM_BASE: Msr = Msr::new(0xc001_0111);
 pub const SMM_ADDR: Msr = Msr::new(0xc001_0112);
 pub const SMM_MASK: Msr<SmmMask::Register> = Msr::new(0xc001_0113);
+pub const VM_CR: Msr<VmCr::Register> = Msr::new(0xc001_0114);
+/// The key that unlocks VM_CR.LOCK; 0 means no key, the lock holds until
+/// reset.
+pub const SVM_KEY: Msr = Msr::new(0xc001_0118);
 
 /// Core MHz of a Family 17h+ P-state definition, `None` if it isn't
 /// enabled.

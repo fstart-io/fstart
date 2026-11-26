@@ -24,6 +24,24 @@ pub const fn bdf(bus: u8, device: u8, function: u8) -> u16 {
     (bus as u16) << 8 | devfn(device, function) as u16
 }
 
+/// The address of `devfn` on `bus` of `segment`, without
+/// `PciAddress::new`'s device and function range asserts: a panic path an
+/// SMM image may not link, and a [`devfn`] has nothing out of range.
+pub const fn address(segment: u16, bus: u8, devfn: u8) -> PciAddress {
+    const { assert!(size_of::<PciAddress>() == size_of::<u32>()) };
+    // SAFETY: `PciAddress` is one `u32`, segment:bus:device:function =
+    // 16:8:5:3 (same size checked above; the test below pins the packing
+    // and every field over every bus and devfn, and the workspace pins
+    // `pci_types` to the exact version checked); every `u32` is a valid
+    // address. The one place fstart builds an address this way (SMN's host
+    // bridge too).
+    unsafe {
+        core::mem::transmute::<u32, PciAddress>(
+            (segment as u32) << 16 | (bus as u32) << 8 | devfn as u32,
+        )
+    }
+}
+
 /// A 32-bit config register of one function, with the bitfields `R`.
 ///
 /// Every access goes through `P`; the type implements the tock interfaces so
@@ -124,6 +142,26 @@ pub unsafe fn probe_direct_child<P: ConfigRegionAccess>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_address_without_the_asserts_is_the_same_address() {
+        // Every bus and devfn on segments whose bits cover all 16, each
+        // field read back: a `PciAddress` layout other than the packed u32
+        // (same size or not) fails here before it can reach `address`.
+        for segment in [0, 1, 0x1234, 0x8000, u16::MAX] {
+            for bus in 0..=u8::MAX {
+                for devfn in 0..=u8::MAX {
+                    let (device, function) = devfn_parts(devfn);
+                    let a = address(segment, bus, devfn);
+                    assert_eq!(a, PciAddress::new(segment, bus, device, function));
+                    assert_eq!(
+                        (a.segment(), a.bus(), a.device(), a.function()),
+                        (segment, bus, device, function)
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn temporary_bridge_probe_restores_routing_without_touching_bars() {

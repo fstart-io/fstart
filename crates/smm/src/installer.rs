@@ -7,9 +7,9 @@ use crate::header::{
     EntryDescriptor, FLAG_COREBOOT_MODULE_ARGS, FLAG_PROTECTED_MODE, HeaderError, SmmImageHeader,
 };
 use crate::layout::{
-    CpuSmmLayout, LayoutError, SMM_ENTRY_OFFSET, SMM_IDENTITY_TABLE_SIZE,
-    SMM_RELOCATION_TABLE_OFFSET, SmramLayout, build_identity_tables, compute_common_base,
-    compute_cpu_layout, compute_page_table_base,
+    CpuSmmLayout, LayoutError, MappedRange, SMM_ENTRY_OFFSET, SMM_RELOCATION_TABLE_OFFSET,
+    SmramLayout, build_identity_tables_with, compute_common_base, compute_cpu_layout,
+    compute_page_table_base, identity_table_size,
 };
 use crate::runtime::{
     CorebootModuleArgs, HANDLER_CONFIG_ALIGNMENT, HANDLER_CONFIG_CAPACITY, SmmEntryParams,
@@ -30,6 +30,10 @@ pub struct InstallConfig<'a, T: Copy> {
     /// Configuration of the board's SMI handler: the type its handler
     /// function takes (see [`smm_bin!`](crate::smm_bin)).
     pub handler_config: &'a T,
+    /// MMIO above 4 GiB the handler reaches besides the low 4 GiB
+    /// ([`crate::layout::build_identity_tables_with`]; its tables are
+    /// SMRAM's, [`identity_table_size`]). Empty for most chipsets.
+    pub mapped: &'a [MappedRange],
 }
 
 /// Addresses of an installed image.
@@ -135,6 +139,7 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
     if smram_top & 0xfff != 0 {
         return Err(InstallError::BadAlignment);
     }
+    let page_table_size = identity_table_size(config.mapped)?;
     let layout = SmramLayout {
         smram_base: config.smram_base,
         smram_size: config.smram_size,
@@ -143,7 +148,7 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
         stack_size: header.stack_size,
         entry_stub_size: max_stub_size,
         handler_mem_size: header.handler_mem_size,
-        page_table_size: SMM_IDENTITY_TABLE_SIZE,
+        page_table_size,
     };
     let common_base = compute_common_base(&layout)?;
     let page_table_base = compute_page_table_base(&layout)?;
@@ -177,10 +182,10 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
     );
 
     // The entry stub carries these addresses through 32-bit registers and the
-    // permanent tables map only the low 4 GiB. Validate the complete permanent
+    // permanent tables map SMRAM through the low 4 GiB. Validate the complete permanent
     // placement before writing either the handler or an entry stub.
     check_low_range(common_base, header.handler_mem_size as u64)?;
-    check_low_range(page_table_base, SMM_IDENTITY_TABLE_SIZE as u64)?;
+    check_low_range(page_table_base, page_table_size.into())?;
     for address in [common_entry, runtime_addr, config_addr, page_table_base] {
         check_low_address(address)?;
     }
@@ -224,7 +229,7 @@ pub unsafe fn install_pic_image<'a, T: Copy>(
 
     // Permanent tables are built inside the same SMRAM allocation and remain
     // inaccessible to the OS after chipset lock.
-    let cr3 = unsafe { build_identity_tables(page_table_base) };
+    let cr3 = unsafe { build_identity_tables_with(page_table_base, config.mapped) }?;
 
     for (i, cpu) in cpus.iter().enumerate() {
         let entry = header.entry(image, i as u16)?;
@@ -637,6 +642,7 @@ mod tests {
                     num_cpus: header.entry_count,
                     save_state_size: 0x400,
                     handler_config: &TEST_CONFIG,
+                    mapped: &[],
                 },
                 &mut cpus,
             )
@@ -667,6 +673,7 @@ mod tests {
                     num_cpus: 1,
                     save_state_size: 0x400,
                     handler_config: &TEST_CONFIG,
+                    mapped: &[],
                 },
                 &mut cpus,
             )
@@ -692,6 +699,60 @@ mod tests {
             )
         };
         assert_eq!(config, TEST_CONFIG);
+    }
+
+    /// MMIO above 4 GiB (a high ECAM window) is mapped in the permanent
+    /// tables, which SMRAM holds: the handler moves down by their size. A
+    /// range the tables cannot map fails before the first SMRAM write.
+    #[test]
+    fn maps_high_mmio_in_smram_tables() {
+        let (image, _) = test_image();
+        let smram_size = 0x8_0000usize;
+        let zero = CpuSmmLayout {
+            smbase: 0,
+            entry_addr: 0,
+            save_state_base: 0,
+            save_state_top: 0,
+            stack_bottom: 0,
+            stack_top: 0,
+        };
+        let install = |smram: &TestSmram, mapped: &[MappedRange]| {
+            let mut cpus = [zero];
+            unsafe {
+                install_pic_image(
+                    &image,
+                    InstallConfig {
+                        smram_base: smram.base,
+                        smram_size: smram_size as u64,
+                        num_cpus: 1,
+                        save_state_size: 0x400,
+                        handler_config: &TEST_CONFIG,
+                        mapped,
+                    },
+                    &mut cpus,
+                )
+            }
+            .map(|installed| (installed.common_base, installed.cr3))
+        };
+        let smram = TestSmram::new(smram_size, 0x5a);
+        let low_only = install(&smram, &[]).unwrap().0 - smram.base;
+        let smram = TestSmram::new(smram_size, 0x5a);
+        let ecam = MappedRange::new(0x2ffc_8000_0000, 256 << 20);
+        let (common_base, cr3) = install(&smram, &[ecam]).unwrap();
+        assert_eq!(low_only, common_base - smram.base + 2 * 4096);
+        let top = smram.base + smram_size as u64;
+        assert!(cr3 > common_base && cr3 + 8 * 4096 <= top);
+        // PML4 slot 95 points into SMRAM.
+        let pml4e = unsafe { *((cr3 + 8 * 95) as *const u64) };
+        assert!((smram.base..top).contains(&(pml4e & !0xfff)));
+
+        let smram = TestSmram::new(smram_size, 0x5a);
+        let above = MappedRange::new(1 << 48, 256 << 20);
+        assert_eq!(
+            install(&smram, &[above]),
+            Err(InstallError::Layout(LayoutError::Unmappable))
+        );
+        assert!(smram.bytes().iter().all(|&byte| byte == 0x5a));
     }
 
     fn assert_early_failure(image: &[u8], expected: InstallError) {

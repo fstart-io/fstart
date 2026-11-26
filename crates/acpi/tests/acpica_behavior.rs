@@ -187,6 +187,106 @@ fn pci_osc_negotiates_only_validated_control_and_rejects_bad_requests() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// The CXL host bridge `_OSC`, OS-first and firmware-first: PCI controls
+/// (CDW3) through either UUID, CXL controls (CDW5) through the CXL one as
+/// AMD's handler decides from the OS's support (CDW4).
+#[test]
+fn cxl_osc_grants_what_the_platform_policy_leaves_the_os() {
+    use fstart_acpi::osc::{CxlControls, cxl_host_osc, pci_control};
+    let dir = std::env::temp_dir().join(format!("fstart-cxl-osc-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let identity = acpi_dsl! { Name("_HID","ACPI0016"); Name("_CID",EisaId("PNP0A08")); };
+    // CDW1 0, CDW2 0x1F, CDW3 0xFF (AER, DPC among them), CDW4 0x1F (BUF1:
+    // 0, no CXL register access nor isolation support), CDW5 0x3F.
+    let test = acpi_dsl! {
+        Name("BUF0",Buffer(0u8,0u8,0u8,0u8,31u8,0u8,0u8,0u8,255u8,0u8,0u8,0u8,
+            31u8,0u8,0u8,0u8,63u8,0u8,0u8,0u8));
+        Name("BUF1",Buffer(0u8,0u8,0u8,0u8,31u8,0u8,0u8,0u8,255u8,0u8,0u8,0u8,
+            0u8,0u8,0u8,0u8,63u8,0u8,0u8,0u8));
+        Method("TEST",1,Serialized) {
+            Local0=BUF0;
+            Local1=ToUUID("68f2d50b-c469-4d8a-bd3d-941a103fd3fc");
+            Local3=5u8;
+            If (Arg0==1u8) { Local1=ToUUID("33db4d5b-1ff7-401c-9657-7441c03dd766"); Local3=3u8; }
+            If (Arg0==2u8) { Local1=ToUUID("00000000-0000-0000-0000-000000000000"); }
+            If (Arg0==3u8) { Local0=BUF1; }
+            Return(_OSC(Local1,1u8,Local3,Local0));
+        }
+    };
+    let all = CxlControls {
+        memory_error_reporting: true,
+        isolation: true,
+    };
+    let none = CxlControls {
+        memory_error_reporting: false,
+        isolation: false,
+    };
+    for (name, pci, cxl, expected) in [
+        (
+            "os-first",
+            !0,
+            all,
+            [
+                "10 00 00 00 1F 00 00 00 FF 00 00 00 1F 00 00 00 23 00 00 00",
+                "00 00 00 00 1F 00 00 00 FF 00 00 00 1F 00 00 00 3F 00 00 00",
+                "04 00 00 00 1F 00 00 00 FF 00 00 00 1F 00 00 00 3F 00 00 00",
+                "10 00 00 00 1F 00 00 00 FF 00 00 00 00 00 00 00 00 00 00 00",
+            ],
+        ),
+        (
+            "firmware-first",
+            !pci_control::FIRMWARE_FIRST,
+            none,
+            [
+                "10 00 00 00 1F 00 00 00 77 00 00 00 1F 00 00 00 00 00 00 00",
+                "10 00 00 00 1F 00 00 00 77 00 00 00 1F 00 00 00 3F 00 00 00",
+                "04 00 00 00 1F 00 00 00 FF 00 00 00 1F 00 00 00 3F 00 00 00",
+                "10 00 00 00 1F 00 00 00 77 00 00 00 00 00 00 00 00 00 00 00",
+            ],
+        ),
+    ] {
+        let osc = cxl_host_osc(pci, cxl);
+        let mut storage = [0; 4096];
+        let table = AmlWriter::table(
+            &mut storage,
+            *b"DSDT",
+            2,
+            *b"FSTART",
+            *b"OSC_TEST",
+            1,
+            |writer| {
+                writer.scope("\\_SB_", |writer| {
+                    writer.device("PC00", |writer| {
+                        writer.emit(&identity, &[])?;
+                        writer.raw(&osc)?;
+                        writer.emit(&test, &[])
+                    })
+                })
+            },
+        )
+        .unwrap();
+        fs::write(dir.join("dsdt.aml"), table.as_slice().unwrap()).unwrap();
+        run(&dir, "iasl", &["-d", "dsdt.aml"]);
+        assert!(run(&dir, "iasl", &["-tc", "dsdt.dsl"]).contains("0 Errors"));
+        for (case, expected) in expected.iter().enumerate() {
+            let command = format!("execute \\_SB.PC00.TEST {case}");
+            let output = run(&dir, "acpiexec", &["-dt", "-b", &command, "dsdt.aml"]);
+            // The returned buffer's dump, 16 bytes a line.
+            let bytes: Vec<&str> = (output.lines())
+                .skip_while(|line| !line.contains("[Buffer]"))
+                .skip(1)
+                .take_while(|line| line.trim_start().starts_with("00"))
+                .flat_map(|line| {
+                    let dump = line.split("//").next().unwrap();
+                    dump.split_once(':').unwrap().1.split_whitespace()
+                })
+                .collect();
+            assert_eq!(bytes.join(" "), *expected, "{name} case {case}: {output}");
+        }
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn pci_prt_resolves_bridge_scope_and_preserves_wide_gsi_values() {
     let dir = std::env::temp_dir().join(format!("fstart-prt-behavior-{}", std::process::id()));
