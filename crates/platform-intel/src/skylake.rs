@@ -17,6 +17,8 @@ pub struct SkylakeSunrisePointConfig {
     pub max_cpus: u16,
     /// Board subsystem IDs for bus-0 functions.
     pub pci_subsystem_ids: &'static [crate::facts::PciSubsystemId],
+    /// PCIe bridges declared hotplug-capable with their bus/memory/I/O reservations.
+    pub pci_hotplug_ports: &'static [crate::facts::PciHotplugPort],
 }
 
 impl SkylakeSunrisePointConfig {
@@ -37,7 +39,19 @@ impl SkylakeSunrisePointConfig {
             southbridge,
             max_cpus,
             pci_subsystem_ids,
+            pci_hotplug_ports: &[],
         }
+    }
+
+    /// Declare PCIe hotplug ports (for example, Thunderbolt or ExpressCard root
+    /// ports) with their bus, MMIO, prefetchable MMIO, and I/O reservations.
+    #[must_use]
+    pub const fn with_pci_hotplug_ports(
+        mut self,
+        ports: &'static [crate::facts::PciHotplugPort],
+    ) -> Self {
+        self.pci_hotplug_ports = ports;
+        self
     }
 }
 
@@ -65,6 +79,10 @@ impl IntelPlatformConfig for SkylakeSunrisePointConfig {
 
     fn pci_subsystem_ids(&self) -> &'static [crate::facts::PciSubsystemId] {
         self.pci_subsystem_ids
+    }
+
+    fn pci_hotplug_ports(&self) -> &'static [crate::facts::PciHotplugPort] {
+        self.pci_hotplug_ports
     }
 }
 

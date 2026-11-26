@@ -100,9 +100,16 @@ impl PciEcam {
                 continue;
             }
             for kind in WINDOW_KINDS {
+                let min = device.hotplug_min[kind as usize];
                 let window = device.windows[kind as usize];
                 if !window.placed {
+                    if min != 0 {
+                        return false;
+                    }
                     continue;
+                }
+                if window.size < min {
+                    return false;
                 }
                 let Some(end) = window.base.checked_add(window.size) else {
                     return false;

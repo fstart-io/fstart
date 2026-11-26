@@ -92,9 +92,154 @@ pub struct PciFixedBar {
 /// Maximum number of fixed BARs declared by one platform.
 pub const MAX_PCI_FIXED_BARS: usize = 16;
 pub type PciFixedBars = HVec<PciFixedBar, MAX_PCI_FIXED_BARS>;
+/// Maximum number of PCIe hotplug ports declared by one platform.
+pub const MAX_PCI_HOTPLUG_PORTS: usize = 16;
 /// Unmanaged type-0 functions: never probe BARs or change command.
 /// RO slot-presence/header reads may still be needed to discover siblings.
 pub type PciExcludedFunctions = HVec<PciAddress, 32>;
+
+/// Minimum bus and bridge-window resources reserved for PCIe hotplug behind
+/// a port (or distributed across hotplug-capable downstream switch ports
+/// behind it, such as a Thunderbolt controller).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciHotplugResources {
+    /// Additional bus numbers reserved beyond those discovered at boot.
+    pub extra_buses: u8,
+    /// Minimum non-prefetchable 32-bit MMIO bridge window in bytes (rounded up
+    /// to 1 MiB granularity).
+    pub mmio_size: u64,
+    /// Minimum prefetchable MMIO bridge window in bytes (rounded up to 1 MiB
+    /// granularity). Ignored on bridges without a prefetchable window.
+    pub pref_mmio_size: u64,
+    /// Minimum port I/O bridge window in bytes (rounded up to 4 KiB
+    /// granularity).
+    pub io_size: u64,
+}
+
+impl PciHotplugResources {
+    /// Reasonable default hotplug reservation: 16 extra buses, 32 MiB
+    /// non-prefetchable MMIO, 64 MiB prefetchable MMIO, and 8 KiB port I/O.
+    /// Fits comfortably in typical 32-bit MMIO and 64 KiB I/O apertures while
+    /// accommodating docks, NICs, NVMe drives, and USB/Thunderbolt switches.
+    pub const DEFAULT: Self = Self {
+        extra_buses: 16,
+        mmio_size: 32 * 1024 * 1024,
+        pref_mmio_size: 64 * 1024 * 1024,
+        io_size: 8 * 1024,
+    };
+
+    /// Preset for Thunderbolt / USB4 ports on platforms with above-4 GiB
+    /// 64-bit PCI MMIO: 32 extra buses, 64 MiB non-prefetchable MMIO, 64 GiB
+    /// 64-bit prefetchable MMIO (fits large ReBAR eGPUs and daisy-chained
+    /// docks without consuming 32-bit MMIO), and 8 KiB port I/O.
+    pub const THUNDERBOLT: Self = Self {
+        extra_buses: 32,
+        mmio_size: 64 * 1024 * 1024,
+        pref_mmio_size: 64 * 1024 * 1024 * 1024,
+        io_size: 8 * 1024,
+    };
+
+    /// Split this budget evenly across `count` hotplug-capable downstream ports
+    /// on a switch internal bus, rounding each resource down to its bridge
+    /// window granularity so the combined reservation never exceeds `self`.
+    const fn split(self, count: u8) -> Self {
+        if count <= 1 {
+            return self;
+        }
+        let n = count as u64;
+        Self {
+            extra_buses: self.extra_buses / count,
+            mmio_size: (self.mmio_size / n) & !(WindowKind::Memory.granularity() - 1),
+            pref_mmio_size: (self.pref_mmio_size / n)
+                & !(WindowKind::Prefetchable.granularity() - 1),
+            io_size: (self.io_size / n) & !(WindowKind::Io.granularity() - 1),
+        }
+    }
+}
+
+impl Default for PciHotplugResources {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Board declaration marking a PCIe bridge (typically a root port) as hotplug-
+/// capable with explicit or default bus/memory/I/O reservations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PciHotplugPort {
+    pub segment: u16,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub resources: PciHotplugResources,
+}
+
+impl PciHotplugPort {
+    /// Declare `bus:device.function` on segment 0 as a hotplug port with
+    /// [`PciHotplugResources::DEFAULT`].
+    pub const fn bdf(bus: u8, device: u8, function: u8) -> Self {
+        Self::sbdf(0, bus, device, function)
+    }
+
+    /// Declare `segment:bus:device.function` as a hotplug port with
+    /// [`PciHotplugResources::DEFAULT`].
+    pub const fn sbdf(segment: u16, bus: u8, device: u8, function: u8) -> Self {
+        Self {
+            segment,
+            bus,
+            device,
+            function,
+            resources: PciHotplugResources::DEFAULT,
+        }
+    }
+
+    /// Declare `address` as a hotplug port with [`PciHotplugResources::DEFAULT`].
+    pub fn new(address: PciAddress) -> Self {
+        Self::sbdf(
+            address.segment(),
+            address.bus(),
+            address.device(),
+            address.function(),
+        )
+    }
+
+    /// Convert the stored coordinates into a [`PciAddress`] when `device < 32`
+    /// and `function < 8`.
+    pub fn address(self) -> Option<PciAddress> {
+        (self.device < 32 && self.function < 8)
+            .then(|| PciAddress::new(self.segment, self.bus, self.device, self.function))
+    }
+
+    /// Override the entire resource reservation.
+    pub const fn with_resources(mut self, resources: PciHotplugResources) -> Self {
+        self.resources = resources;
+        self
+    }
+
+    /// Override the number of extra buses reserved for hotplug.
+    pub const fn with_extra_buses(mut self, extra_buses: u8) -> Self {
+        self.resources.extra_buses = extra_buses;
+        self
+    }
+
+    /// Override the minimum non-prefetchable MMIO window size in bytes.
+    pub const fn with_mmio(mut self, mmio_size: u64) -> Self {
+        self.resources.mmio_size = mmio_size;
+        self
+    }
+
+    /// Override the minimum prefetchable MMIO window size in bytes.
+    pub const fn with_pref_mmio(mut self, pref_mmio_size: u64) -> Self {
+        self.resources.pref_mmio_size = pref_mmio_size;
+        self
+    }
+
+    /// Override the minimum port I/O window size in bytes.
+    pub const fn with_io(mut self, io_size: u64) -> Self {
+        self.resources.io_size = io_size;
+        self
+    }
+}
 
 /// BAR type after sizing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +309,9 @@ struct PciDev {
     subordinate_bus: u8,
     /// For type-1 bridges: the windows, by [`WindowKind`].
     windows: [Window; WINDOW_KINDS.len()],
+    /// For type-1 bridges: minimum window sizes reserved for hotplug, by
+    /// [`WindowKind`], already rounded to window granularity.
+    hotplug_min: [u64; WINDOW_KINDS.len()],
     /// For type-1 bridges: what its prefetchable window can forward.
     prefetch: PrefetchWindow,
     /// The bridge whose secondary bus it is on; `None` on the root bus.
@@ -419,6 +567,7 @@ pub struct PciEcam {
     roots: HVec<Root, MAX_PCI_ROOTS>,
     devices: HVec<PciDev, MAX_PCI_DEVICES>,
     fixed_bars: PciFixedBars,
+    hotplug_ports: HVec<PciHotplugPort, MAX_PCI_HOTPLUG_PORTS>,
     auto_bus_master: bool,
     excluded_functions: PciExcludedFunctions,
     enumeration_started: bool,
@@ -629,6 +778,149 @@ impl PciEcam {
             return Err(PciEcamError::FixedBarInvalid);
         }
         Ok(root)
+    }
+
+    /// Declare PCIe hotplug ports and their minimum bus/memory/I/O reservations
+    /// before enumeration.
+    ///
+    /// When a declared port leads to a PCIe switch (such as a Thunderbolt
+    /// controller) whose downstream ports advertise PCIe Slot Capabilities
+    /// `Hot-Plug Capable`, the reservation is distributed across those
+    /// downstream hotplug ports instead of staying idle on the root port; the
+    /// ancestor bridges automatically grow their bus ranges and forwarding
+    /// windows to cover them. Otherwise (for example, an empty hotplug root
+    /// port) the declared port reserves the resources directly.
+    pub fn add_hotplug_ports(&mut self, ports: &[PciHotplugPort]) -> Result<(), PciEcamError> {
+        if self.enumeration_started || !self.devices.is_empty() {
+            return Err(PciEcamError::ConfigError);
+        }
+        let mut next = self.hotplug_ports.clone();
+        for &port in ports {
+            let Some(address) = port.address() else {
+                return Err(PciEcamError::ConfigError);
+            };
+            if self.root_of(address).is_none()
+                || next
+                    .iter()
+                    .any(|existing| existing.address() == Some(address))
+            {
+                return Err(PciEcamError::ConfigError);
+            }
+            let io_rounded = port
+                .resources
+                .io_size
+                .checked_next_multiple_of(WindowKind::Io.granularity());
+            let mmio_rounded = port
+                .resources
+                .mmio_size
+                .checked_next_multiple_of(WindowKind::Memory.granularity());
+            let pref_rounded = port
+                .resources
+                .pref_mmio_size
+                .checked_next_multiple_of(WindowKind::Prefetchable.granularity());
+            if io_rounded.is_none_or(|s| s > 0x1_0000)
+                || mmio_rounded.is_none_or(|s| s > plan::FOUR_GIB)
+                || pref_rounded.is_none()
+            {
+                return Err(PciEcamError::ConfigError);
+            }
+            next.push(port)
+                .map_err(|_| PciEcamError::ResourceRangeLimit)?;
+        }
+        self.hotplug_ports = next;
+        Ok(())
+    }
+
+    fn hotplug_port_resources(&self, addr: PciAddress) -> Option<PciHotplugResources> {
+        self.hotplug_ports
+            .iter()
+            .find(|port| port.address() == Some(addr))
+            .map(|port| port.resources)
+    }
+
+    /// Whether `device` is a PCIe Downstream Switch Port whose Slot Capabilities
+    /// advertise `Hot-Plug Capable`.
+    fn is_hotplug_downstream_port(device: crate::EcamDevice) -> bool {
+        use tock_registers::LocalRegisterCopy;
+        let Some(cap) = device.find_capability(0x10) else {
+            return false;
+        };
+        if cap + 0x18 > 0x100 {
+            return false;
+        }
+        let pcie_caps = LocalRegisterCopy::<u16, crate::PCI_EXPRESS_CAPABILITIES::Register>::new(
+            device.read16(cap + 2),
+        );
+        if !pcie_caps.matches_all(
+            crate::PCI_EXPRESS_CAPABILITIES::DEVICE_PORT_TYPE::DownstreamPort
+                + crate::PCI_EXPRESS_CAPABILITIES::SLOT_IMPLEMENTED::SET,
+        ) {
+            return false;
+        }
+        let slot_caps =
+            LocalRegisterCopy::<u32, crate::PCI_EXPRESS_SLOT_CAPABILITIES::Register>::new(
+                device.read32(cap + 0x14),
+            );
+        slot_caps.is_set(crate::PCI_EXPRESS_SLOT_CAPABILITIES::HOT_PLUG_CAPABLE)
+    }
+
+    /// Count hotplug-capable downstream switch ports present on `bus`.
+    fn count_hotplug_downstream_ports(
+        &self,
+        root: usize,
+        bus: u8,
+        selected: Option<&[PciAddress]>,
+    ) -> u8 {
+        let segment = self.roots[root].segment;
+        let mut count = 0u8;
+        for dev in 0..32u8 {
+            let max_func = if let Some(ports) = selected {
+                if !ports
+                    .iter()
+                    .any(|p| p.segment() == segment && p.bus() == bus && p.device() == dev)
+                {
+                    continue;
+                }
+                8
+            } else {
+                let addr = PciAddress::new(segment, bus, dev, 0);
+                let excluded_zero = self.excluded_functions.contains(&addr);
+                if !excluded_zero && self.read32(addr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID {
+                    continue;
+                }
+                let Some(device) = self.device(addr) else {
+                    continue;
+                };
+                if excluded_zero || device.read8(PCI_HEADER_TYPE) & PCI_HEADER_TYPE_MULTI_FUNC != 0
+                {
+                    8
+                } else {
+                    1
+                }
+            };
+            for func in 0..max_func {
+                let faddr = PciAddress::new(segment, bus, dev, func);
+                if self.excluded_functions.contains(&faddr)
+                    || selected.is_some_and(|ports| !ports.contains(&faddr))
+                {
+                    continue;
+                }
+                if (func > 0 || selected.is_some())
+                    && self.read32(faddr, PCI_VENDOR_ID) == PCI_VENDOR_INVALID
+                {
+                    continue;
+                }
+                let Some(device) = self.device(faddr) else {
+                    continue;
+                };
+                if device.read8(PCI_HEADER_TYPE) & 0x7f == PCI_HEADER_TYPE_BRIDGE
+                    && Self::is_hotplug_downstream_port(device)
+                {
+                    count = count.saturating_add(1);
+                }
+            }
+        }
+        count
     }
 
     // -- ECAM helpers --
@@ -905,6 +1197,7 @@ impl PciEcam {
             secondary_bus: 0,
             subordinate_bus: 0,
             windows: Default::default(),
+            hotplug_min: [0; WINDOW_KINDS.len()],
             prefetch,
             parent: None,
             programmed: false,
@@ -940,17 +1233,35 @@ impl PciEcam {
         }
     }
 
+    fn hotplug_min_for(
+        budget: PciHotplugResources,
+        prefetch: PrefetchWindow,
+    ) -> [u64; WINDOW_KINDS.len()] {
+        let round = |bytes: u64, kind: WindowKind| bytes.next_multiple_of(kind.granularity());
+        [
+            round(budget.io_size, WindowKind::Io),
+            round(budget.mmio_size, WindowKind::Memory),
+            if prefetch != PrefetchWindow::None {
+                round(budget.pref_mmio_size, WindowKind::Prefetchable)
+            } else {
+                0
+            },
+        ]
+    }
+
     // -- Enumeration --
 
     /// Enumerate a bus of root `root` recursively.  Discovers devices,
     /// assigns bus numbers of the root to bridges, and recurses behind them.
+    /// Returns whether any descendant claimed `inherited_hotplug`.
     fn enumerate_bus(
         &mut self,
         root: usize,
         bus: u8,
         mode: &mut Scan,
         single_device: bool,
-    ) -> Result<(), PciEcamError> {
+        inherited_hotplug: Option<PciHotplugResources>,
+    ) -> Result<bool, PciEcamError> {
         use crate::PCI_BRIDGE_BUSES;
         use tock_registers::LocalRegisterCopy;
         let Root {
@@ -975,6 +1286,14 @@ impl PciEcam {
             }
             _ => None,
         };
+        let resource_scan = matches!(mode, Scan::Resources { .. });
+        let hotplug_downstream_count =
+            if resource_scan && !single_device && inherited_hotplug.is_some() {
+                self.count_hotplug_downstream_ports(root, bus, selected)
+            } else {
+                0
+            };
+        let mut bus_claimed = false;
         // PCIe root/downstream ports are point-to-point: only device0 can
         // exist on the secondary bus. Never send impossible Type0 requests.
         for dev in 0..if single_device { 1u8 } else { 32u8 } {
@@ -1023,9 +1342,7 @@ impl PciEcam {
                     continue;
                 }
 
-                if let Some(mut pci_dev) =
-                    self.probe_device(faddr, matches!(mode, Scan::Resources { .. }))?
-                {
+                if let Some(mut pci_dev) = self.probe_device(faddr, resource_scan)? {
                     if matches!(mode, Scan::ConfigOnly(_)) {
                         fstart_log::info!(
                             "pci: config-only function bus={:#x} device={:#x} function={} header={:#x}",
@@ -1061,13 +1378,75 @@ impl PciEcam {
                             );
                             self.write32(faddr, PCI_PRIMARY_BUS, buses.get());
 
-                            let single_device=device.find_capability(0x10).filter(|&c|c+4<=0x100).is_some_and(|c| {
-                                let caps=LocalRegisterCopy::<u16,crate::PCI_EXPRESS_CAPABILITIES::Register>::new(device.read16(c+2));
-                                caps.matches_all(crate::PCI_EXPRESS_CAPABILITIES::DEVICE_PORT_TYPE::RootPort) || caps.matches_all(crate::PCI_EXPRESS_CAPABILITIES::DEVICE_PORT_TYPE::DownstreamPort)
-                            });
-                            self.enumerate_bus(root, secondary, mode, single_device)?;
+                            let child_single_device = device
+                                .find_capability(0x10)
+                                .filter(|&c| c + 4 <= 0x100)
+                                .is_some_and(|c| {
+                                    let caps = LocalRegisterCopy::<
+                                        u16,
+                                        crate::PCI_EXPRESS_CAPABILITIES::Register,
+                                    >::new(
+                                        device.read16(c + 2)
+                                    );
+                                    caps.matches_all(
+                                        crate::PCI_EXPRESS_CAPABILITIES::DEVICE_PORT_TYPE::RootPort,
+                                    ) || caps.matches_all(
+                                        crate::PCI_EXPRESS_CAPABILITIES::DEVICE_PORT_TYPE::DownstreamPort,
+                                    )
+                                });
 
-                            // Finalise subordinate = highest bus found.
+                            let configured = resource_scan
+                                .then(|| self.hotplug_port_resources(faddr))
+                                .flatten();
+                            let inherited_share = if resource_scan && configured.is_none() {
+                                inherited_hotplug
+                                    .filter(|_| Self::is_hotplug_downstream_port(device))
+                                    .map(|budget| {
+                                        if single_device {
+                                            budget
+                                        } else {
+                                            budget.split(hotplug_downstream_count)
+                                        }
+                                    })
+                            } else {
+                                None
+                            };
+                            let bridge_budget = configured.or(inherited_share);
+                            let child_budget = if !resource_scan {
+                                None
+                            } else if bridge_budget.is_some() {
+                                bridge_budget
+                            } else if single_device {
+                                inherited_hotplug
+                            } else {
+                                None
+                            };
+
+                            let child_claimed = self.enumerate_bus(
+                                root,
+                                secondary,
+                                mode,
+                                child_single_device,
+                                child_budget,
+                            )?;
+
+                            if child_claimed {
+                                if configured.is_none() && inherited_hotplug.is_some() {
+                                    bus_claimed = true;
+                                }
+                            } else if let Some(budget) = bridge_budget {
+                                let current_sub = (self.roots[root].next_bus - 1) as u8;
+                                let target_sub =
+                                    current_sub.saturating_add(budget.extra_buses).min(bus_end);
+                                self.roots[root].next_bus = u16::from(target_sub) + 1;
+                                pci_dev.hotplug_min =
+                                    Self::hotplug_min_for(budget, pci_dev.prefetch);
+                                if inherited_share.is_some() {
+                                    bus_claimed = true;
+                                }
+                            }
+
+                            // Finalise subordinate = highest bus found (including hotplug padding).
                             pci_dev.subordinate_bus = (self.roots[root].next_bus - 1) as u8;
                             buses.modify(
                                 PCI_BRIDGE_BUSES::SUBORDINATE.val(pci_dev.subordinate_bus.into()),
@@ -1109,7 +1488,7 @@ impl PciEcam {
                 }
             }
         }
-        Ok(())
+        Ok(bus_claimed)
     }
 
     // -- Resource allocation --
@@ -1352,19 +1731,38 @@ impl PciEcam {
         Ok((used, largest))
     }
 
+    /// Whether `bridge` and every ancestor bridge up to the root support
+    /// 64-bit prefetchable forwarding windows.
+    fn bridge_prefetch_may_go_high(&self, bridge: usize) -> bool {
+        let mut cursor = Some(bridge);
+        while let Some(idx) = cursor {
+            if self.devices[idx].prefetch != PrefetchWindow::Bits64 {
+                return false;
+            }
+            cursor = self.devices[idx].parent;
+        }
+        true
+    }
+
     /// Size the windows of every bridge of root `root`, the deepest first:
     /// a bridge's buses come after its parent's, so its windows are sized
     /// before the parent's layout needs them.
     fn size_windows(&mut self, root: usize, bridges: &[usize]) -> Result<(), PciEcamError> {
+        let mmio64_largest = self.roots[root].mmio64.largest();
         for &bridge in bridges.iter().rev() {
             if self.devices[bridge].root != root {
                 continue;
             }
             self.devices[bridge].windows = Default::default();
+            let pref_min = self.devices[bridge].hotplug_min[WindowKind::Prefetchable as usize];
             let high = self
                 .children(bridge)
                 .flat_map(|dev_idx| self.requests_of(dev_idx))
-                .any(|(request, ..)| self.prefetchable(request).1);
+                .any(|(request, ..)| self.prefetchable(request).1)
+                || pref_min >= plan::FOUR_GIB
+                || (pref_min != 0
+                    && mmio64_largest >= pref_min
+                    && self.bridge_prefetch_may_go_high(bridge));
             if high && self.devices[bridge].prefetch != PrefetchWindow::Bits64 {
                 return Err(PciEcamError::ResourceExhausted);
             }
@@ -1379,11 +1777,20 @@ impl PciEcam {
                     used.checked_next_multiple_of(kind.granularity())
                         .ok_or(PciEcamError::ResourceExhausted)
                 };
+                let min = self.devices[bridge].hotplug_min[kind as usize];
+                // Align 64-bit prefetchable hotplug windows to the largest
+                // power of two <= min so large hotplugged BARs (e.g. eGPUs)
+                // fit without losing space to alignment padding.
+                let min_align = if kind == WindowKind::Prefetchable && high && min != 0 {
+                    1u64 << (63 - min.leading_zeros())
+                } else {
+                    0
+                };
                 let window = &mut self.devices[bridge].windows[kind as usize];
-                window.size = granular(up)?;
+                window.size = granular(up)?.max(min);
                 window.size_up = window.size;
-                window.size_down = granular(down)?;
-                window.align = largest.max(kind.granularity());
+                window.size_down = granular(down)?.max(min);
+                window.align = largest.max(min_align).max(kind.granularity());
                 window.high &= window.size != 0;
             }
         }
@@ -1728,6 +2135,12 @@ impl PciEcam {
     /// meant ([`Self::validate_plan`]): then whatever fitted before still
     /// does. Whether it is kept.
     fn place_bar_by_bar(&mut self, root: usize, pools: &Pools, bridges: &[usize]) -> bool {
+        if bridges.iter().any(|&bridge| {
+            self.devices[bridge].root == root
+                && self.devices[bridge].hotplug_min.iter().any(|&min| min != 0)
+        }) {
+            return false;
+        }
         let restore = |pci: &mut Self| {
             let free = &mut pci.roots[root];
             (free.mmio32, free.mmio64, free.io_pool) = *pools;
@@ -2200,7 +2613,7 @@ impl PciEcam {
         });
         let result = (|| {
             for root in 0..self.roots.len() {
-                self.enumerate_bus(root, self.roots[root].bus_start, &mut mode, false)?;
+                self.enumerate_bus(root, self.roots[root].bus_start, &mut mode, false, None)?;
             }
             if exact
                 && targets
@@ -2289,7 +2702,7 @@ impl PciEcam {
         }
         let mut mode = Scan::Resources { targets, exact };
         for root in 0..self.roots.len() {
-            self.enumerate_bus(root, self.roots[root].bus_start, &mut mode, false)?;
+            self.enumerate_bus(root, self.roots[root].bus_start, &mut mode, false, None)?;
         }
 
         if targets.is_some_and(|targets| {
@@ -2641,6 +3054,7 @@ impl PciEcam {
             roots,
             devices: HVec::new(),
             fixed_bars: PciFixedBars::new(),
+            hotplug_ports: HVec::new(),
             auto_bus_master: true,
             excluded_functions: PciExcludedFunctions::new(),
             enumeration_started: false,

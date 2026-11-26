@@ -201,25 +201,34 @@ impl IntelNorthbridgeDriver for IntelSkylake {
             PciRole::{Forwarded, Own, Window},
         };
         #[cfg(not(target_os = "none"))]
-        let base = if self.host_baseline {
-            0x8000_0000
+        let (base, touud, high_end) = if self.host_baseline {
+            (0x8000_0000, 1u64 << 32, 1u64 << 39)
         } else {
             let map = self.programmed_map().ok_or(PciEcamError::ConfigError)?;
             map.validate_live(&EcamDevice::new(0, 0, 0))
                 .map_err(|_| PciEcamError::ConfigError)?;
-            map.plan().tolud
+            (
+                map.plan().tolud,
+                map.plan().touud,
+                fstart_arch::x86::physical_address_limit(),
+            )
         };
         #[cfg(target_os = "none")]
-        let base = {
+        let (base, touud, high_end) = {
             let map = self.programmed_map().ok_or(PciEcamError::ConfigError)?;
             map.validate_live(&EcamDevice::new(0, 0, 0))
                 .map_err(|_| PciEcamError::ConfigError)?;
-            map.plan().tolud
+            (
+                map.plan().tolud,
+                map.plan().touud,
+                fstart_arch::x86::physical_address_limit(),
+            )
         };
         let end = self.config.ecam.base.min(0xfc80_0000);
         if base >= end {
             return Err(PciEcamError::ConfigError);
         }
+        let high_base = touud.max(1u64 << 32);
         // Forward fixed PCI decodes too, not just the allocator's smaller
         // arena. Shared host-bridge roles supply ISA/VGA/ROM/TPM routing.
         let forwarded = crate::host_bridge::forwarded(Some(base), None)
@@ -236,6 +245,7 @@ impl IntelNorthbridgeDriver for IntelSkylake {
                 u64::from(self.config.pci_io.1 - u32::from(self.config.pci_io.0)),
             ),
             Window.mmio(base, end - base),
+            Window.mmio(high_base, high_end.saturating_sub(high_base)),
             Own.mmio(
                 self.config.ecam.base,
                 u64::from(self.config.ecam.buses) << 20,

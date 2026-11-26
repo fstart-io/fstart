@@ -502,6 +502,11 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
                 fstart_log::error!("pci: unmanaged-function exclusion failed: {:?}", error)
             })
             .map_err(|_| ServiceError::HardwareError)?;
+        pci.add_hotplug_ports(B::CONFIG.pci_hotplug_ports())
+            .inspect_err(|error| {
+                fstart_log::error!("pci: hotplug port configuration failed: {:?}", error)
+            })
+            .map_err(|_| ServiceError::HardwareError)?;
         for resource in resources {
             use fstart_core::acpi::AcpiResource;
             match *resource {
