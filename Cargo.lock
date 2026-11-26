@@ -1887,6 +1887,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-pldm"
+version = "0.1.0"
+dependencies = [
+ "fstart-mctp",
+]
+
+[[package]]
 name = "fstart-release"
 version = "0.1.0"
 dependencies = [

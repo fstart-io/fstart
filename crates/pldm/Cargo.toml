@@ -1,0 +1,13 @@
+[package]
+name = "fstart-pldm"
+description = "PLDM (DSP0240/DSP0248/DSP0267) no_std requester and responder over MCTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fstart-mctp = { workspace = true }
+
+[lints]
+workspace = true
