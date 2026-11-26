@@ -2,9 +2,10 @@
 //! IVRS: one IVHD set per NBIO IOMMU (ACPI_SMM §3.6, NBIO_SMU §3.7).
 //!
 //! Device entries as the AMD IOMMU DXE builds them: the root bridge's
-//! buses from `bus:01.0` to its last bus, the NBIO IOAPIC as a special
-//! device sourced from `bus:00.1`, and on the root bridge with the FCH the
-//! FCH IOAPIC and HPET sourced from the FCH at `00:14.0` (the IDs Linux's
+//! buses from its RCEC ([`super::SocAcpi::rcec`], e.g. `bus:00.3` after the
+//! IOMMU at `bus:00.2`) or `bus:01.0` to its last bus, the NBIO IOAPIC as a
+//! special device sourced from `bus:00.1`, and on the root bridge with the
+//! FCH the FCH IOAPIC and HPET sourced from the FCH at `00:14.0` (the IDs Linux's
 //! AMD IOMMU driver expects for the southbridge IOAPIC/HPET), and the
 //! requesters of the SoC's devices that are not PCI functions
 //! ([`Inputs::ivrs_devices`]). Types 10h and 11h on every SoC; type 40h
@@ -36,8 +37,15 @@ pub(super) fn devices(inputs: &Inputs, index: usize, windows: &[GsiWindow]) -> V
         + Dte::NMI_PASS::SET
         + Dte::LINT0_PASS::SET
         + Dte::LINT1_PASS::SET;
+    // Start at the RCEC (e.g. bus:00.3 on Genoa/Siena/Turin) when present so
+    // IOMMU interrupt remapping covers it; otherwise start at bus:01.0 (SP3/ZP).
+    let default_start = bdf(*buses.start(), 1, 0);
+    let start = match inputs.soc.rcec {
+        Some((dev, func)) => bdf(*buses.start(), dev, func).min(default_start),
+        None => default_start,
+    };
     let range = DeviceEntry::Range {
-        start: bdf(*buses.start(), 1, 0),
+        start,
         end: bdf(*buses.end(), 0x1f, 7),
         dte: 0,
     };

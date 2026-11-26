@@ -529,7 +529,9 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
 impl<S: Soc> Stage<S, Ready<S>> {
     /// Finish the SoC's ready-to-boot, then install ACPI (using the
     /// board's [`Board::acpi_board`] contribution) and SMBIOS with its
-    /// identity `smbios`.
+    /// identity `smbios`. The board's IPMI interface (`acpi.ipmi`, for SPMI
+    /// and `IPI0001`) is also its SMBIOS Type 38, unless `smbios` names one
+    /// itself.
     pub fn emit_tables(self, smbios: &crate::acpi::SmbiosIdentity<'_>) -> Stage<S, Published<S>> {
         let Stage {
             machine,
@@ -538,7 +540,11 @@ impl<S: Soc> Stage<S, Ready<S>> {
         let ctx = machine.ctx();
         S::end_of_post(&ctx, &mut silicon.state);
         let acpi = (ctx.board.acpi_board)();
-        let tables = S::tables(&ctx, &mut silicon, &pci, &machine.flow, smbios, acpi);
+        let smbios = crate::acpi::SmbiosIdentity {
+            ipmi: smbios.ipmi.or(acpi.ipmi.map(|kcs| kcs.smbios())),
+            ..*smbios
+        };
+        let tables = S::tables(&ctx, &mut silicon, &pci, &machine.flow, &smbios, acpi);
         #[cfg(feature = "payload-uefi-basic")]
         let peripherals = S::peripherals(&ctx, &machine.config);
         Stage {

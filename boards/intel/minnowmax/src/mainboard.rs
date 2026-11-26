@@ -83,6 +83,8 @@ pub static MINNOWMAX_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'stati
         bb_serial: None,
         chassis_type: 0x03,
         chassis_manufacturer: "Intel",
+        chassis_serial: None,
         processor_sockets: &["FCBGA1170"],
         oem_string: None,
+        ipmi: None,
     };

@@ -102,6 +102,11 @@ pub fn config() -> Config {
             perst: &PERST,
         },
         usb: usb::POLICY,
+        // "Clock Spread Spectrum" off, the V2.00 Setup default (`Setup
+        // 0xbf` = 0; FchSongshanDxe takes its policy from PCD 0x370,
+        // also 0), as on the S8030's Milan image and the MJ11, whose
+        // I210s log correctable errors on a spread clock.
+        spread_spectrum: false,
         // The AST2600's display, behind its AST1150 bridge on the BMC's
         // MPIO port.
         display: Some(mpio::BMC_VGA.0),
@@ -158,9 +163,20 @@ pub fn check_options(options: &mpio::Options) -> Result<(), &'static str> {
         .map_err(|_| "invalid S8040 MPIO ports")
 }
 
-/// The table identity.
-pub fn smbios_identity() -> fstart_acpi::smbios::SmbiosIdentity<'static> {
-    fstart_acpi::smbios::SmbiosIdentity::new("TYAN", "S8040GM2NE")
+/// The static board SMBIOS identity. Type 38 is the KCS3 of
+/// [`bmc::acpi_board`]; the BMC's FRU names the board `S8040GM2NE` too.
+pub const BASE_SMBIOS: fstart_acpi::smbios::SmbiosIdentity<'static> =
+    fstart_acpi::smbios::SmbiosIdentity::new("TYAN", "S8040GM2NE");
+
+/// The table identity, enriched with BMC FRU serials and system UUID when
+/// available.
+pub fn smbios_identity<'a>(
+    fru: Option<&'a fstart_driver_ipmi::fru::FruIdentity>,
+) -> fstart_acpi::smbios::SmbiosIdentity<'a> {
+    match fru {
+        Some(fru) => fru.apply_to(BASE_SMBIOS),
+        None => BASE_SMBIOS,
+    }
 }
 
 #[cfg(test)]

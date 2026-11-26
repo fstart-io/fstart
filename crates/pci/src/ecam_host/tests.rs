@@ -1308,21 +1308,12 @@ fn the_prefetchable_window_is_read_as_linux_reads_it() {
 }
 
 pub(super) fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) -> PciDev {
-    let none = BarInfo {
-        bar_type: BarType::None,
-        size: 0,
-        prefetchable: false,
-        reg: 0,
-        allocated: false,
-        fixed: false,
-        base: 0,
-        side: Side::Low,
-    };
-    let mut bars = [none; 6];
+    let mut bars = [BarInfo::NONE; PF_BAR_SLOTS];
     for &(index, bar_type, size) in definitions {
         bars[index] = BarInfo {
             bar_type,
             size,
+            align_log2: BarInfo::align_log2_of(size),
             prefetchable: false,
             reg: PCI_BAR0 + index as u16 * 4,
             allocated: false,
@@ -1337,6 +1328,7 @@ pub(super) fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) 
         header_type: 0,
         original_command: 0,
         bars,
+        sriov: None,
         secondary_bus: 0,
         subordinate_bus: 0,
         windows: Default::default(),
@@ -1981,7 +1973,7 @@ fn barless_device_retains_non_bar_decode_policy() {
 
 #[test]
 fn host_bridge_chipset_registers_are_not_probed_as_bars() {
-    let (pci, _config_space) = test_pci();
+    let (mut pci, _config_space) = test_pci();
     let host = PciAddress::new(0, 0, 0, 0);
     pci.write32(host, PCI_VENDOR_ID, 0xa000_8086);
     pci.write32(host, 0x08, 0x0600_0000);
@@ -2069,6 +2061,7 @@ fn d41s_fixed_smbus_does_not_displace_sata_bar() {
     smbus_dev.bars[4] = BarInfo {
         bar_type: BarType::Io,
         size: 0x20,
+        align_log2: BarInfo::align_log2_of(0x20),
         prefetchable: false,
         reg: PCI_BAR0 + 4 * 4,
         allocated: true,
@@ -2130,4 +2123,281 @@ fn conflicting_fixed_bars_are_rejected() {
         pci.add_fixed_bars(&[second]),
         Err(PciEcamError::FixedBarConflict)
     );
+}
+
+#[test]
+fn sriov_vf_bars_size_upstream_bridge_windows_and_program_vf_bar_registers() {
+    const GIB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+    const KIB: u64 = 1 << 10;
+    const SRIOV_CAP: u16 = 0x200;
+
+    // Exercise both FastPaths (verifying `decide_sides` places 64-bit VF BARs
+    // above 4 GiB directly) and the default Both mode.
+    for allocators in [
+        Allocators::FastPaths,
+        Allocators::Both(solver::Budget::FIRMWARE),
+    ] {
+        let (mut pci, _config_space) = test_pci();
+        pci.allocators = allocators;
+        pci.configure_windows(
+            0x8000_0000,
+            256 * MIB,
+            0x100_0000_0000,
+            2048 * GIB,
+            0x1000,
+            0xf000,
+        )
+        .unwrap();
+
+        let port = PciAddress::new(0, 0, 1, 1);
+        let gpu = PciAddress::new(0, 1, 0, 0);
+        let mut br = endpoint(port, &[]);
+        br.header_type = PCI_HEADER_TYPE_BRIDGE;
+        br.secondary_bus = 1;
+        br.subordinate_bus = 1;
+        br.prefetch = PrefetchWindow::Bits64;
+        let mut dev = endpoint(gpu, &[(0, BarType::Memory64, 32 * GIB)]);
+        dev.bars[0].prefetchable = true;
+
+        // Radeon PRO V710 SR-IOV: 12 VFs, VF BAR0 = 32 GiB/VF (384 GiB total, 64-bit pref),
+        // VF BAR2 = 2 MiB/VF (24 MiB total, 64-bit pref), VF BAR5 = 512 KiB/VF (6 MiB total, 32-bit).
+        let mut vf_bars = [BarInfo::NONE; PF_BAR_SLOTS];
+        vf_bars[0] = BarInfo {
+            bar_type: BarType::Memory64,
+            size: 12 * 32 * GIB,
+            align_log2: BarInfo::align_log2_of(32 * GIB),
+            prefetchable: true,
+            reg: SRIOV_CAP + SRIOV_VF_BAR0_OFFSET,
+            allocated: false,
+            fixed: false,
+            base: 0,
+            side: Side::Low,
+        };
+        vf_bars[2] = BarInfo {
+            bar_type: BarType::Memory64,
+            size: 12 * 2 * MIB,
+            align_log2: BarInfo::align_log2_of(2 * MIB),
+            prefetchable: true,
+            reg: SRIOV_CAP + SRIOV_VF_BAR0_OFFSET + 8,
+            allocated: false,
+            fixed: false,
+            base: 0,
+            side: Side::Low,
+        };
+        vf_bars[5] = BarInfo {
+            bar_type: BarType::Memory32,
+            size: 12 * 512 * KIB,
+            align_log2: BarInfo::align_log2_of(512 * KIB),
+            prefetchable: false,
+            reg: SRIOV_CAP + SRIOV_VF_BAR0_OFFSET + 20,
+            allocated: false,
+            fixed: false,
+            base: 0,
+            side: Side::Low,
+        };
+        assert!(pci.sriov.push(vf_bars).is_ok());
+        dev.sriov = Some(0);
+
+        assert!(pci.devices.push(br).is_ok());
+        assert!(pci.devices.push(dev).is_ok());
+
+        pci.allocate_resources().unwrap();
+
+        let pf0 = pci.bar(1, 0);
+        let vf0 = pci.bar(1, PF_BAR_SLOTS);
+        let vf2 = pci.bar(1, PF_BAR_SLOTS + 2);
+        let vf5 = pci.bar(1, PF_BAR_SLOTS + 5);
+        assert!(pf0.allocated && vf0.allocated && vf2.allocated && vf5.allocated);
+        assert_eq!(vf0.base % (32 * GIB), 0);
+        assert_eq!(vf2.base % (2 * MIB), 0);
+        assert_eq!(vf5.base % (512 * KIB), 0);
+
+        // Bridge prefetchable window must hold PF BAR0 (32 GiB) + VF BAR0 (384 GiB).
+        let pref = pci.devices[0].windows[WindowKind::Prefetchable as usize];
+        let mem = pci.devices[0].windows[WindowKind::Memory as usize];
+        assert!(pref.placed && mem.placed);
+        assert!(pref.size >= 32 * GIB + 384 * GIB);
+        assert!(pf0.base >= pref.base && pf0.base + pf0.size <= pref.base + pref.size);
+        assert!(vf0.base >= pref.base && vf0.base + vf0.size <= pref.base + pref.size);
+        let in_pref = vf2.base >= pref.base && vf2.base + vf2.size <= pref.base + pref.size;
+        let in_mem = vf2.base >= mem.base && vf2.base + vf2.size <= mem.base + mem.size;
+        assert!(in_pref || in_mem);
+        assert!(vf5.base >= mem.base && vf5.base + vf5.size <= mem.base + mem.size);
+
+        // VF BAR registers must be programmed in ECAM config space.
+        let vf0_lo = u64::from(pci.read32(gpu, vf0.reg) & !0xf);
+        let vf0_hi = u64::from(pci.read32(gpu, vf0.reg + 4)) << 32;
+        assert_eq!(vf0_lo | vf0_hi, vf0.base);
+        let vf5_lo = u64::from(pci.read32(gpu, vf5.reg) & !0xf);
+        assert_eq!(vf5_lo, vf5.base);
+    }
+}
+
+#[test]
+fn sriov_falls_back_to_pf_bars_when_root_lacks_space_for_vfs() {
+    const GIB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+    const SRIOV_CAP: u16 = 0x200;
+
+    let (mut pci, _config_space) = test_pci();
+    // Only 64 GiB of MMIO64: fits the 32 GiB PF BAR0, not the 384 GiB VF BAR0.
+    pci.configure_windows(
+        0x8000_0000,
+        256 * MIB,
+        0x100_0000_0000,
+        64 * GIB,
+        0x1000,
+        0xf000,
+    )
+    .unwrap();
+
+    let port = PciAddress::new(0, 0, 1, 1);
+    let gpu = PciAddress::new(0, 1, 0, 0);
+    let mut br = endpoint(port, &[]);
+    br.header_type = PCI_HEADER_TYPE_BRIDGE;
+    br.secondary_bus = 1;
+    br.subordinate_bus = 1;
+    br.prefetch = PrefetchWindow::Bits64;
+    let mut dev = endpoint(gpu, &[(0, BarType::Memory64, 32 * GIB)]);
+    dev.bars[0].prefetchable = true;
+    let mut vf_bars = [BarInfo::NONE; PF_BAR_SLOTS];
+    vf_bars[0] = BarInfo {
+        bar_type: BarType::Memory64,
+        size: 12 * 32 * GIB,
+        align_log2: BarInfo::align_log2_of(32 * GIB),
+        prefetchable: true,
+        reg: SRIOV_CAP + SRIOV_VF_BAR0_OFFSET,
+        allocated: false,
+        fixed: false,
+        base: 0,
+        side: Side::Low,
+    };
+    assert!(pci.sriov.push(vf_bars).is_ok());
+    dev.sriov = Some(0);
+
+    assert!(pci.devices.push(br).is_ok());
+    assert!(pci.devices.push(dev).is_ok());
+
+    pci.allocate_resources().unwrap();
+
+    assert!(pci.bar(1, 0).allocated);
+    assert!(!pci.bar(1, PF_BAR_SLOTS).allocated);
+    assert_eq!(pci.devices[1].sriov, None);
+}
+
+/// A V710-like PF at 00:01.0: AER at 0x100, then SR-IOV at 0x200 with
+/// twelve VFs. VF BAR0 is 64-bit prefetchable, 32 GiB a VF; VF BAR2
+/// 32-bit, 2 MiB; VF BAR3 an I/O BAR, which VFs may not have; the rest
+/// unimplemented.
+fn sriov_pf() -> (PciEcam, Vec<u32>, PciAddress) {
+    const SRIOV_CAP: u16 = 0x200;
+    let (mut pci, space) = test_pci();
+    let gpu = PciAddress::new(0, 0, 1, 0);
+    pci.write32(gpu, PCI_VENDOR_ID, 0x7460_1002);
+    pci.write32(gpu, 0x100, (u32::from(SRIOV_CAP) << 20) | 0x0001);
+    pci.write32(gpu, SRIOV_CAP, u32::from(EXT_CAP_ID_SRIOV));
+    pci.write16(gpu, SRIOV_CAP + SRIOV_TOTAL_VFS_OFFSET, 12);
+    let vf_bar = |n: u16| SRIOV_CAP + SRIOV_VF_BAR0_OFFSET + 4 * n;
+    for model in [
+        (gpu, vf_bar(0), 0, 0xc),
+        // 32 GiB = 1 << 35: address bits 35.. move, bit 3 up of the high half.
+        (gpu, vf_bar(1), !((1u32 << (35 - 32)) - 1), 0),
+        (gpu, vf_bar(2), !(0x20_0000 - 1), 0),
+        (gpu, vf_bar(3), !(0x100 - 1), 1),
+        (gpu, vf_bar(4), 0, 0),
+        (gpu, vf_bar(5), 0, 0),
+    ] {
+        assert!(pci.bar_models.push(model).is_ok());
+        // Reset: the read-only bits read back.
+        pci.write32(gpu, model.1, 0);
+    }
+    (pci, space, gpu)
+}
+
+/// The VF BARs are sized through the SR-IOV capability: per-VF size times
+/// TotalVFs, aligned to one VF; the I/O BAR is dropped; VF decode stays
+/// off and the registers keep their values.
+#[test]
+fn probe_sriov_sizes_vf_bars_through_the_capability() {
+    let (pci, _space, gpu) = sriov_pf();
+    pci.write16(gpu, 0x200 + SRIOV_CTRL_OFFSET, 0x0008); // VF_MSE
+    pci.write32(gpu, 0x200 + SRIOV_VF_BAR0_OFFSET + 8, 0x1240_0000);
+    let vf = pci.probe_sriov_bars(gpu).unwrap();
+    assert_eq!(
+        (
+            vf[0].bar_type,
+            vf[0].prefetchable,
+            vf[0].size,
+            vf[0].align()
+        ),
+        (BarType::Memory64, true, 12 * (32 << 30), 32 << 30)
+    );
+    assert_eq!(vf[0].reg, 0x224);
+    assert_eq!(vf[1].bar_type, BarType::None, "upper half of VF BAR0");
+    assert_eq!(
+        (vf[2].bar_type, vf[2].size, vf[2].align()),
+        (BarType::Memory32, 12 * 0x20_0000, 0x20_0000)
+    );
+    assert!(vf[3..].iter().all(|bar| bar.bar_type == BarType::None));
+    assert_eq!(pci.read16(gpu, 0x200 + SRIOV_CTRL_OFFSET), 0);
+    assert_eq!(
+        pci.read32(gpu, 0x200 + SRIOV_VF_BAR0_OFFSET + 8),
+        0x1240_0000
+    );
+}
+
+#[test]
+fn probe_sriov_skips_already_enabled_vf_and_zero_total_vfs() {
+    let (pci, _space, gpu) = sriov_pf();
+    assert!(pci.probe_sriov_bars(gpu).is_some());
+    // TotalVFs = 0 -> skipped.
+    pci.write16(gpu, 0x200 + SRIOV_TOTAL_VFS_OFFSET, 0);
+    assert!(pci.probe_sriov_bars(gpu).is_none());
+    // VF_ENABLE already set -> skipped without touching VF_ENABLE.
+    pci.write16(gpu, 0x200 + SRIOV_TOTAL_VFS_OFFSET, 12);
+    pci.write16(gpu, 0x200 + SRIOV_CTRL_OFFSET, 0x0009); // VF_ENABLE | VF_MSE
+    assert!(pci.probe_sriov_bars(gpu).is_none());
+    assert_eq!(pci.read16(gpu, 0x200 + SRIOV_CTRL_OFFSET), 0x0009);
+}
+
+/// Placed BAR by BAR, a 64-bit BAR stays above 4 GiB when below would not
+/// leave room for a 32-bit VF BAR still to come: its twelve VFs, not the
+/// one VF its alignment is.
+#[test]
+fn bar_by_bar_reserves_a_whole_vf_bar_below_4_gib() {
+    const MIB: u64 = 1 << 20;
+    let (mut pci, _config_space) = test_pci();
+    pci.configure_windows(
+        0x8000_0000,
+        384 * MIB,
+        0x100_0000_0000,
+        1 << 40,
+        0x1000,
+        0xf000,
+    )
+    .unwrap();
+    let nic = PciAddress::new(0, 0, 1, 0);
+    let gpu = PciAddress::new(0, 0, 2, 0);
+    let mut big = endpoint(nic, &[(0, BarType::Memory64, 256 * MIB)]);
+    big.bars[0].prefetchable = true;
+    let mut vf = endpoint(gpu, &[]);
+    let mut vf_bars = [BarInfo::NONE; PF_BAR_SLOTS];
+    vf_bars[0] = BarInfo {
+        bar_type: BarType::Memory32,
+        size: 12 * 16 * MIB,
+        align_log2: BarInfo::align_log2_of(16 * MIB),
+        reg: 0x200 + SRIOV_VF_BAR0_OFFSET,
+        ..BarInfo::NONE
+    };
+    assert!(pci.sriov.push(vf_bars).is_ok());
+    vf.sriov = Some(0);
+    assert!(pci.devices.push(big).is_ok());
+    assert!(pci.devices.push(vf).is_ok());
+
+    assert!(pci.place_bar(0, 0));
+    let big = pci.bar(0, 0);
+    assert!(big.base >= 1 << 32, "{:#x}", big.base);
+    assert!(pci.place_bar(1, PF_BAR_SLOTS));
+    assert!(pci.bar(1, PF_BAR_SLOTS).base < 1 << 32);
 }

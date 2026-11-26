@@ -40,6 +40,8 @@ pub static GA_D510UD_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'stati
         bb_serial: None,
         chassis_type: 0x03,
         chassis_manufacturer: "Gigabyte",
+        chassis_serial: None,
         processor_sockets: &["FCBGA559"],
         oem_string: None,
+        ipmi: None,
     };

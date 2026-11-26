@@ -20,7 +20,7 @@
 //! | ACS, ARI (`0x156`/`0x157`, `0x188`/`0x189`) | Disabled | no driver knob yet |
 //! | NUMA nodes per socket (`0xba` / `0xd1`) | NPS4 (Setup) | ABL uses the flash APCB, read back from the APOB: NPS1 on the bench |
 //! | CBS link speed, Early Link Speed, Preferred IO | Auto | [`dxio`]: driver default |
-//! | Clock Spread Spectrum (AMI `Setup 0x101` / `0xc0`) | Rome on, Milan off | [`spread_spectrum`] |
+//! | Clock Spread Spectrum (AMI `Setup 0x101` / `0xc0`) | Rome on, Milan off | [`fch_env`]: [`spread_spectrum`] |
 //! | Restore AC Power Loss (`Setup 0x107`, Milan CBS `0x28f`) | Last State | [`fch_env`]: [`POWER_FAILURE`] |
 //!
 //! Slot, LAN, VGA and compliance knobs are [`crate::dxio::Options`].
@@ -38,15 +38,17 @@ use fstart_platform_amd::sp3::silicon::Generation;
 /// `AmdSetup 0x28f` = 3); the FCH driver's donor default is Off.
 pub const POWER_FAILURE: PowerFailState = PowerFailState::Previous;
 
-/// FCH env task policy (`fch::common::env::hw_acpi`).
-pub const fn fch_env() -> EnvPolicy {
+/// FCH env task policy (`fch::tasks::env::{hw_acpi_pre, hw_acpi}`).
+pub const fn fch_env(generation: Generation) -> EnvPolicy {
     EnvPolicy {
         power_fail: POWER_FAILURE,
+        spread_spectrum: spread_spectrum(generation),
     }
 }
 
 /// FCH clock spread spectrum (Rome `Setup 0x101` = 1, Milan `Setup 0xc0`
-/// = 0: the images differ, §4).
+/// = 0: the images differ, §4). Both FchHuashanDxe env tasks apply it to
+/// MISCx08\[0\] (Rome V4.04 `0x2d1a`, policy byte `+0x3d`).
 pub const fn spread_spectrum(generation: Generation) -> bool {
     matches!(generation, Generation::Rome)
 }

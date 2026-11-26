@@ -114,6 +114,10 @@ pub struct Config {
     pub mpio: Mpio,
     /// The xHCIs' wiring and tuning.
     pub usb: usb::Policy,
+    /// Spread the PCIe reference clocks (the vendors' "Clock Spread
+    /// Spectrum" setup option; on in openSIL). Some endpoints log
+    /// correctable errors on a spread clock, as the MJ11's I210s did.
+    pub spread_spectrum: bool,
     /// The first lane of the port of the board's onboard display, an MPIO
     /// port or one the PSP trained: the legacy VGA display is behind it
     /// ([`crate::soc::Init::display_port`]). `None`: the first

@@ -3,6 +3,7 @@
 #[cfg(feature = "acpi")]
 extern crate alloc;
 
+pub mod fru;
 pub mod kcs;
 
 use zerocopy::{
@@ -19,6 +20,9 @@ pub const NETFN_SENSOR_EVENT: u8 = 0x04;
 pub const NETFN_STORAGE: u8 = 0x0a;
 const GET_CHASSIS_STATUS: u8 = 0x01;
 const SET_ACPI_POWER_STATE: u8 = 0x06;
+const GET_SYSTEM_GUID: u8 = 0x37;
+const GET_FRU_INVENTORY_AREA_INFO: u8 = 0x10;
+const READ_FRU_DATA: u8 = 0x11;
 const ADD_SEL_ENTRY: u8 = 0x44;
 const PLATFORM_EVENT: u8 = 0x02;
 
@@ -229,6 +233,97 @@ where
         let request = [0x80 | system, 0x80 | device];
         self.request(NETFN_APP, SET_ACPI_POWER_STATE, &request, &mut buffer)
             .map(drop)
+    }
+
+    /// Get System GUID (IPMI 2.0 §22.14): the 16 bytes as the BMC sends
+    /// them ([`crate::fru::ipmi_guid_to_smbios_uuid`] on their order).
+    pub fn system_guid(&mut self) -> Result<[u8; 16], Error> {
+        let mut buffer = [0u8; 24];
+        let data = self.request(NETFN_APP, GET_SYSTEM_GUID, &[], &mut buffer)?;
+        data.get(..16)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(Error::Short)
+    }
+
+    /// Get FRU Inventory Area Info (IPMI 2.0 §34.1): returns `(area_size_bytes,
+    /// word_access)`.
+    pub fn fru_inventory_area_info(&mut self, fru_id: u8) -> Result<(u16, bool), Error> {
+        let mut buffer = [0u8; 8];
+        let data = self.request(
+            NETFN_STORAGE,
+            GET_FRU_INVENTORY_AREA_INFO,
+            &[fru_id],
+            &mut buffer,
+        )?;
+        match *data {
+            [lo, hi, flags, ..] => Ok((u16::from_le_bytes([lo, hi]), (flags & 1) != 0)),
+            _ => Err(Error::Short),
+        }
+    }
+
+    /// Read FRU Data (IPMI 2.0 §34.2) starting at byte offset `start` into
+    /// `out` in bounded chunks, retrying completion code `0x81` (FRU device
+    /// busy). Returns the number of bytes read.
+    pub fn read_fru_range(
+        &mut self,
+        fru_id: u8,
+        start: u16,
+        word_access: bool,
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        const CHUNK_BYTES: usize = 16;
+        const BUSY_RETRIES: u8 = 3;
+        const FRU_BUSY: u8 = 0x81;
+
+        let mut total = out.len();
+        if word_access {
+            if start & 1 != 0 {
+                return Err(Error::Short);
+            }
+            total &= !1;
+        }
+        let mut offset = 0usize;
+        let mut buffer = [0u8; CHUNK_BYTES + 8];
+        while offset < total {
+            let chunk = (total - offset).min(CHUNK_BYTES);
+            let byte_off = usize::from(start)
+                .checked_add(offset)
+                .and_then(|v| u16::try_from(v).ok())
+                .ok_or(Error::Short)?;
+            let (req_off, req_cnt) = if word_access {
+                (byte_off / 2, (chunk / 2) as u8)
+            } else {
+                (byte_off, chunk as u8)
+            };
+            let [off_lo, off_hi] = req_off.to_le_bytes();
+            let mut attempt = 0u8;
+            let data = loop {
+                match self.request(
+                    NETFN_STORAGE,
+                    READ_FRU_DATA,
+                    &[fru_id, off_lo, off_hi, req_cnt],
+                    &mut buffer,
+                ) {
+                    Err(Error::Completion(FRU_BUSY)) if attempt < BUSY_RETRIES => {
+                        attempt += 1;
+                    }
+                    other => break other?,
+                }
+            };
+            let (&count, payload) = data.split_first().ok_or(Error::Short)?;
+            let returned = if word_access {
+                usize::from(count) * 2
+            } else {
+                usize::from(count)
+            };
+            if returned == 0 || payload.len() < returned {
+                return Err(Error::Short);
+            }
+            let take = returned.min(total - offset);
+            out[offset..offset + take].copy_from_slice(&payload[..take]);
+            offset += take;
+        }
+        Ok(offset)
     }
 
     /// Add a SEL entry; returns the record ID the BMC gave it.

@@ -93,6 +93,7 @@ const TYPE_PHYS_MEM_ARRAY: u8 = 16;
 const TYPE_MEMORY_DEVICE: u8 = 17;
 const TYPE_MEM_ARRAY_MAPPED_ADDR: u8 = 19;
 const TYPE_SYSTEM_BOOT: u8 = 32;
+const TYPE_IPMI_DEVICE: u8 = 38;
 const TYPE_ONBOARD_DEVICE: u8 = 41;
 const TYPE_END_OF_TABLE: u8 = 127;
 
@@ -137,6 +138,8 @@ pub struct SmbiosIdentity<'a> {
     pub chassis_type: u8,
     /// Type 3: Chassis manufacturer.
     pub chassis_manufacturer: &'a str,
+    /// Type 3: Chassis serial number (None = omit).
+    pub chassis_serial: Option<&'a str>,
 
     /// Type 4 socket labels. CPU vendor, family, topology and caches are
     /// discovered by the platform at runtime.
@@ -144,6 +147,54 @@ pub struct SmbiosIdentity<'a> {
 
     /// Type 11: OEM string, e.g. an embedded-controller firmware id.
     pub oem_string: Option<&'a str>,
+
+    /// Type 38: IPMI Device Information (None = no BMC / IPMI interface).
+    pub ipmi: Option<IpmiDeviceInfo>,
+}
+
+/// Type 38: IPMI Device Information (DSP0134 §7.39).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpmiDeviceInfo {
+    /// Interface type: 1 = KCS, 2 = SMIC, 3 = BT, 4 = SSIF.
+    pub interface_type: u8,
+    /// IPMI specification revision in packed BCD (e.g. `0x20` for 2.0).
+    pub spec_revision: u8,
+    /// BMC I2C target address (typically `0x20`).
+    pub i2c_address: u8,
+    /// NV storage device address (`0xFF` = not present).
+    pub nv_storage_address: u8,
+    /// Base address (bit 0 = 1 for I/O space, 0 for memory-mapped).
+    pub base_address: u64,
+    /// Base address modifier / interrupt info (bits 7:6 = register spacing:
+    /// `0b00` = 1-byte, `0b01` = 4-byte, `0b10` = 16-byte).
+    pub base_address_modifier: u8,
+    /// Interrupt number (`0` = unspecified).
+    pub interrupt_number: u8,
+}
+
+impl IpmiDeviceInfo {
+    /// KCS interface in system I/O space (DSP0134 §7.39).
+    pub const fn kcs(port: u16, spacing: u8, spec_revision_bcd: u16) -> Self {
+        let major = ((spec_revision_bcd >> 8) & 0x0f) as u8;
+        let minor = ((spec_revision_bcd >> 4) & 0x0f) as u8;
+        let spacing_bits = match spacing {
+            4 => 0b01 << 6,
+            16 => 0b10 << 6,
+            _ => 0b00 << 6,
+        };
+        // DSP0134 §7.39: bit 0 of Base Address indicates I/O space (1), so
+        // the original address LSB is carried in Base Address Modifier bit 4.
+        let lsb = ((port & 1) as u8) << 4;
+        Self {
+            interface_type: 1, // KCS
+            spec_revision: (major << 4) | minor,
+            i2c_address: 0x20,
+            nv_storage_address: 0xff,
+            base_address: ((port & !1) as u64) | 1,
+            base_address_modifier: spacing_bits | lsb,
+            interrupt_number: 0,
+        }
+    }
 }
 
 impl<'a> SmbiosIdentity<'a> {
@@ -169,7 +220,9 @@ impl<'a> SmbiosIdentity<'a> {
             processor_sockets: &[],
             chassis_type: 0x02,
             chassis_manufacturer: "",
+            chassis_serial: None,
             oem_string: None,
+            ipmi: None,
         }
     }
 }
@@ -590,6 +643,21 @@ struct RawType32 {
 }
 const _: () = assert!(size_of::<RawType32>() == 0x0B);
 
+/// Type 38: IPMI Device Information (SMBIOS 2.0+, 18 bytes).
+#[repr(C)]
+#[derive(IntoBytes, Immutable)]
+struct RawType38 {
+    header: RawHeader,
+    interface_type: u8,
+    spec_revision: u8,
+    i2c_address: u8,
+    nv_storage_address: u8,
+    base_address: U64,
+    base_address_modifier: u8,
+    interrupt_number: u8,
+}
+const _: () = assert!(size_of::<RawType38>() == 0x12);
+
 /// SMBIOS 3.0 64-bit entry point (24 bytes).
 #[repr(C)]
 #[derive(IntoBytes, Immutable)]
@@ -761,7 +829,11 @@ impl<'a> SmbiosWriter<'a> {
             identity.sys_serial,
             identity.sys_uuid,
         );
-        let chassis = self.add_enclosure(identity.chassis_type, identity.chassis_manufacturer);
+        let chassis = self.add_enclosure(
+            identity.chassis_type,
+            identity.chassis_manufacturer,
+            identity.chassis_serial,
+        );
         if !identity.bb_manufacturer.is_empty() || !identity.bb_product.is_empty() {
             self.add_baseboard_info(
                 identity.bb_manufacturer,
@@ -773,6 +845,9 @@ impl<'a> SmbiosWriter<'a> {
         }
         if let Some(oem) = identity.oem_string {
             self.add_oem_strings(&[oem]);
+        }
+        if let Some(ipmi) = identity.ipmi {
+            self.add_ipmi_device(&ipmi);
         }
     }
 
@@ -937,15 +1012,22 @@ impl<'a> SmbiosWriter<'a> {
     /// Add a Type 3 (System Enclosure / Chassis) structure.
     ///
     /// Returns the handle for the Type 2 chassis reference.
-    pub fn add_enclosure(&mut self, chassis_type: u8, manufacturer: &str) -> u16 {
-        let [manufacturer_index] = string_indices([manufacturer]);
+    pub fn add_enclosure(
+        &mut self,
+        chassis_type: u8,
+        manufacturer: &str,
+        serial: Option<&str>,
+    ) -> u16 {
+        let serial = serial.unwrap_or_default();
+        let strings = [manufacturer, serial];
+        let [manufacturer_index, serial_index] = string_indices(strings);
         let (header, handle) = self.begin::<RawType3>(TYPE_ENCLOSURE);
         self.emplace(&RawType3 {
             header,
             manufacturer: manufacturer_index,
             kind: chassis_type,
-            version: 0,   // no string
-            serial: 0,    // no string
+            version: 0, // no string
+            serial: serial_index,
             asset_tag: 0, // no string
             // This API has no measured chassis-health/security inputs.
             boot_state: 0x02,    // unknown
@@ -958,8 +1040,28 @@ impl<'a> SmbiosWriter<'a> {
             contained_elements: 0,
             contained_record_len: 0,
         });
-        self.write_strings(&[manufacturer]);
+        self.write_strings(&strings);
         handle
+    }
+
+    // -----------------------------------------------------------------------
+    // Type 38: IPMI Device Information
+    // -----------------------------------------------------------------------
+
+    /// Add a Type 38 (IPMI Device Information) structure (DSP0134 §7.39).
+    pub fn add_ipmi_device(&mut self, ipmi: &IpmiDeviceInfo) {
+        let (header, _) = self.begin::<RawType38>(TYPE_IPMI_DEVICE);
+        self.emplace(&RawType38 {
+            header,
+            interface_type: ipmi.interface_type,
+            spec_revision: ipmi.spec_revision,
+            i2c_address: ipmi.i2c_address,
+            nv_storage_address: ipmi.nv_storage_address,
+            base_address: U64::new(ipmi.base_address),
+            base_address_modifier: ipmi.base_address_modifier,
+            interrupt_number: ipmi.interrupt_number,
+        });
+        self.end_strings();
     }
 
     // -----------------------------------------------------------------------
@@ -1917,7 +2019,7 @@ mod tests {
         // the first manufacturer character: no contained-count byte was
         // written while 0x0F was declared).
         let (buf, _total) = write_to_buffer(|w| {
-            let chassis = w.add_enclosure(0x0a, "ACME");
+            let chassis = w.add_enclosure(0x0a, "ACME", None);
             w.add_baseboard_info("ACME", "Board", "", None, chassis);
             w.add_end_of_table();
         });
@@ -2078,5 +2180,55 @@ mod tests {
         });
         assert_eq!(result, Err(WriteError::TableTooLarge));
         assert!(buf[..ENTRY_POINT_SIZE].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn enclosure_serial_and_ipmi_type38() {
+        let mut identity = SmbiosIdentity::new("TYAN", "S8040GM2NE");
+        identity.chassis_type = 0x17;
+        identity.chassis_manufacturer = "TYAN";
+        identity.chassis_serial = Some("CHASSIS-SN-42");
+        identity.ipmi = Some(IpmiDeviceInfo::kcs(0xca2, 1, 0x0200));
+
+        let (buf, total) = write_to_buffer(|w| {
+            w.add_identity(&identity, 16 << 20, true);
+            w.add_end_of_table();
+        });
+
+        let mut cur = &buf[ENTRY_POINT_SIZE..total];
+        let mut saw_type3 = false;
+        let mut saw_type38 = false;
+        while cur.len() >= 4 {
+            let kind = cur[0];
+            let len = cur[1] as usize;
+            let body = &cur[..len];
+            let mut end = len;
+            while end + 1 < cur.len() && !(cur[end] == 0 && cur[end + 1] == 0) {
+                end += 1;
+            }
+            if kind == TYPE_ENCLOSURE {
+                saw_type3 = true;
+                assert_eq!(body[4], 1); // manufacturer
+                assert_eq!(body[5], 0x17); // rack mount chassis
+                assert_eq!(body[7], 2); // serial
+                assert_eq!(strings(cur), ["TYAN", "CHASSIS-SN-42"]);
+            } else if kind == TYPE_IPMI_DEVICE {
+                saw_type38 = true;
+                assert_eq!(len, 0x12);
+                assert_eq!(body[4], 1); // KCS
+                assert_eq!(body[5], 0x20); // IPMI 2.0
+                assert_eq!(body[6], 0x20); // BMC I2C address
+                assert_eq!(body[7], 0xff); // no NV storage
+                let base = u64::from_le_bytes(body[8..16].try_into().unwrap());
+                assert_eq!(base, 0x0ca3); // 0xca2 | 1 (I/O space)
+                assert_eq!(body[16], 0x00); // 1-byte register spacing
+                assert_eq!(body[17], 0x00); // no interrupt
+            }
+            if kind == TYPE_END_OF_TABLE {
+                break;
+            }
+            cur = &cur[end + 2..];
+        }
+        assert!(saw_type3 && saw_type38);
     }
 }

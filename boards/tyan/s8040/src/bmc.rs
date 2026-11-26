@@ -3,14 +3,21 @@
 //! Super I/O at `0x2e` with the BMC's COM1, the console, and the KCS
 //! channel SMM reports machine checks on.
 
+use fstart_acpi::devices::IpmiKcsAcpi;
 use fstart_driver_amd::fch::FchHw;
 use fstart_driver_amd::fch::acpimmio::{LpcGating, PM_LPC_GATING};
 use fstart_driver_amd::fch::lpc::{self, IoPortDecode};
 use fstart_driver_amd::window::Window;
+use fstart_driver_ipmi::fru::FruIdentity;
+use fstart_driver_ipmi::kcs::{self, Kcs};
 use fstart_driver_superio::{ComPortConfig, SuperIoConfig, superio_dsdt_aml};
 use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
 use fstart_platform_amd::acpi::Board as AcpiBoard;
 use tock_registers::interfaces::ReadWriteable;
+
+/// The OS's KCS channel, KCS3 (`0xCA2`, spacing 1), as ACPI (`IPI0001` / SPMI)
+/// and SMBIOS Type 38 advertise it.
+pub const IPMI_ACPI: IpmiKcsAcpi = kcs::DEFAULT_ACPI;
 
 /// The firmware's own KCS channel, KCS2 (`0xCA8`, status/command at
 /// `0xCAC`): the BMC's device tree enables it with its kcsbridged, as on
@@ -19,6 +26,22 @@ use tock_registers::interfaces::ReadWriteable;
 /// to KCS2 (V2.00 PeiIpmiInitialize `0xffd95ece`, DxeIpmiInitialize
 /// `0x4308`, SmmIpmiInitialize `0x1c94`), its SPMI gives the OS KCS3.
 pub const FIRMWARE_KCS: (u16, u16) = (0xca8, 4);
+
+/// Bounded KCS poll budget for boot-time FRU/GUID queries (500 ms per
+/// transaction at 10 us per poll) so an absent or slow BMC cannot stall boot.
+const FRU_POLL_BUDGET: u32 = 50_000;
+
+/// Read factory SMBIOS identity fields from the BMC's baseboard FRU, the
+/// one whose board area names the board's product
+/// ([`FruIdentity::read_system`]; OpenBMC has it at 74 here, not 0), and
+/// system GUID over the firmware's KCS2 channel. The scan of FRUs 0..=74
+/// takes about 0.4 s.
+pub fn read_fru(timer: fstart_driver_amd::ccx::tsc::Tsc) -> Option<FruIdentity> {
+    let (port, spacing) = FIRMWARE_KCS;
+    // SAFETY: KCS2 is decoded by the PSP's eSPI setup and only firmware uses it.
+    let mut kcs = unsafe { Kcs::new(port, spacing, timer) }.with_poll_budget(FRU_POLL_BUDGET);
+    FruIdentity::read_system(&mut kcs, Some(crate::BASE_SMBIOS.bb_product))
+}
 
 /// The report of a machine check (`fstart_platform_amd::smm::ras`) to the
 /// BMC's SEL, on the firmware's KCS channel, from SMM and at boot for the
@@ -91,6 +114,7 @@ pub fn acpi_board() -> AcpiBoard {
         &mut spcr,
     );
     AcpiBoard {
+        ipmi: Some(IPMI_ACPI),
         lpc_aml: superio_dsdt_aml(&sio_config()),
         tables: alloc::vec![spcr],
         ..AcpiBoard::default()

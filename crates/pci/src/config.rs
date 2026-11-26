@@ -109,6 +109,14 @@ register_bitfields! [u16,
         TRAINING OFFSET(11) NUMBITS(1) [],
         DLL_ACTIVE OFFSET(13) NUMBITS(1) []
     ],
+    /// SR-IOV Control word at SR-IOV extended capability +08h (PCIe §9.3.3.3).
+    pub PCI_SRIOV_CONTROL [
+        VF_ENABLE OFFSET(0) NUMBITS(1) [],
+        VF_MIGRATION_ENABLE OFFSET(1) NUMBITS(1) [],
+        VF_MIGRATION_INT_ENABLE OFFSET(2) NUMBITS(1) [],
+        VF_MSE OFFSET(3) NUMBITS(1) [],
+        ARI_HIERARCHY OFFSET(4) NUMBITS(1) []
+    ],
     /// PCI command register bitfields.
     pub PCI_COMMAND_BITS [
         IO_SPACE OFFSET(0) NUMBITS(1) [],

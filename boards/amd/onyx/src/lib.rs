@@ -140,6 +140,10 @@ pub fn config() -> Config {
             perst: &PERST,
         },
         usb: wiring::USB,
+        // openSIL's FCH default (`FchHwAcpi.c`: SpreadSpectrum = true),
+        // applied where the vendors' AGESA does, after training (openSIL
+        // itself spreads before MPIO).
+        spread_spectrum: true,
         // The AST2600's display, behind the PSP-trained link of lane 134:
         // the legacy VGA display, whatever VGA card another root has.
         display: Some(wiring::BMC),

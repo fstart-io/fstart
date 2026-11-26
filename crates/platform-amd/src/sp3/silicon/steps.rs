@@ -325,7 +325,12 @@ fn phys_addr_bits(generation: Silicon, smee: bool) -> u8 {
 pub fn fch_env(ctx: &Ctx) {
     use fch::tasks::env;
     let (fch, generation) = (&ctx.fch, ctx.generation);
-    env::hw_acpi_pre(fch, generation);
+    if let Some(on) = env::hw_acpi_pre(fch, generation, &ctx.policy.fch_env) {
+        fstart_log::info!(
+            "fch: PCIe reference clock spread {}",
+            if on { "on" } else { "off" }
+        );
+    }
     env::hw_acpi(fch, generation, &ctx.policy.fch_env);
     fch::lpc::env(fch, generation);
     env::sd(fch, generation);

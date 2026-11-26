@@ -34,6 +34,7 @@ pub const ACPI: SocAcpi = SocAcpi {
     bridges: &prt::BRIDGES_RV,
     fch_intx_gsi: Some([16, 17, 18, 19]),
     root_complex_pin: None,
+    rcec: None,
     wake: None,
     xhci: None,
     // Without ACPI resume there is no S3. No S1 either, as on coreboot's

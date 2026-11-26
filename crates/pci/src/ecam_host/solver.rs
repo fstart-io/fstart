@@ -110,9 +110,10 @@ impl Budget {
     }
 }
 
-/// What one bus holds at most: six BARs of each function, or two BARs and
-/// two windows of a bridge.
-const MAX_ITEMS: usize = 6 * MAX_PCI_DEVICES;
+/// What one bus holds at most: six BARs of each function, plus six VF BARs
+/// for each SR-IOV-capable function (kept sparse to bound stack usage).
+const MAX_ITEMS: usize =
+    super::PF_BAR_SLOTS * MAX_PCI_DEVICES + super::PF_BAR_SLOTS * super::MAX_SRIOV_DEVICES;
 /// Two windows to choose and one bus to pack per bridge, and the root bus.
 const MAX_STEPS: usize = 3 * MAX_PCI_DEVICES + 1;
 const _: () = assert!(
@@ -159,7 +160,7 @@ impl Space {
     }
 }
 
-/// A BAR (`index` below 6) or a window (`8 + kind`) of a device: what a
+/// A BAR (`index` below 12) or a window (`12 + kind`) of a device: what a
 /// bus holds.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Item(u16);
@@ -170,7 +171,7 @@ impl Item {
     }
 
     const fn window(dev: usize, kind: WindowKind) -> Self {
-        Self(((dev as u16) << 4) | 8 | kind as u16)
+        Self(((dev as u16) << 4) | 12 | kind as u16)
     }
 
     const fn dev(self) -> usize {
@@ -372,18 +373,22 @@ impl PciEcam {
 
     /// Where `item` is, `[base, end)`, placed or not.
     fn span(&self, item: Item) -> (u64, u64) {
-        let device = &self.devices[item.dev()];
-        if item.index() < 8 {
-            let bar = device.bars[item.index()];
+        if item.index() < super::TOTAL_BAR_SLOTS {
+            let bar = self.bar(item.dev(), item.index());
             (bar.base, bar.base.saturating_add(bar.size))
         } else {
-            let window = device.windows[item.index() - 8];
+            let device = &self.devices[item.dev()];
+            let window = device.windows[item.index() - super::TOTAL_BAR_SLOTS];
             (window.base, window.base.saturating_add(window.size))
         }
     }
 
     fn bar_size(&self, item: Item) -> u64 {
-        self.devices[item.dev()].bars[item.index()].size
+        self.bar(item.dev(), item.index()).size
+    }
+
+    fn bar_align(&self, item: Item) -> u64 {
+        self.bar(item.dev(), item.index()).align()
     }
 
     /// Open window `kind` of `bridge` at `[base, end)`, or close it.
@@ -420,12 +425,10 @@ impl PciEcam {
 
     /// The movable BARs of `dev` in `space`.
     fn bars_in(&self, dev: usize, space: Space) -> impl Iterator<Item = Item> + '_ {
-        self.devices[dev]
-            .bars
-            .iter()
-            .enumerate()
-            .filter(move |(_, bar)| space.holds(bar.bar_type) && !bar.fixed)
-            .map(move |(index, _)| Item::bar(dev, index))
+        (0..self.bar_count(dev)).filter_map(move |index| {
+            let bar = self.bar(dev, index);
+            (space.holds(bar.bar_type) && !bar.fixed).then_some(Item::bar(dev, index))
+        })
     }
 
     /// The open windows of `dev` in `space`.
@@ -439,7 +442,7 @@ impl PciEcam {
 
     fn flexible(&self, rule: Rule, item: Item) -> bool {
         let device = &self.devices[item.dev()];
-        let bar = device.bars[item.index()];
+        let bar = self.bar(item.dev(), item.index());
         let wide = bar.bar_type == BarType::Memory64;
         match rule {
             Rule::AOnly => false,
@@ -493,14 +496,15 @@ impl PciEcam {
         })
     }
 
-    /// The next slot of `size` at its own alignment in `set` around `taken`
+    /// The next slot of `size` aligned to `align` in `set` around `taken`
     /// (sorted, disjoint), after those `walk` returned before: first fit,
-    /// as slots of one size are taken in address order.
+    /// as slots of one `(align, size)` are taken in address order.
     fn next_slot(
         &self,
         taken: &[Item],
         set: &[(u64, u64)],
         size: u64,
+        align: u64,
         walk: &mut Walk,
     ) -> Option<u64> {
         loop {
@@ -516,7 +520,7 @@ impl PciEcam {
                 .get(walk.next)
                 .map_or((u64::MAX, u64::MAX), |&item| self.span(item));
             let gap_end = item_base.min(end);
-            if let Some(slot) = walk.at.checked_next_multiple_of(size)
+            if let Some(slot) = walk.at.checked_next_multiple_of(align)
                 && slot
                     .checked_add(size)
                     .is_some_and(|slot_end| slot_end <= gap_end)
@@ -536,7 +540,7 @@ impl PciEcam {
 
     /// Place BAR `item` at `base`, one of `arena.fresh`.
     fn place(&mut self, arena: &mut Arena, item: Item, base: u64) {
-        let bar = &mut self.devices[item.dev()].bars[item.index()];
+        let bar = self.bar_mut(item.dev(), item.index());
         bar.base = base;
         bar.allocated = true;
         // As many as `items`.
@@ -588,15 +592,24 @@ impl PciEcam {
         arena.charge(sort_cost(arena.items.len()))?;
         arena.items.sort_unstable_by_key(|&item| {
             let device = &self.devices[item.dev()];
-            let bar = device.bars[item.index()];
+            let bar = self.bar(item.dev(), item.index());
             let flexible = self.flexible(rule, item);
-            (Reverse(bar.size), flexible, device.addr, bar.reg)
+            (
+                Reverse(bar.align()),
+                Reverse(bar.size),
+                flexible,
+                device.addr,
+                bar.reg,
+            )
         });
         let mut start = 0;
         while start < arena.items.len() {
+            let align = self.bar_align(arena.items[start]);
             let size = self.bar_size(arena.items[start]);
-            let end =
-                start + arena.items[start..].partition_point(|&item| self.bar_size(item) == size);
+            let end = start
+                + arena.items[start..].partition_point(|&item| {
+                    self.bar_align(item) == align && self.bar_size(item) == size
+                });
             let flexible =
                 start + arena.items[start..end].partition_point(|&item| !self.flexible(rule, item));
             arena.fresh.clear();
@@ -608,7 +621,7 @@ impl PciEcam {
             };
             let mut walk = Walk::default();
             while next < end {
-                let slot = self.next_slot(&arena.taken, first, size, &mut walk);
+                let slot = self.next_slot(&arena.taken, first, size, align, &mut walk);
                 arena.charge(core::mem::take(&mut walk.steps))?;
                 let Some(slot) = slot else {
                     break;
@@ -626,7 +639,7 @@ impl PciEcam {
             };
             let mut walk = Walk::default();
             for n in rest {
-                let slot = self.next_slot(&arena.taken, second, size, &mut walk);
+                let slot = self.next_slot(&arena.taken, second, size, align, &mut walk);
                 arena.charge(core::mem::take(&mut walk.steps))?;
                 let Some(slot) = slot else {
                     return Ok(false);
@@ -694,7 +707,7 @@ impl PciEcam {
                 arena.taken.extend(self.windows_in(dev, space));
             }
             for &item in &arena.items {
-                self.devices[item.dev()].bars[item.index()].allocated = false;
+                self.bar_mut(item.dev(), item.index()).allocated = false;
             }
             self.sort_by_base(arena, |arena| &mut arena.taken)?;
             let (a, b, rule) = self.sets(pools, bus, space);
@@ -724,7 +737,11 @@ impl PciEcam {
             arena.charge(self.devices.len())?;
             let mut need = Need::default();
             for dev in self.children(bridge) {
-                for bar in self.devices[dev].bars.iter().filter(|bar| !bar.fixed) {
+                for bar_idx in 0..self.bar_count(dev) {
+                    let bar = self.bar(dev, bar_idx);
+                    if bar.fixed {
+                        continue;
+                    }
                     match bar.bar_type {
                         BarType::Io => need.io = need.io.saturating_add(bar.size),
                         BarType::None => {}
@@ -772,7 +789,11 @@ impl PciEcam {
         arena.charge(self.devices.len())?;
         let (mut low, mut memory, mut io) = (0u64, 0u64, 0u64);
         for dev in self.on_bus(root, None) {
-            for bar in self.devices[dev].bars.iter().filter(|bar| !bar.fixed) {
+            for bar_idx in 0..self.bar_count(dev) {
+                let bar = self.bar(dev, bar_idx);
+                if bar.fixed {
+                    continue;
+                }
                 match bar.bar_type {
                     BarType::Io => io = io.saturating_add(bar.size),
                     BarType::Memory32 => low = low.saturating_add(bar.size),
@@ -810,7 +831,15 @@ impl PciEcam {
             for dev in (0..self.devices.len()).filter(|&dev| self.devices[dev].root == root) {
                 arena.items.extend(self.bars_in(dev, space));
             }
-            if !self.pack(arena, &a, &b, rule, false)? {
+            // Greedy packing is only an exact impossibility test when every
+            // item's size equals its power-of-two alignment (standard PF BARs);
+            // skip pruning when non-power-of-two SR-IOV VF apertures are present.
+            if arena
+                .items
+                .iter()
+                .all(|&item| self.bar_size(item) == self.bar_align(item))
+                && !self.pack(arena, &a, &b, rule, false)?
+            {
                 return Ok(true);
             }
         }
@@ -1328,7 +1357,7 @@ impl PciEcam {
                 return Ok(granule);
             }
             for item in self.bars_in(dev, space) {
-                step = step.min(self.bar_size(item).max(granule));
+                step = step.min(self.bar_align(item).max(granule));
             }
         }
         Ok(if step == u64::MAX { granule } else { step })
@@ -1373,8 +1402,7 @@ impl PciEcam {
         arena.items.clear();
         arena.taken.clear();
         for dev in self.subtree(bridge) {
-            let mandatory =
-                |item: &Item| last || !self.devices[dev].bars[item.index()].prefetchable;
+            let mandatory = |item: &Item| last || !self.bar(dev, item.index()).prefetchable;
             arena
                 .items
                 .extend(self.bars_in(dev, space).filter(mandatory));
@@ -1475,7 +1503,7 @@ impl PciEcam {
             arena.charge(self.devices.len())?;
             arena.taken.clear();
             for dev in self.on_bus(root, Some(bridge)) {
-                let placed = |item: &Item| self.devices[dev].bars[item.index()].allocated;
+                let placed = |item: &Item| self.bar(dev, item.index()).allocated;
                 arena.taken.extend(self.bars_in(dev, space).filter(placed));
                 arena.taken.extend(self.windows_in(dev, space));
             }

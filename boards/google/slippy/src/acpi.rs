@@ -33,8 +33,10 @@ pub const IDENTITY: SmbiosIdentity<'static> = SmbiosIdentity {
     bb_serial: None,
     chassis_type: 0x0a,
     chassis_manufacturer: "Acer",
+    chassis_serial: None,
     processor_sockets: &["BGA1168"],
     oem_string: None,
+    ipmi: None,
 };
 /// Peppy SMBIOS Type 41 onboard I2C device records consumed by Linux
 /// `chromeos_laptop` (coreboot `google/slippy/mainboard.c:mainboard_smbios_data`).

@@ -100,8 +100,10 @@ pub static X201_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static> =
         bb_serial: None,
         chassis_type: 0x0a,
         chassis_manufacturer: "LENOVO",
+        chassis_serial: None,
         processor_sockets: &X201_SMBIOS_PROCESSOR_SOCKETS,
         oem_string: None,
+        ipmi: None,
     };
 
 #[cfg(test)]

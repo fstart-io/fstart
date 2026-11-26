@@ -41,6 +41,8 @@ pub static P5GC_MX_SMBIOS_IDENTITY: fstart_acpi::smbios::SmbiosIdentity<'static>
         bb_serial: None,
         chassis_type: 0x03,
         chassis_manufacturer: "ASUSTeK Computer Inc.",
+        chassis_serial: None,
         processor_sockets: &["LGA775"],
         oem_string: None,
+        ipmi: None,
     };

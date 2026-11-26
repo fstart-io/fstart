@@ -250,13 +250,33 @@ enum BarType {
     Memory64,
 }
 
+/// Number of standard BAR slots on a Type-0 PCI function.
+const PF_BAR_SLOTS: usize = 6;
+/// Total BAR slots tracked per function: 6 PF BARs (`0..6`) plus up to 6
+/// SR-IOV VF BARs (`6..12`) stored sparsely in [`PciEcam::sriov`].
+const TOTAL_BAR_SLOTS: usize = 12;
+/// Maximum number of SR-IOV-capable functions tracked across all roots.
+const MAX_SRIOV_DEVICES: usize = 16;
+
+/// PCIe Extended Capability ID for SR-IOV (PCIe Base Spec §9.3.3).
+const EXT_CAP_ID_SRIOV: u16 = 0x0010;
+const SRIOV_CTRL_OFFSET: u16 = 0x08;
+const SRIOV_TOTAL_VFS_OFFSET: u16 = 0x0e;
+const SRIOV_VF_BAR0_OFFSET: u16 = 0x24;
+
 /// A sized BAR and, once the allocator has placed it, its address.
 #[derive(Debug, Clone, Copy)]
 struct BarInfo {
     bar_type: BarType,
+    /// Total aperture size in bytes. For PF BARs this equals [`Self::align`];
+    /// for SR-IOV VF BARs it is `align * total_vfs`.
     size: u64,
+    /// Log2 of the required base alignment in bytes (0..64). Stored in one
+    /// byte so `BarInfo` stays 24 bytes.
+    align_log2: u8,
     prefetchable: bool,
-    /// BAR register offset (0x10..0x24).
+    /// Config-space BAR register offset (`0x10..=0x24` for PF BARs, or
+    /// `sriov_cap + 0x24..=0x38` for VF BARs).
     reg: u16,
     /// Whether the allocator has placed this BAR (at `base`), or the chipset
     /// has (a fixed BAR).
@@ -268,6 +288,37 @@ struct BarInfo {
     base: u64,
     /// For a 64-bit prefetchable BAR behind bridges: which side of 4 GiB.
     side: Side,
+}
+const _: () = assert!(size_of::<BarInfo>() == 24);
+
+impl BarInfo {
+    const NONE: Self = Self {
+        bar_type: BarType::None,
+        size: 0,
+        align_log2: 0,
+        prefetchable: false,
+        reg: 0,
+        allocated: false,
+        fixed: false,
+        base: 0,
+        side: Side::Low,
+    };
+
+    const fn align(self) -> u64 {
+        if self.size == 0 {
+            0
+        } else {
+            1u64 << self.align_log2
+        }
+    }
+
+    const fn align_log2_of(align: u64) -> u8 {
+        if align == 0 {
+            0
+        } else {
+            align.trailing_zeros() as u8
+        }
+    }
 }
 
 /// Which side of 4 GiB a 64-bit prefetchable BAR behind a bridge goes to.
@@ -302,7 +353,9 @@ struct PciDev {
     header_type: u8,
     /// Command register before BAR probing temporarily disabled decode.
     original_command: u16,
-    bars: [BarInfo; 6],
+    bars: [BarInfo; PF_BAR_SLOTS],
+    /// Optional index into [`PciEcam::sriov`] holding SR-IOV VF BARs (`6..12`).
+    sriov: Option<u8>,
     /// For bridges: secondary bus number.
     secondary_bus: u8,
     /// For bridges: subordinate bus number.
@@ -412,9 +465,9 @@ enum Request {
     Window(usize, WindowKind),
 }
 
-/// A device's requests with their sizes and alignments: six BARs and a
-/// bridge's windows at most.
-type DeviceRequests = HVec<(Request, u64, u64), { 6 + WINDOW_KINDS.len() }>;
+/// A device's requests with their sizes and alignments: up to twelve BARs
+/// (6 PF + 6 SR-IOV VF) and a bridge's windows at most.
+type DeviceRequests = HVec<(Request, u64, u64), { TOTAL_BAR_SLOTS + WINDOW_KINDS.len() }>;
 
 /// A pool of a root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -566,6 +619,8 @@ pub struct PciEcam {
     /// Their pools. At least one; the bus ranges of a segment don't overlap.
     roots: HVec<Root, MAX_PCI_ROOTS>,
     devices: HVec<PciDev, MAX_PCI_DEVICES>,
+    /// Sparse table of SR-IOV VF BARs indexed by [`PciDev::sriov`].
+    sriov: HVec<[BarInfo; PF_BAR_SLOTS], MAX_SRIOV_DEVICES>,
     fixed_bars: PciFixedBars,
     hotplug_ports: HVec<PciHotplugPort, MAX_PCI_HOTPLUG_PORTS>,
     auto_bus_master: bool,
@@ -577,6 +632,10 @@ pub struct PciEcam {
     /// Candidate windows and work units the last search spent.
     #[cfg(test)]
     spent: (usize, usize),
+    /// BAR registers of the RAM-backed test config space, `(function,
+    /// register, writable bits, read-only bits)`: what sizing reads back.
+    #[cfg(test)]
+    bar_models: HVec<(PciAddress, u16, u32, u32), 16>,
 }
 
 /// Which allocators a test runs: the fast paths alone (the subtree and
@@ -954,6 +1013,12 @@ impl PciEcam {
     }
 
     fn write32(&self, addr: PciAddress, reg: u16, val: u32) {
+        #[cfg(test)]
+        let val = self
+            .bar_models
+            .iter()
+            .find(|model| (model.0, model.1) == (addr, reg))
+            .map_or(val, |&(.., writable, fixed)| (val & writable) | fixed);
         self.device(addr)
             .expect("PCI address outside ECAM")
             .write32(reg, val);
@@ -1010,6 +1075,7 @@ impl PciEcam {
                 BarInfo {
                     bar_type,
                     size: fixed.size,
+                    align_log2: BarInfo::align_log2_of(fixed.size),
                     prefetchable: fixed.prefetchable,
                     reg,
                     allocated: true,
@@ -1020,6 +1086,52 @@ impl PciEcam {
                 fixed.kind == PciFixedBarType::Memory64,
             ));
         }
+
+        self.probe_bar_register(addr, reg, true, bar_idx < 5)
+    }
+
+    /// Number of BAR slots (PF + optional SR-IOV VF) on `dev_idx`.
+    fn bar_count(&self, dev_idx: usize) -> usize {
+        if self.devices[dev_idx].sriov.is_some() {
+            TOTAL_BAR_SLOTS
+        } else {
+            PF_BAR_SLOTS
+        }
+    }
+
+    /// Read BAR `bar_idx` (`0..6` PF, `6..12` SR-IOV VF) of `dev_idx`.
+    fn bar(&self, dev_idx: usize, bar_idx: usize) -> BarInfo {
+        if bar_idx < PF_BAR_SLOTS {
+            self.devices[dev_idx].bars[bar_idx]
+        } else if let Some(slot) = self.devices[dev_idx].sriov {
+            self.sriov[usize::from(slot)][bar_idx - PF_BAR_SLOTS]
+        } else {
+            BarInfo::NONE
+        }
+    }
+
+    /// Mutably borrow BAR `bar_idx` (`0..6` PF, `6..12` SR-IOV VF) of `dev_idx`.
+    fn bar_mut(&mut self, dev_idx: usize, bar_idx: usize) -> &mut BarInfo {
+        if bar_idx < PF_BAR_SLOTS {
+            &mut self.devices[dev_idx].bars[bar_idx]
+        } else {
+            let slot = self.devices[dev_idx]
+                .sriov
+                .expect("VF BAR index without SR-IOV slot");
+            &mut self.sriov[usize::from(slot)][bar_idx - PF_BAR_SLOTS]
+        }
+    }
+
+    /// Probe a 32-bit or 64-bit BAR register at `reg` (standard PF BAR or
+    /// SR-IOV VF BAR). Caller must have disabled decode for this BAR space.
+    fn probe_bar_register(
+        &self,
+        addr: PciAddress,
+        reg: u16,
+        allow_io: bool,
+        allow_64: bool,
+    ) -> Result<(BarInfo, bool), PciEcamError> {
+        let original = self.read32(addr, reg);
 
         // Decode is disabled for this function by probe_device(). Probe both
         // all-ones and all-zeroes: their XOR identifies bits software can
@@ -1033,14 +1145,8 @@ impl PciEcam {
         let moving_lo = ones ^ zeroes;
 
         let none = BarInfo {
-            bar_type: BarType::None,
-            size: 0,
-            prefetchable: false,
             reg,
-            allocated: false,
-            fixed: false,
-            base: 0,
-            side: Side::Low,
+            ..BarInfo::NONE
         };
 
         if bar_unimplemented(ones, moving_lo) {
@@ -1049,11 +1155,15 @@ impl PciEcam {
 
         let attributes = original & !moving_lo;
         if attributes & 1 == 1 {
+            if !allow_io {
+                return Ok((none, false));
+            }
             let size = size_from_moving_bits(u64::from(moving_lo), 0x0000_FFFC)?;
             return Ok((
                 BarInfo {
                     bar_type: BarType::Io,
                     size,
+                    align_log2: BarInfo::align_log2_of(size),
                     prefetchable: false,
                     reg,
                     allocated: false,
@@ -1073,6 +1183,7 @@ impl PciEcam {
                     BarInfo {
                         bar_type: BarType::Memory32,
                         size,
+                        align_log2: BarInfo::align_log2_of(size),
                         prefetchable,
                         reg,
                         allocated: false,
@@ -1083,7 +1194,7 @@ impl PciEcam {
                     false,
                 ))
             }
-            2 => {
+            2 if allow_64 => {
                 // Present both halves coherently while probing a 64-bit BAR.
                 let upper_reg = reg + 4;
                 let original_hi = self.read32(addr, upper_reg);
@@ -1105,6 +1216,7 @@ impl PciEcam {
                     BarInfo {
                         bar_type: BarType::Memory64,
                         size,
+                        align_log2: BarInfo::align_log2_of(size),
                         prefetchable,
                         reg,
                         allocated: false,
@@ -1119,9 +1231,93 @@ impl PciEcam {
         }
     }
 
+    /// Probe SR-IOV VF BARs (`0..6`) when the function exposes an SR-IOV
+    /// extended capability (`0x0010`) with non-zero `TotalVFs`.
+    ///
+    /// Returns `Some(vf_bars)` when at least one VF BAR is implemented and
+    /// valid. Errors or already-enabled SR-IOV (`VF_ENABLE` set) are logged
+    /// and skipped rather than failing PF enumeration: PCIe §9.3.3.3.1
+    /// requires a 1-second wait after clearing `VF_ENABLE`, so live VF
+    /// configurations are left untouched.
+    fn probe_sriov_bars(&self, addr: PciAddress) -> Option<[BarInfo; PF_BAR_SLOTS]> {
+        use crate::PCI_SRIOV_CONTROL;
+        use tock_registers::LocalRegisterCopy;
+
+        let device = self.device(addr)?;
+        let cap = device.find_extended_capability(EXT_CAP_ID_SRIOV)?;
+        // VF BAR0..VF BAR5 occupy cap+0x24..cap+0x3c.
+        if usize::from(cap) + usize::from(SRIOV_VF_BAR0_OFFSET) + PF_BAR_SLOTS * 4
+            > crate::ecam::FUNCTION_CONFIG_BYTES
+        {
+            return None;
+        }
+        let total_vfs = self.read16(addr, cap + SRIOV_TOTAL_VFS_OFFSET);
+        if total_vfs == 0 {
+            return None;
+        }
+        let orig_ctrl = LocalRegisterCopy::<u16, PCI_SRIOV_CONTROL::Register>::new(
+            self.read16(addr, cap + SRIOV_CTRL_OFFSET),
+        );
+        if orig_ctrl.is_set(PCI_SRIOV_CONTROL::VF_ENABLE) {
+            fstart_log::warn!(
+                "pci: SR-IOV already enabled on {:02x}:{:02x}.{}; skipping VF BAR allocation",
+                addr.bus(),
+                addr.device(),
+                addr.function(),
+            );
+            return None;
+        }
+        let mut probed_ctrl = orig_ctrl;
+        probed_ctrl.modify(PCI_SRIOV_CONTROL::VF_MSE::CLEAR);
+        self.write16(addr, cap + SRIOV_CTRL_OFFSET, probed_ctrl.get());
+
+        let mut vf_bars = [BarInfo::NONE; PF_BAR_SLOTS];
+        let mut any = false;
+        let ok = (|| -> Result<(), PciEcamError> {
+            let mut i = 0;
+            while i < PF_BAR_SLOTS {
+                let reg = cap + SRIOV_VF_BAR0_OFFSET + (i as u16) * 4;
+                let (mut info, is_64) =
+                    self.probe_bar_register(addr, reg, false, i < PF_BAR_SLOTS - 1)?;
+                if info.bar_type != BarType::None {
+                    let total_size = info
+                        .size
+                        .checked_mul(u64::from(total_vfs))
+                        .ok_or(PciEcamError::ResourceExhausted)?;
+                    info.align_log2 = BarInfo::align_log2_of(info.size);
+                    info.size = total_size;
+                    vf_bars[i] = info;
+                    any = true;
+                }
+                if is_64 {
+                    i += 1;
+                }
+                i += 1;
+            }
+            Ok(())
+        })();
+
+        // Keep VF_MSE disabled (never re-enable VF decode before OS ownership).
+        self.write16(addr, cap + SRIOV_CTRL_OFFSET, probed_ctrl.get());
+        match ok {
+            Ok(()) if any => Some(vf_bars),
+            Ok(()) => None,
+            Err(error) => {
+                fstart_log::warn!(
+                    "pci: ignoring SR-IOV VF BARs on {:02x}:{:02x}.{}: {:?}",
+                    addr.bus(),
+                    addr.device(),
+                    addr.function(),
+                    error,
+                );
+                None
+            }
+        }
+    }
+
     /// Probe a single device/function, size its BARs.
     fn probe_device(
-        &self,
+        &mut self,
         addr: PciAddress,
         probe_bars: bool,
     ) -> Result<Option<PciDev>, PciEcamError> {
@@ -1146,17 +1342,8 @@ impl PciEcam {
             _ => 6,
         };
 
-        let none_bar = BarInfo {
-            bar_type: BarType::None,
-            size: 0,
-            prefetchable: false,
-            reg: 0,
-            allocated: false,
-            fixed: false,
-            base: 0,
-            side: Side::Low,
-        };
-        let mut bars = [none_bar; 6];
+        let mut bars = [BarInfo::NONE; PF_BAR_SLOTS];
+        let mut sriov_bars = None;
 
         // BAR sizing is only safe while the function cannot decode memory or
         // I/O cycles. Restore the chipset's original policy immediately after
@@ -1177,6 +1364,9 @@ impl PciEcam {
                     }
                     i += 1;
                 }
+                if max_bars == PF_BAR_SLOTS {
+                    sriov_bars = self.probe_sriov_bars(addr);
+                }
                 Ok(())
             })();
             self.write16(addr, PCI_COMMAND, command);
@@ -1188,12 +1378,28 @@ impl PciEcam {
             PrefetchWindow::None
         };
 
+        let sriov = sriov_bars.and_then(|vf_bars| {
+            let slot = u8::try_from(self.sriov.len()).ok()?;
+            if self.sriov.push(vf_bars).is_ok() {
+                Some(slot)
+            } else {
+                fstart_log::warn!(
+                    "pci: SR-IOV table full; skipping VF BARs on {:02x}:{:02x}.{}",
+                    addr.bus(),
+                    addr.device(),
+                    addr.function(),
+                );
+                None
+            }
+        });
+
         Ok(Some(PciDev {
             addr,
             root: self.root_of(addr).ok_or(PciEcamError::ConfigError)?,
             header_type,
             original_command: command,
             bars,
+            sriov,
             secondary_bus: 0,
             subordinate_bus: 0,
             windows: Default::default(),
@@ -1537,12 +1743,10 @@ impl PciEcam {
     /// alignment: its movable BARs and, for a bridge, its open windows.
     fn requests_of(&self, dev_idx: usize) -> DeviceRequests {
         let device = &self.devices[dev_idx];
-        let bars = device
-            .bars
-            .iter()
-            .enumerate()
+        let bars = (0..self.bar_count(dev_idx))
+            .map(|bar_idx| (bar_idx, self.bar(dev_idx, bar_idx)))
             .filter(|(_, bar)| bar.bar_type != BarType::None && !bar.fixed)
-            .map(|(bar_idx, bar)| (Request::Bar(dev_idx, bar_idx), bar.size, bar.size));
+            .map(|(bar_idx, bar)| (Request::Bar(dev_idx, bar_idx), bar.size, bar.align()));
         let windows = WINDOW_KINDS
             .into_iter()
             .filter(|_| device.header_type == PCI_HEADER_TYPE_BRIDGE)
@@ -1557,7 +1761,7 @@ impl PciEcam {
     fn prefetchable(&self, request: Request) -> (bool, bool) {
         match request {
             Request::Bar(dev_idx, bar_idx) => {
-                let bar = self.devices[dev_idx].bars[bar_idx];
+                let bar = self.bar(dev_idx, bar_idx);
                 (
                     bar.prefetchable && bar.bar_type != BarType::Io,
                     matches!(bar.side, Side::High | Side::Untried),
@@ -1575,9 +1779,7 @@ impl PciEcam {
     /// through.
     fn window_for(&self, bridge: usize, request: Request) -> WindowKind {
         let io = match request {
-            Request::Bar(dev_idx, bar_idx) => {
-                self.devices[dev_idx].bars[bar_idx].bar_type == BarType::Io
-            }
+            Request::Bar(dev_idx, bar_idx) => self.bar(dev_idx, bar_idx).bar_type == BarType::Io,
             Request::Window(_, kind) => kind == WindowKind::Io,
         };
         let (prefetchable, high) = self.prefetchable(request);
@@ -1597,7 +1799,7 @@ impl PciEcam {
 
     fn placed(&self, request: Request) -> bool {
         match request {
-            Request::Bar(dev_idx, bar_idx) => self.devices[dev_idx].bars[bar_idx].allocated,
+            Request::Bar(dev_idx, bar_idx) => self.bar(dev_idx, bar_idx).allocated,
             Request::Window(dev_idx, kind) => self.devices[dev_idx].windows[kind as usize].placed,
         }
     }
@@ -1607,7 +1809,7 @@ impl PciEcam {
     fn assign(&mut self, request: Request, base: u64, layout: Layout) {
         match request {
             Request::Bar(dev_idx, bar_idx) => {
-                let bar = &mut self.devices[dev_idx].bars[bar_idx];
+                let bar = self.bar_mut(dev_idx, bar_idx);
                 bar.base = base;
                 bar.allocated = true;
             }
@@ -1626,8 +1828,8 @@ impl PciEcam {
     fn layout(&self, request: Request, down: bool) -> (u64, u64, u64) {
         match request {
             Request::Bar(dev_idx, bar_idx) => {
-                let size = self.devices[dev_idx].bars[bar_idx].size;
-                (size, size, 0)
+                let bar = self.bar(dev_idx, bar_idx);
+                (bar.size, bar.align(), 0)
             }
             Request::Window(dev_idx, kind) => {
                 let window = self.devices[dev_idx].windows[kind as usize];
@@ -1908,9 +2110,7 @@ impl PciEcam {
         align: u64,
     ) {
         let (dev_idx, register, what) = match request {
-            Request::Bar(dev_idx, bar_idx) => {
-                (dev_idx, self.devices[dev_idx].bars[bar_idx].reg, "BAR")
-            }
+            Request::Bar(dev_idx, bar_idx) => (dev_idx, self.bar(dev_idx, bar_idx).reg, "BAR"),
             Request::Window(dev_idx, kind) => (dev_idx, kind.register(), "bridge window"),
         };
         let address = self.devices[dev_idx].addr;
@@ -1930,13 +2130,37 @@ impl PciEcam {
 
     /// Forget where the movable BARs and the windows of root `root` went.
     fn unplace(&mut self, root: usize) {
-        for device in self.devices.iter_mut().filter(|device| device.root == root) {
-            for bar in device.bars.iter_mut().filter(|bar| !bar.fixed) {
-                bar.allocated = false;
-                bar.base = 0;
+        for dev_idx in 0..self.devices.len() {
+            if self.devices[dev_idx].root != root {
+                continue;
             }
-            device.windows = Default::default();
+            for bar_idx in 0..self.bar_count(dev_idx) {
+                let bar = self.bar_mut(dev_idx, bar_idx);
+                if !bar.fixed {
+                    bar.allocated = false;
+                    bar.base = 0;
+                }
+            }
+            self.devices[dev_idx].windows = Default::default();
         }
+    }
+
+    /// Drop SR-IOV VF BAR requests on `root` so allocation can fall back to
+    /// PF BARs only when the root lacks sufficient aperture space. Returns
+    /// `true` if at least one VF BAR was cleared.
+    fn clear_vf_bars(&mut self, root: usize) -> bool {
+        let mut cleared = false;
+        for device in self.devices.iter_mut().filter(|device| device.root == root) {
+            if let Some(slot) = device.sriov.take() {
+                for bar in &mut self.sriov[usize::from(slot)] {
+                    if bar.bar_type != BarType::None {
+                        *bar = BarInfo::NONE;
+                        cleared = true;
+                    }
+                }
+            }
+        }
+        cleared
     }
 
     /// Lay out root `root` from its free `pools` with the sides decided so
@@ -1992,7 +2216,7 @@ impl PciEcam {
     /// 64-bit, of a root with memory above 4 GiB.
     fn may_go_high(&self, dev_idx: usize, bar_idx: usize) -> bool {
         let device = &self.devices[dev_idx];
-        let bar = device.bars[bar_idx];
+        let bar = self.bar(dev_idx, bar_idx);
         if bar.bar_type != BarType::Memory64
             || !bar.prefetchable
             || bar.fixed
@@ -2020,7 +2244,8 @@ impl PciEcam {
             if device.root != root {
                 continue;
             }
-            for (bar_idx, bar) in device.bars.iter().enumerate() {
+            for bar_idx in 0..self.bar_count(dev_idx) {
+                let bar = self.bar(dev_idx, bar_idx);
                 if bar.side != Side::Untried {
                     continue;
                 }
@@ -2066,8 +2291,7 @@ impl PciEcam {
         } else {
             Err(PciEcamError::ResourceExhausted)
         };
-        if let Err(error) = result {
-            self.report_failure(root, &pools, bridges, error);
+        if result.is_err() {
             self.unplace(root);
         }
         let free = &mut self.roots[root];
@@ -2090,16 +2314,17 @@ impl PciEcam {
 
     /// Say why root `root` has no layout: the request the subtrees had no
     /// room for, or that the search gave up, or found one that is wrong.
-    fn report_failure(
-        &mut self,
-        root: usize,
-        pools: &Pools,
-        bridges: &[usize],
-        error: PciEcamError,
-    ) {
+    /// Leaves nothing of the root placed, as [`Self::allocate_root`] did.
+    fn report_failure(&mut self, root: usize, bridges: &[usize], error: PciEcamError) {
         let Root {
-            segment, bus_start, ..
+            segment,
+            bus_start,
+            mmio32,
+            mmio64,
+            io_pool,
+            ..
         } = self.roots[root];
+        let pools = &(mmio32, mmio64, io_pool);
         match error {
             PciEcamError::SearchLimit => fstart_log::error!(
                 "pci: root bridge {} (segment={:#x} bus={:#x}): the window search ran out of its budget",
@@ -2125,6 +2350,9 @@ impl PciEcam {
                 bus_start
             ),
         }
+        self.unplace(root);
+        let free = &mut self.roots[root];
+        (free.mmio32, free.mmio64, free.io_pool) = *pools;
     }
 
     /// Place root `root` as the allocator did before it laid out subtrees:
@@ -2147,9 +2375,12 @@ impl PciEcam {
             pci.unplace(root);
         };
         restore(self);
-        for device in self.devices.iter_mut().filter(|device| device.root == root) {
-            for bar in &mut device.bars {
-                bar.side = Side::Low;
+        for dev_idx in 0..self.devices.len() {
+            if self.devices[dev_idx].root != root {
+                continue;
+            }
+            for bar_idx in 0..self.bar_count(dev_idx) {
+                self.bar_mut(dev_idx, bar_idx).side = Side::Low;
             }
         }
         for behind in [false, true] {
@@ -2176,12 +2407,12 @@ impl PciEcam {
     /// behind a bridge to its window's granularity, so this places what it
     /// placed before. A subtree layout packs them at their own alignment.
     fn bar_alignment(&self, dev_idx: usize, bar_idx: usize) -> u64 {
-        let bar = self.devices[dev_idx].bars[bar_idx];
+        let bar = self.bar(dev_idx, bar_idx);
         let behind = self.devices[dev_idx].parent.is_some();
         match bar.bar_type {
-            BarType::Memory32 | BarType::Memory64 if behind => bar.size.max(0x10_0000),
-            BarType::Io if behind => bar.size.max(0x1000),
-            _ => bar.size,
+            BarType::Memory32 | BarType::Memory64 if behind => bar.align().max(0x10_0000),
+            BarType::Io if behind => bar.align().max(0x1000),
+            _ => bar.align(),
         }
     }
 
@@ -2194,7 +2425,8 @@ impl PciEcam {
             if device.root != root || device.parent.is_some() != behind {
                 continue;
             }
-            for (bar_idx, bar) in device.bars.iter().enumerate() {
+            for bar_idx in 0..self.bar_count(dev_idx) {
+                let bar = self.bar(dev_idx, bar_idx);
                 if bar.bar_type == BarType::None || bar.fixed || bar.allocated {
                     continue;
                 }
@@ -2216,17 +2448,27 @@ impl PciEcam {
     /// above, unless it is non-prefetchable behind a bridge.
     fn place_bar(&mut self, dev_idx: usize, bar_idx: usize) -> bool {
         let device = &self.devices[dev_idx];
-        let (root, behind, bar) = (device.root, device.parent.is_some(), device.bars[bar_idx]);
+        let (root, behind, bar) = (
+            device.root,
+            device.parent.is_some(),
+            self.bar(dev_idx, bar_idx),
+        );
         let align = self.bar_alignment(dev_idx, bar_idx);
         let pending: u64 = (0..self.devices.len())
             .filter(|&other| self.devices[other].root == root)
-            .flat_map(|other| (0..6).map(move |index| (other, index)))
+            .flat_map(|other| (0..self.bar_count(other)).map(move |index| (other, index)))
             .filter(|&(other, index)| {
-                let bar = self.devices[other].bars[index];
+                let bar = self.bar(other, index);
                 bar.bar_type == BarType::Memory32 && !bar.fixed && !bar.allocated
             })
-            .map(|(other, index)| self.bar_alignment(other, index))
-            .sum();
+            // What it takes placed: a VF BAR spans its VFs, more than its
+            // alignment.
+            .map(|(other, index)| {
+                let size = self.bar(other, index).size;
+                let align = self.bar_alignment(other, index);
+                size.checked_next_multiple_of(align).unwrap_or(u64::MAX)
+            })
+            .fold(0, u64::saturating_add);
         let pools = &mut self.roots[root];
         let base = match bar.bar_type {
             BarType::Memory32 => pools.mmio32.allocate_aligned(bar.size, align),
@@ -2246,7 +2488,7 @@ impl PciEcam {
         let Some(base) = base else {
             return false;
         };
-        let bar = &mut self.devices[dev_idx].bars[bar_idx];
+        let bar = self.bar_mut(dev_idx, bar_idx);
         bar.base = base;
         bar.allocated = true;
         if base >= 1 << 32 {
@@ -2261,14 +2503,13 @@ impl PciEcam {
     fn span_windows(&mut self, bridge: usize) {
         let mut spans = [(u64::MAX, 0u64); WINDOW_KINDS.len()];
         let high = self.subtree(bridge).any(|dev_idx| {
-            self.devices[dev_idx]
-                .bars
-                .iter()
-                .any(|bar| bar.side == Side::High)
+            (0..self.bar_count(dev_idx))
+                .any(|bar_idx| self.bar(dev_idx, bar_idx).side == Side::High)
         });
         let prefetch = self.devices[bridge].prefetch != PrefetchWindow::None;
         for dev_idx in self.subtree(bridge) {
-            for bar in &self.devices[dev_idx].bars {
+            for bar_idx in 0..self.bar_count(dev_idx) {
+                let bar = self.bar(dev_idx, bar_idx);
                 if bar.bar_type == BarType::None || !bar.allocated {
                     continue;
                 }
@@ -2316,9 +2557,9 @@ impl PciEcam {
             if self.devices[dev_idx].root != root {
                 continue;
             }
-            for bar_idx in 0..6 {
+            for bar_idx in 0..self.bar_count(dev_idx) {
                 candidates |= self.may_go_high(dev_idx, bar_idx);
-                self.devices[dev_idx].bars[bar_idx].side = Side::Low;
+                self.bar_mut(dev_idx, bar_idx).side = Side::Low;
             }
         }
         if self.try_root(root, pools, bridges, false).is_ok() {
@@ -2330,16 +2571,19 @@ impl PciEcam {
         // Else all above 4 GiB, then each below if it still fits there, in
         // the BAR-by-BAR allocator's order.
         for dev_idx in 0..self.devices.len() {
-            for bar_idx in 0..6 {
-                if self.devices[dev_idx].root == root && self.may_go_high(dev_idx, bar_idx) {
-                    self.devices[dev_idx].bars[bar_idx].side = Side::Untried;
+            if self.devices[dev_idx].root != root {
+                continue;
+            }
+            for bar_idx in 0..self.bar_count(dev_idx) {
+                if self.may_go_high(dev_idx, bar_idx) {
+                    self.bar_mut(dev_idx, bar_idx).side = Side::Untried;
                 }
             }
         }
         while let Some((dev_idx, bar_idx)) = self.next_untried(root) {
-            self.devices[dev_idx].bars[bar_idx].side = Side::Low;
+            self.bar_mut(dev_idx, bar_idx).side = Side::Low;
             if self.try_root(root, pools, bridges, false).is_err() {
-                self.devices[dev_idx].bars[bar_idx].side = Side::High;
+                self.bar_mut(dev_idx, bar_idx).side = Side::High;
             }
         }
         self.try_root(root, pools, bridges, false).is_ok()
@@ -2398,7 +2642,24 @@ impl PciEcam {
         // Every root is planned and checked before anything is written.
         let before = self.roots.clone();
         for root in 0..self.roots.len() {
-            if let Err(error) = self.allocate_root(root, &bridges) {
+            let mut result = self.allocate_root(root, &bridges);
+            // No room for the VFs: the PFs alone, and only that is reported.
+            if matches!(
+                result,
+                Err(PciEcamError::ResourceExhausted | PciEcamError::SearchLimit)
+            ) && self.clear_vf_bars(root)
+            {
+                result = self.allocate_root(root, &bridges);
+                if result.is_ok() {
+                    fstart_log::warn!(
+                        "pci: root segment={:#x} bus={:#x} ran out of space for SR-IOV VF BARs; allocated PF BARs only",
+                        self.roots[root].segment,
+                        self.roots[root].bus_start,
+                    );
+                }
+            }
+            if let Err(error) = result {
+                self.report_failure(root, &bridges, error);
                 for root in 0..root {
                     self.unplace(root);
                 }
@@ -2423,20 +2684,20 @@ impl PciEcam {
     fn program(&mut self, dev_idx: usize) {
         let device = &self.devices[dev_idx];
         let addr = device.addr;
-        let movable = |bar: &&BarInfo| bar.bar_type != BarType::None && !bar.fixed;
-        if device.bars.iter().any(|bar| movable(&bar)) {
+        let movable = |bar: BarInfo| bar.bar_type != BarType::None && !bar.fixed;
+        let bar_count = self.bar_count(dev_idx);
+        if (0..bar_count).any(|i| movable(self.bar(dev_idx, i))) {
             self.write16(
                 addr,
                 PCI_COMMAND,
                 device.original_command & !(PCI_CMD_IO | PCI_CMD_MEMORY),
             );
         }
-        for bar in device
-            .bars
-            .iter()
-            .filter(movable)
-            .filter(|bar| bar.allocated)
-        {
+        for bar_idx in 0..bar_count {
+            let bar = self.bar(dev_idx, bar_idx);
+            if !movable(bar) || !bar.allocated {
+                continue;
+            }
             let prefetchable = if bar.prefetchable { 0x8 } else { 0 };
             match bar.bar_type {
                 BarType::Memory32 => {
@@ -2455,6 +2716,9 @@ impl PciEcam {
                 BarType::None => {}
             }
         }
+        let device = &self.devices[dev_idx];
+        // Only PF BARs (0..PF_BAR_SLOTS) govern PCI_COMMAND memory/IO decode;
+        // VF BARs are gated by SR-IOV Control.VF_MSE (kept disabled).
         let bars =
             |kind: fn(BarType) -> bool| device.bars.iter().filter(move |bar| kind(bar.bar_type));
         let io = |bar_type| bar_type == BarType::Io;
@@ -2999,23 +3263,24 @@ impl PciEcam {
 
     /// The assigned BARs, each with whether it is prefetchable.
     fn assigned(&self) -> impl Iterator<Item = (PciAddress, PciWindow, bool)> + '_ {
-        self.devices.iter().flat_map(move |device| {
-            device.bars.iter().filter_map(move |bar| {
+        (0..self.devices.len()).flat_map(move |dev_idx| {
+            let addr = self.devices[dev_idx].addr;
+            (0..self.bar_count(dev_idx)).filter_map(move |bar_idx| {
+                let bar = self.bar(dev_idx, bar_idx);
                 if !bar.allocated {
                     return None;
                 }
-                let low = self.read32(device.addr, bar.reg);
+                let low = self.read32(addr, bar.reg);
                 let window = match bar.bar_type {
                     BarType::None => return None,
                     BarType::Io => PciWindow::io(u64::from(low & !3), bar.size),
                     BarType::Memory32 => PciWindow::mmio(u64::from(low & !0xf), bar.size),
                     BarType::Memory64 => PciWindow::mmio(
-                        u64::from(low & !0xf)
-                            | (u64::from(self.read32(device.addr, bar.reg + 4)) << 32),
+                        u64::from(low & !0xf) | (u64::from(self.read32(addr, bar.reg + 4)) << 32),
                         bar.size,
                     ),
                 };
-                Some((device.addr, window, bar.prefetchable))
+                Some((addr, window, bar.prefetchable))
             })
         })
     }
@@ -3053,6 +3318,7 @@ impl PciEcam {
             described: HVec::new(),
             roots,
             devices: HVec::new(),
+            sriov: HVec::new(),
             fixed_bars: PciFixedBars::new(),
             hotplug_ports: HVec::new(),
             auto_bus_master: true,
@@ -3062,6 +3328,8 @@ impl PciEcam {
             allocators: Allocators::Both(solver::Budget::FIRMWARE),
             #[cfg(test)]
             spent: (0, 0),
+            #[cfg(test)]
+            bar_models: HVec::new(),
         }
     }
 }
