@@ -164,7 +164,10 @@ assembler and `host-tools-linux-x86_64.tar.gz` (prebuilt `fbuild` and
 GitHub Releases do not expire, so the same job deletes nightlies it created
 (marked in the release notes) 30 days after publication, with their tags. The
 newest nightly is kept even when expired; other releases are never touched.
-A release may hold 1000 assets; publication checks that bound.
+A release may hold 1000 assets; publication checks that bound. If any job in
+`nightly.yml` fails, the `report-failure` job runs `fstart-release report-failure`
+to open a `bug` issue (or comment on an already-open nightly failure issue) with
+the failed run URL, failed job names, and target revision.
 
 ## Web assembler
 

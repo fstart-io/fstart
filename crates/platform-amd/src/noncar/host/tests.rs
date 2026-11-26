@@ -180,7 +180,8 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 /// (Re-pinned for the SMM unit's `smm` board feature, again without the
 /// entry cfg, again without the payload cfg, for the AMD reset sections'
 /// rename from `.sp3.*` to `.amd.*` in the linker script, for the one
-/// AMD host plan, and for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`.)
+/// AMD host plan, for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`, and
+/// for expanding the Zeppelin reset image to 3 MiB.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -195,9 +196,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "3f09c350ab477574f106f5d9fc9daebdabd4de65caca48f7fc080c55c3513a9e",
-            "3f919055e855112b89ded08ed9a7c8af677b2d454c6346fa82215ae12163bf48",
-            "3d6a123bd1b146d398932dc124967d0431d1fe6e330081acd1c300a553d7febf",
+            "182d456320abe2262f679cdceb649037d43e1fa4cc255efaa652c139beaa75c8",
+            "854d15c6760522388f04e0358366a5c91f44f779911ed3bcb4baa42f3b9136cd",
+            "7f5e2df2a8697767e89aa0e060f4abd56fbeaee2f2c6e187c93989ab688604d7",
         ]
     );
 }
@@ -233,7 +234,7 @@ fn zeppelin_packs_a_two_level_native_image() {
         files,
         reset_offset,
     } = &image.firmware;
-    assert_eq!(*reset_offset, Some(0xdb_0000));
+    assert_eq!(*reset_offset, Some(0xd0_0000));
     assert!(files.two_level && image.psp.compress_reset);
     assert_eq!((files.spi_read_mode, files.spi_speed), (Some(7), Some(1)));
     assert_eq!(files.fixed.len(), 3);
@@ -244,7 +245,7 @@ fn zeppelin_packs_a_two_level_native_image() {
     let ffs = image.ffs.as_ref().unwrap();
     assert_eq!(
         (ffs.offset, ffs.size, image.reset_size),
-        (0x29_4000, 0xdb_0000 - 0x29_4000, 0x25_0000)
+        (0x29_4000, 0xd0_0000 - 0x29_4000, 0x30_0000)
     );
     assert!(
         matches!(&plan.ffs_assembly().unwrap().microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1)

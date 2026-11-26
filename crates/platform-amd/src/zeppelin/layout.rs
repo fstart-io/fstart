@@ -8,7 +8,7 @@
 use crate::layout::{Layout, Region};
 
 const EARLY: u64 = 0x7600_0000;
-const IMAGE: Region = Region::new(0x76db_0000, 0x25_0000);
+const IMAGE: Region = Region::new(0x76d0_0000, 0x30_0000);
 const FLASH: Region = Region::new(0xff00_0000, 0x100_0000);
 
 /// The end of the PSP partition: the EFS, PSP/BIOS directories and signed
@@ -24,7 +24,7 @@ pub const LAYOUT: Layout = Layout {
     pdpts: 1,
     data: Region::new(0x7601_0000, 0x7620_0000 - 0x7601_0000),
     heap: Region::new(0x7620_0000, 0x80_0000),
-    stack: Region::new(0x76d0_0000, IMAGE.base - 0x76d0_0000),
+    stack: Region::new(0x76c0_0000, IMAGE.base - 0x76c0_0000),
     store: None,
     image: IMAGE,
     flash: FLASH,

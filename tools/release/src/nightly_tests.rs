@@ -387,3 +387,60 @@ fn drafts_are_deleted_by_id_and_published_releases_with_their_tag() {
     let args = delete_args("o/r", &draft);
     assert_eq!(args, ["api", "--method", "DELETE", "repos/o/r/releases/2"]);
 }
+
+#[test]
+fn report_failure_opens_issue_when_none_is_open() {
+    let mut calls = Vec::new();
+    let issues = serde_json::json!([[
+        {"number": 10, "body": "unrelated issue"},
+        {"number": 11, "body": FAILURE_MARKER, "pull_request": {"url": "https://example.invalid/pr/11"}}
+    ]]);
+    report_failure(
+        "fstart-io/fstart",
+        12345,
+        Some(&"a".repeat(40)),
+        &["distribution".into()],
+        &mut |args| {
+            calls.push(args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            if args[0] == "api" {
+                return Ok(issues.to_string());
+            }
+            Ok(String::new())
+        },
+    )
+    .unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1][..2], ["issue", "create"]);
+    let body = &calls[1][calls[1].iter().position(|a| a == "--body").unwrap() + 1];
+    assert!(body.contains(FAILURE_MARKER));
+    assert!(body.contains("https://github.com/fstart-io/fstart/actions/runs/12345"));
+    assert!(body.contains("`distribution`"));
+    assert!(body.contains(&"a".repeat(40)));
+}
+
+#[test]
+fn report_failure_comments_on_existing_open_issue() {
+    let mut calls = Vec::new();
+    let issues = serde_json::json!([[
+        {"number": 42, "body": format!("{FAILURE_MARKER}\n\nprevious failure")}
+    ]]);
+    report_failure(
+        "fstart-io/fstart",
+        67890,
+        None,
+        &["pending".into(), "publish".into()],
+        &mut |args| {
+            calls.push(args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            if args[0] == "api" {
+                return Ok(issues.to_string());
+            }
+            Ok(String::new())
+        },
+    )
+    .unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1][..3], ["issue", "comment", "42"]);
+    let body = &calls[1][calls[1].iter().position(|a| a == "--body").unwrap() + 1];
+    assert!(body.contains("https://github.com/fstart-io/fstart/actions/runs/67890"));
+    assert!(body.contains("`pending, publish`"));
+}
