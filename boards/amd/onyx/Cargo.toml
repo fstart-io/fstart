@@ -40,7 +40,7 @@ fstart-driver-ipmi = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"] }
 fstart-driver-uart = { workspace = true }
 fstart-log = { workspace = true }
-heapless = { version = "0.8", default-features = false }
+heapless = { workspace = true }
 tock-registers = "0.10"
 
 [dev-dependencies]

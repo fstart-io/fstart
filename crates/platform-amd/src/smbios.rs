@@ -84,7 +84,11 @@ mod stage {
         }
         // The bounded queue transfers an owned value from the AP: no shared
         // result slot of our own.
-        let queue = heapless::mpmc::MpMcQueue::<ProcessorSnapshot, 2>::new();
+        #[expect(
+            deprecated,
+            reason = "single AP enqueues inside mp.scope; no concurrent contention"
+        )]
+        let queue = heapless::mpmc::Queue::<ProcessorSnapshot, 2>::new();
         mp.scope(|scope| {
             scope.run_on(index as u16, &|| {
                 let _ = queue.enqueue(ProcessorSnapshot::read());

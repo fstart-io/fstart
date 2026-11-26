@@ -755,7 +755,7 @@ dependencies = [
  "fstart-core",
  "fstart-log",
  "fstart-smm",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "object 0.37.3",
  "tock-registers",
  "ufmt",
@@ -782,7 +782,7 @@ dependencies = [
  "fstart-log",
  "fstart-options",
  "fstart-platform-amd",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "pca9535",
  "ufmt",
  "xca9548a",
@@ -798,7 +798,7 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-log",
  "fstart-platform-amd",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "tock-registers",
 ]
 
@@ -1294,7 +1294,7 @@ dependencies = [
  "fstart-log",
  "fstart-options",
  "fstart-platform-amd",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "tock-registers",
  "ufmt",
 ]
@@ -1313,7 +1313,7 @@ dependencies = [
  "fstart-options",
  "fstart-pci",
  "fstart-platform-amd",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "tock-registers",
  "ufmt",
 ]
@@ -1331,7 +1331,7 @@ dependencies = [
  "fstart-log",
  "fstart-options",
  "fstart-tcg",
- "heapless 0.8.0",
+ "heapless 0.9.3",
 ]
 
 [[package]]
@@ -1341,7 +1341,7 @@ dependencies = [
  "embedded-hal",
  "embedded-io",
  "embedded-storage",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "portable-atomic",
  "serde",
  "tock-registers",
@@ -1354,7 +1354,7 @@ dependencies = [
 name = "fstart-coreboot"
 version = "0.1.0"
 dependencies = [
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "zerocopy",
 ]
 
@@ -1387,7 +1387,7 @@ dependencies = [
  "fstart-options",
  "fstart-pci",
  "fstart-smm",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "libc",
  "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=a37c758fd373b4c23d631c20b78a64c1210205c3)",
  "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=a37c758fd373b4c23d631c20b78a64c1210205c3)",
@@ -1452,7 +1452,7 @@ dependencies = [
  "fstart-pci",
  "fstart-smm",
  "fstart-timestamp",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "rflasher-core 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=a37c758fd373b4c23d631c20b78a64c1210205c3)",
  "rflasher-internal 0.1.0 (git+https://github.com/ArthurHeymans/rflasher.git?rev=a37c758fd373b4c23d631c20b78a64c1210205c3)",
  "sha2 0.11.0",
@@ -1559,7 +1559,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-core",
  "fstart-log",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "tock-registers",
  "ufmt",
 ]
@@ -1621,7 +1621,7 @@ dependencies = [
  "ed25519-dalek",
  "fstart-core",
  "fstart-crypto",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "lz4_flex",
  "lzma-rust2",
  "rand_core",
@@ -1644,7 +1644,7 @@ dependencies = [
  "fstart-options",
  "fstart-smm",
  "getrandom 0.2.17",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "iced-x86",
  "miniz_oxide",
  "object 0.37.3",
@@ -1714,7 +1714,7 @@ dependencies = [
  "fstart-log",
  "fstart-stage",
  "fstart-tcg",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "ufmt",
 ]
 
@@ -1724,7 +1724,7 @@ version = "0.1.0"
 dependencies = [
  "fstart-core",
  "fstart-log",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "pci_types",
  "tock-registers",
  "ufmt",
@@ -1756,7 +1756,7 @@ dependencies = [
  "fstart-smm",
  "fstart-stage",
  "fstart-tcg",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1811,7 +1811,7 @@ dependencies = [
  "fstart-stage",
  "fstart-store",
  "fstart-timestamp",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "konst",
  "serde",
  "serde_json",
@@ -1838,7 +1838,7 @@ dependencies = [
  "fstart-smm",
  "fstart-stage",
  "fstart-tcg",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "serde_json",
  "ufmt",
  "zerocopy",
@@ -1928,7 +1928,7 @@ dependencies = [
  "fstart-log",
  "fstart-tcg",
  "fstart-timestamp",
- "heapless 0.8.0",
+ "heapless 0.9.3",
  "linked_list_allocator",
  "portable-atomic",
  "spin",
@@ -2065,8 +2065,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
 dependencies = [
  "hash32",
- "portable-atomic",
- "serde",
  "stable_deref_trait",
 ]
 
@@ -2077,6 +2075,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
 dependencies = [
  "hash32",
+ "portable-atomic",
+ "serde_core",
  "stable_deref_trait",
 ]
 

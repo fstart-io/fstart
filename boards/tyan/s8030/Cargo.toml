@@ -64,7 +64,7 @@ fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
 fstart-driver-superio = { workspace = true, features = ["acpi"] }
 fstart-driver-uart = { workspace = true, features = ["pio"] }
 embedded-hal = { version = "1", default-features = false }
-heapless = { version = "0.8", default-features = false }
+heapless = { workspace = true }
 tock-registers = "0.10"
 ufmt = "0.2"
 
