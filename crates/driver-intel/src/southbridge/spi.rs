@@ -1,4 +1,5 @@
-//! Allocation-free rflasher adapter for firmware ICH7/ICH8/ICH9 SPI access.
+//! Allocation-free rflasher adapter for firmware ICH7/ICH8/ICH9/PCH/Bay Trail
+//! SPI access.
 //!
 //! The controller is not a general firmware flasher: all accesses are bounded
 //! to a caller-supplied, linked mutable extent. Construct/use it only from RAM;
@@ -16,11 +17,18 @@ use rflasher_internal::{
 };
 use tock_registers::interfaces::{ReadWriteable, Readable};
 
-/// SPIBAR is RCBA+0x3020 on ICH7/ICH8 and RCBA+0x3800 on ICH9 and the 5
-/// Series PCH.
+/// Where the southbridge places SPIBAR.
+#[derive(Clone, Copy)]
+enum SpiWindow {
+    /// RCBA+0x3020 on ICH7/ICH8 and RCBA+0x3800 on ICH9, 5 Series and 8 Series PCH.
+    Rcba(u64),
+    /// Silvermont / Bay Trail: LPC SBASE (0x54, bits 31:9, bit 1 enable).
+    SilvermontSbase,
+}
+
 #[derive(Clone, Copy)]
 struct FirmwareHost {
-    spi_offset: u64,
+    window: SpiWindow,
 }
 
 impl FirmwareHost {
@@ -100,19 +108,35 @@ impl MmioAccess for SpiRegisters {
 }
 const SPI_WINDOW_SIZE: u32 = 0x200;
 
+/// Decode Silvermont LPC SBASE (0x54): bits 31:9 are the 512-byte-aligned
+/// MMIO base, bit 1 is the decode enable.
+fn silvermont_sbase_addr(raw: u32) -> Option<u64> {
+    (raw & crate::baytrail::lpc::BASE::ENABLE::SET.value != 0)
+        .then_some(u64::from(raw & 0xffff_fe00))
+}
+
 impl HostAccess for FirmwareHost {
     type MmioRegion = SpiRegisters;
     unsafe fn map_mmio(&self, address: u64, size: usize) -> Result<SpiRegisters, InternalError> {
-        // SAFETY: inherited from map_mmio's enabled ECAM/RCBA contract.
-        let rcba = unsafe { lpc::flash_config() }.rcba.extract();
-        let expected = (u64::from(rcba.read(ROOT_COMPLEX_BASE::BASE)) << 14) + self.spi_offset;
-        if !rcba.is_set(ROOT_COMPLEX_BASE::ENABLE)
-            || address != expected
-            || size != SPI_WINDOW_SIZE as usize
-        {
+        let expected = match self.window {
+            SpiWindow::Rcba(spi_offset) => {
+                // SAFETY: inherited from map_mmio's enabled ECAM/RCBA contract.
+                let rcba = unsafe { lpc::flash_config() }.rcba.extract();
+                if !rcba.is_set(ROOT_COMPLEX_BASE::ENABLE) {
+                    return Err(InternalError::Io("invalid ICH SPI window"));
+                }
+                (u64::from(rcba.read(ROOT_COMPLEX_BASE::BASE)) << 14) + spi_offset
+            }
+            SpiWindow::SilvermontSbase => {
+                let raw = crate::baytrail::lpc::device().read32(crate::baytrail::lpc::SBASE);
+                silvermont_sbase_addr(raw)
+                    .ok_or(InternalError::Io("invalid Silvermont SPI window"))?
+            }
+        };
+        if address != expected || size != SPI_WINDOW_SIZE as usize {
             return Err(InternalError::Io("invalid ICH SPI window"));
         }
-        // SAFETY: `address` is the southbridge SPIBAR window inside mapped RCBA.
+        // SAFETY: `address` is the verified southbridge SPIBAR window.
         Ok(SpiRegisters(unsafe {
             fstart_core::mmio::MmioWindow::new(address as usize, SPI_WINDOW_SIZE)
         }))
@@ -161,12 +185,15 @@ pub struct CacheSpi {
     extent: FlashExtent,
     /// Block protection of the identified part; `None` keeps it read-only.
     writable: Option<Protection>,
+    /// Mapped SBASE for Silvermont chipsets whose BIOS control lives at SPIBAR+0xfc.
+    silvermont_sbase: Option<usize>,
 }
 impl CacheSpi {
     /// # Safety
-    /// ECAM/RCBA must be mapped as device memory. `extent` must be a linked
-    /// reservation disjoint from all code, roots/directories and vendor data.
-    /// The caller and all reachable code/data must execute from RAM, not flash.
+    /// ECAM and RCBA/SBASE must be mapped as device memory. `extent` must be a
+    /// linked reservation disjoint from all code, roots/directories and vendor
+    /// data. The caller and all reachable code/data must execute from RAM, not
+    /// flash.
     pub unsafe fn new(extent: FlashExtent) -> Result<Self, ServiceError> {
         extent.address(0, extent.size as usize)?;
         if extent.chip_size > 0x1000000
@@ -183,17 +210,25 @@ impl CacheSpi {
             Some(lpc.revision_id.get()),
         )
         .ok_or(ServiceError::NotSupported)?;
-        let host = FirmwareHost {
-            spi_offset: match entry.chipset {
-                IchChipset::Ich7 | IchChipset::Ich8 => 0x3020,
-                // The 5 and 8 Series PCHs keep ICH9's SPI block and offset.
-                IchChipset::Ich9
-                | IchChipset::Series5IbexPeak
-                | IchChipset::Series8LynxPoint
-                | IchChipset::Series8LynxPointLp => 0x3800,
-                _ => return Err(ServiceError::NotSupported),
-            },
+        let window = match entry.chipset {
+            IchChipset::Ich7 | IchChipset::Ich8 => SpiWindow::Rcba(0x3020),
+            // The 5 and 8 Series PCHs keep ICH9's SPI block and offset.
+            IchChipset::Ich9
+            | IchChipset::Series5IbexPeak
+            | IchChipset::Series8LynxPoint
+            | IchChipset::Series8LynxPointLp => SpiWindow::Rcba(0x3800),
+            IchChipset::BayTrail => SpiWindow::SilvermontSbase,
+            _ => return Err(ServiceError::NotSupported),
         };
+        let silvermont_sbase = match window {
+            SpiWindow::SilvermontSbase => {
+                let raw = crate::baytrail::lpc::device().read32(crate::baytrail::lpc::SBASE);
+                let base = silvermont_sbase_addr(raw).ok_or(ServiceError::HardwareError)?;
+                Some(base as usize)
+            }
+            SpiWindow::Rcba(_) => None,
+        };
+        let host = FirmwareHost { window };
         let chipset = DetectedChipset {
             enable: entry,
             domain: 0,
@@ -217,6 +252,15 @@ impl CacheSpi {
         let identified = controller
             .execute(&mut SpiCommand::read_reg(opcodes::RDID, &mut id))
             .is_ok();
+        let bios_cntl = match silvermont_sbase {
+            Some(sbase) => {
+                // SAFETY: SBASE was verified enabled and mapped above.
+                unsafe { &*(sbase as *const crate::baytrail::lpc::SpiRegs) }
+                    .bcr
+                    .get()
+            }
+            None => u32::from(lpc.bios_control.get()),
+        };
         // Construction is outside the console's write callback. Keep status
         // diagnostics here, never in program/erase/unlock (logger re-entry).
         fstart_log::info!(
@@ -224,7 +268,7 @@ impl CacheSpi {
             id[0],
             id[1],
             id[2],
-            lpc.bios_control.get()
+            bios_cntl
         );
         let writable = identified
             .then(|| supported_geometry(id, extent.chip_size))
@@ -241,6 +285,7 @@ impl CacheSpi {
             controller,
             extent,
             writable,
+            silvermont_sbase,
         })
     }
 
@@ -317,6 +362,26 @@ impl CacheSpi {
     ) -> Result<(), ServiceError> {
         if self.writable.is_none() {
             return Err(ServiceError::NotSupported);
+        }
+        if let Some(sbase) = self.silvermont_sbase {
+            use crate::baytrail::lpc::{BCR, SpiRegs};
+            // SAFETY: construction established the live SBASE mapping; operations run from RAM.
+            let bcr = &unsafe { &*(sbase as *const SpiRegs) }.bcr;
+            let before = bcr.extract();
+            if before.is_set(BCR::LE) || before.is_set(BCR::EISS) {
+                return Err(ServiceError::HardwareError);
+            }
+            let result = self
+                .controller
+                .enable_bios_write()
+                .map_err(|_| ServiceError::HardwareError)
+                .and_then(|()| self.unprotected(operation));
+            // Restore only WPD; preserve unrelated and newly latched policy bits.
+            bcr.modify(BCR::WPD.val(before.read(BCR::WPD)));
+            if bcr.read(BCR::WPD) != before.read(BCR::WPD) {
+                return Err(ServiceError::HardwareError);
+            }
+            return result;
         }
         // SAFETY: construction established the live mapping; operations run from RAM.
         let control = &unsafe { lpc::flash_config() }.bios_control;
@@ -492,6 +557,20 @@ mod tests {
             }
             .address(0, 2)
             .is_err()
+        );
+    }
+
+    #[test]
+    fn silvermont_sbase_decodes_enabled_512b_aligned_address() {
+        // Bit 1 is decode enable; low 9 bits are status/enable flags.
+        assert_eq!(silvermont_sbase_addr(0xfed0_1000), None);
+        assert_eq!(silvermont_sbase_addr(0xfed0_1001), None);
+        assert_eq!(silvermont_sbase_addr(0xfed0_1002), Some(0xfed0_1000));
+        assert_eq!(silvermont_sbase_addr(0xfed0_11ff), Some(0xfed0_1000));
+        // W25Q64FV (MinnowBoard MAX 8 MiB flash) is whitelisted.
+        assert_eq!(
+            supported_geometry([0xef, 0x40, 0x17], 0x80_0000),
+            Some(Protection::None)
         );
     }
 }

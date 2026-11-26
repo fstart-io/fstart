@@ -21,7 +21,9 @@ pub struct BaytrailSmi {
 impl BaytrailSmi {
     pub const fn new(gpio_route: u32, pcie_wake: bool) -> Self {
         Self {
-            ich: IchSmi::new(ACPI_BASE, BAYTRAIL_GPE0),
+            ich: IchSmi::new(ACPI_BASE, BAYTRAIL_GPE0)
+                .with_sleep_smi(0)
+                .without_ich_pmcon3(),
             gpio_route,
             pcie_wake,
         }
@@ -74,8 +76,8 @@ impl SmiControl for BaytrailSmi {
     }
 
     /// Power button and global release in PM1 (PCIe wake only when the
-    /// board allows it), no PME_B0 GPE, the GPIO routes, then APM SMIs.
-    /// As on the ICH chipsets, the OS's sleep writes are not trapped.
+    /// board allows it), no PME_B0 GPE, the GPIO routes, then APM and sleep
+    /// SMIs (coreboot `smm_southbridge_enable`).
     fn enable_permanent_smi(&self, previous: SmiEnableState) {
         let pm = pmc::pm();
         self.ich.clear_status();
@@ -86,7 +88,10 @@ impl SmiControl for BaytrailSmi {
         pm.write16(pmio::PM1_EN, pm1);
         pm.write32(pmc::GPE0_EN, previous.gpe0[0] & !pmc::PME_B0_EN);
         self.route_gpios();
-        pm.write32(pmio::SMI_EN, pmio::APMC_EN | pmio::GBL_SMI_EN | pmio::EOS);
+        pm.write32(
+            pmio::SMI_EN,
+            pmio::APMC_EN | pmio::SLP_SMI_EN | pmio::GBL_SMI_EN | pmio::EOS,
+        );
     }
 
     fn lock_permanent_smi(&self) -> bool {
