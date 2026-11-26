@@ -376,6 +376,27 @@ impl<S: Soc> Stage<S, FchUp<S>> {
             phase: Trained(trained),
         }
     }
+
+    /// Asynchronous counterpart to [`Self::train_dxio`], yielding to the
+    /// cooperative executor during SMU waits so spawned tasks can overlap with
+    /// DXIO link training.
+    pub async fn train_dxio_async(self, lanes: S::Lanes<'_>) -> Stage<S, Trained<S>> {
+        fstart_timestamp::add(fstart_timestamp::id::TRAIN_DXIO);
+        let Stage {
+            machine,
+            phase: FchUp(up),
+        } = self;
+        let trained = {
+            let ctx = machine.ctx();
+            S::train_dxio_async(&ctx, up, lanes)
+                .await
+                .unwrap_or_else(|what| fail::<S>(what))
+        };
+        Stage {
+            machine,
+            phase: Trained(trained),
+        }
+    }
 }
 
 impl<S: Soc> Stage<S, Trained<S>> {

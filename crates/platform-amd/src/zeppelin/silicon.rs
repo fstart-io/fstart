@@ -171,6 +171,25 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
     msr: &impl MsrAccess,
     config: &Config,
     identity: Identity,
+    top: (u64, Option<u64>),
+    reset: (Bridges, [u32; MAX_DIES]),
+    buffers: &'static mut dxio::zp::Buffers<MAX_DIES>,
+    timer: &impl Timer,
+) -> Result<Trained, &'static str> {
+    fstart_core::task::block_on(pre_mp_dxio_async(
+        dies, fch, msr, config, identity, top, reset, buffers, timer,
+    ))
+}
+
+/// Asynchronous counterpart to [`pre_mp_dxio`], yielding to the cooperative
+/// executor during SMU DXIO link-training waits.
+#[allow(clippy::too_many_arguments)]
+pub async fn pre_mp_dxio_async<P: ConfigRegionAccess + Copy>(
+    dies: &[Die<P>],
+    fch: &impl FchHw,
+    msr: &impl MsrAccess,
+    config: &Config,
+    identity: Identity,
     (top_mem, top_mem2): (u64, Option<u64>),
     (bridges, nonpci): (Bridges, [u32; MAX_DIES]),
     buffers: &'static mut dxio::zp::Buffers<MAX_DIES>,
@@ -212,7 +231,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
 
     // SAFETY: BSP-only; the DMA buffer is reserved below 4 GiB.
     let topology = unsafe {
-        dxio::zp::init(
+        dxio::zp::init_async(
             dies,
             &config.dxio.descriptors,
             config.subsystem_id,
@@ -220,6 +239,7 @@ pub fn pre_mp_dxio<P: ConfigRegionAccess + Copy>(
             buffers,
             timer,
         )
+        .await
     }
     .map_err(|_| "DXIO training")?;
     for port in topology[0].ports.iter().flatten() {

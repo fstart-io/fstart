@@ -42,6 +42,7 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 # Embedded / no_std utilities
 embedded-hal = { version = "1", default-features = false }
+embedded-hal-async = { version = "1", default-features = false }
 embedded-io = { version = "0.6", default-features = false }
 embedded-storage = { version = "0.3", default-features = false }
 heapless = { version = "0.8", default-features = false, features = ["portable-atomic"] }

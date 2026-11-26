@@ -32,6 +32,20 @@ impl<T: Timer + ?Sized> embedded_hal::delay::DelayNs for TimerDelay<'_, T> {
     }
 }
 
+impl<T: Timer + ?Sized> embedded_hal_async::delay::DelayNs for TimerDelay<'_, T> {
+    async fn delay_ns(&mut self, ns: u32) {
+        crate::task::delay_us(self.0, u64::from(ns.div_ceil(1000))).await;
+    }
+
+    async fn delay_us(&mut self, us: u32) {
+        crate::task::delay_us(self.0, u64::from(us)).await;
+    }
+
+    async fn delay_ms(&mut self, ms: u32) {
+        crate::task::delay_ms(self.0, u64::from(ms)).await;
+    }
+}
+
 /// Timer for delays and timestamps.
 pub trait Timer: Send + Sync {
     /// Busy-wait for the specified number of microseconds.
@@ -43,6 +57,34 @@ pub trait Timer: Send + Sync {
     /// Busy-wait for the specified number of milliseconds.
     fn delay_ms(&self, ms: u64) {
         self.delay_us(ms * 1000);
+    }
+}
+
+impl<T: Timer + ?Sized> Timer for TimerDelay<'_, T> {
+    fn delay_us(&self, us: u64) {
+        self.0.delay_us(us);
+    }
+
+    fn timestamp_us(&self) -> u64 {
+        self.0.timestamp_us()
+    }
+
+    fn delay_ms(&self, ms: u64) {
+        self.0.delay_ms(ms);
+    }
+}
+
+impl<T: Timer + ?Sized> Timer for &T {
+    fn delay_us(&self, us: u64) {
+        (**self).delay_us(us);
+    }
+
+    fn timestamp_us(&self) -> u64 {
+        (**self).timestamp_us()
+    }
+
+    fn delay_ms(&self, ms: u64) {
+        (**self).delay_ms(ms);
     }
 }
 
