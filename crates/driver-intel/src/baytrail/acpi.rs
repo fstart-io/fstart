@@ -329,7 +329,20 @@ impl SouthbridgeAcpi for BaytrailSouth {
                 body.extend(node);
             }
         }
-        let mut aml = scope_vec(pci_root.as_str(), &body).expect("Bay Trail PCI0 scope emission");
+        let mut aml: Vec<u8> = acpi_dsl! {
+            Scope("\\") {
+                Name("_S0_", Package(0u32, 0u32, 0u32, 0u32));
+                Name("_S4_", Package(6u32, 4u32, 0u32, 0u32));
+                Name("_S5_", Package(7u32, 0u32, 0u32, 0u32));
+            }
+        }
+        .into();
+        if self.s3_enabled() {
+            aml.extend_from_slice(&acpi_dsl! {
+                Scope("\\") { Name("_S3_", Package(5u32, 0u32, 0u32, 0u32)); }
+            });
+        }
+        aml.extend(scope_vec(pci_root.as_str(), &body).expect("Bay Trail PCI0 scope emission"));
         aml.extend(scope_vec("\\_SB_", &gpio_nodes()).expect("Bay Trail GPIO scope emission"));
         aml
     }
@@ -378,7 +391,36 @@ impl X86PlatformProvider for BaytrailSouth {
                 acpi_enable: APM_CNT_ACPI_ENABLE,
                 acpi_disable: APM_CNT_ACPI_DISABLE,
             }),
-            fadt: X86Fadt::default(),
+            fadt: X86Fadt {
+                pm2_cnt_offset: Some(pmc::PM2A_CNT_BLK),
+                ..X86Fadt::default()
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::IntelSouthbridgeDriver;
+
+    #[test]
+    fn dsdt_gates_s3_on_s3_enabled_and_fadt_exposes_pm2_cnt() {
+        static CONFIG: SouthConfig = SouthConfig::new();
+        let root = AcpiPath::SB.child("PCI0");
+        let mut south = BaytrailSouth::new_from_config(&CONFIG).unwrap();
+
+        let without_s3 = south.dsdt_aml(&CONFIG, &root);
+        assert!(without_s3.windows(4).any(|w| w == b"_S0_"));
+        assert!(without_s3.windows(4).any(|w| w == b"_S4_"));
+        assert!(without_s3.windows(4).any(|w| w == b"_S5_"));
+        assert!(!without_s3.windows(4).any(|w| w == b"_S3_"));
+
+        south.set_s3_enabled(true);
+        let with_s3 = south.dsdt_aml(&CONFIG, &root);
+        assert!(with_s3.windows(4).any(|w| w == b"_S3_"));
+
+        let cfg = south.x86_platform_config(2);
+        assert_eq!(cfg.fadt.pm2_cnt_offset, Some(pmc::PM2A_CNT_BLK));
     }
 }

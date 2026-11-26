@@ -252,6 +252,43 @@ impl crate::IntelNorthbridgeDriver for BaytrailNorth {
         self.boot_path = boot_path;
     }
 
+    fn supports_s3_replay(&self) -> bool {
+        true
+    }
+
+    fn training_identity(&self) -> Option<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        let host = fstart_pci::ecam::EcamDevice::new(0, super::dev::SOC, 0);
+        let fused = raminit::mc::fused_max_freq(&self.iosf()) as u8;
+        let (spd_tag, spd_addr) = match self.config.spd {
+            SpdSource::Smbus(addr) => (1u8, addr),
+            SpdSource::Board => (2u8, 0),
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(b"baytrail-raminit-v1");
+        hasher.update(fstart_arch::x86::cpuid(1).0.to_le_bytes());
+        hasher.update(host.vendor_id().to_le_bytes());
+        hasher.update(host.device_id().to_le_bytes());
+        hasher.update([
+            host.read8(0x08),
+            fused,
+            u8::from(self.config.txe),
+            u8::from(self.config.ddr_2x_refresh),
+            spd_tag,
+            spd_addr,
+        ]);
+        hasher.update(TSEG_MB.to_le_bytes());
+        Some(hasher.finalize().into())
+    }
+
+    fn bootstrap_ram_end(&self) -> Result<u64, ServiceError> {
+        let (smm_low, _) = self.smm_range();
+        if smm_low <= 0x10_0000 {
+            return Err(ServiceError::HardwareError);
+        }
+        Ok(smm_low)
+    }
+
     fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
         self.memory_info
     }
@@ -290,6 +327,13 @@ impl crate::IntelNorthbridgeDriver for BaytrailNorth {
         Ok(())
     }
 
+    fn resume_init(&mut self, opregion: Option<u32>) -> Result<(), ServiceError> {
+        if let Some(address) = opregion {
+            gfx::restore_opregion(address);
+        }
+        Ok(())
+    }
+
     fn post_verify_init(
         &mut self,
         opregion: crate::igd::OpRegionMemory<'_>,
@@ -304,13 +348,9 @@ impl fstart_core::services::MemoryInit for BaytrailNorth {
     type Output = Option<usize>;
 
     /// The romstage sequence: guaranteed core frequency, P-unit start,
-    /// graphics stolen sizes, the TXE UMA size, training and the TXE
-    /// DRAM Init Done.
+    /// graphics stolen sizes, the TXE UMA size, training (or S3 cache replay)
+    /// and the TXE DRAM Init Done.
     fn bring_up(&mut self, input: crate::SpdTraining<'_>) -> Result<Option<usize>, ServiceError> {
-        if self.boot_path == BootPath::S3Resume {
-            // Native raminit has no self-refresh exit path.
-            return Err(ServiceError::NotSupported);
-        }
         fstart_arch::x86::cpu::intel::silvermont::set_max_freq();
         let iosf = self.iosf();
         punit::init(&iosf, self.config.vr_ps2);
@@ -318,10 +358,29 @@ impl fstart_core::services::MemoryInit for BaytrailNorth {
         let mut buffer = [0u8; 256];
         let spd = self.spd_bytes(input.smbus, &mut buffer)?;
         let txe_mb = txe::uma_size_mb(self.config.txe);
+        if self.boot_path == BootPath::S3Resume {
+            let Some(cached) = input.cached else {
+                fstart_log::error!("baytrail: S3 resume without training cache");
+                return Err(ServiceError::NotInitialized);
+            };
+            let trained = raminit::sdram_resume(&iosf, spd, Self::igd_stolen(), txe_mb, cached)?;
+            gfx::set_stolen_bases(&trained.map);
+            txe::dram_init_done(trained.map.txe_base_mb, trained.map.txe_mb)?;
+            self.memory_info = Some(trained.memory_info);
+            return Ok(None);
+        }
         let trained = raminit::sdram_initialize(&iosf, spd, Self::igd_stolen(), txe_mb)?;
         gfx::set_stolen_bases(&trained.map);
         txe::dram_init_done(trained.map.txe_base_mb, trained.map.txe_mb)?;
         self.memory_info = Some(trained.memory_info);
+        if !input.capture.is_empty() {
+            let bytes = trained.cache.as_bytes();
+            if input.capture.len() < bytes.len() {
+                return Err(ServiceError::InvalidParam);
+            }
+            input.capture[..bytes.len()].copy_from_slice(bytes);
+            return Ok(Some(bytes.len()));
+        }
         Ok(None)
     }
 }

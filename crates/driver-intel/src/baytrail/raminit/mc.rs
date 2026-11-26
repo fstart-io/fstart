@@ -376,23 +376,53 @@ pub struct MemoryMap {
     pub tseg_mb: u32,
 }
 
-/// Geometry, address map, stolen and TSEG carve-outs, refresh, power
-/// management, and the locks.
-pub fn finalize<P: ConfigRegionAccess>(
-    iosf: &Iosf<P>,
-    p: &Params,
-    stolen: Stolen,
-    txe_mb: u32,
-    tseg_mb: u32,
-) -> Result<MemoryMap, ServiceError> {
-    fstart_log::info!("baytrail: memory controller finalization");
+/// Compute the DRAM map (MiB) for a 2 GiB MMIO hole below 4 GiB and top-down
+/// carve-outs (TXE UMA, graphics stolen, GTT, TSEG).
+pub fn compute_memory_map(tom_mb: u32, stolen: Stolen, txe_mb: u32, tseg_mb: u32) -> MemoryMap {
+    const MMIO_MB: u32 = 0x800;
+    let bmbound_mb = (0x1000 - MMIO_MB).min(tom_mb);
+    let txe_base_mb = bmbound_mb - txe_mb;
+    let gsm_base_mb = txe_base_mb - stolen.gsm_mb;
+    let gtt_base_mb = gsm_base_mb - stolen.gtt_mb;
+    let tseg_base_mb = (gtt_base_mb - tseg_mb) & !(tseg_mb - 1);
+    MemoryMap {
+        tom_mb,
+        bmbound_mb,
+        txe_base_mb,
+        txe_mb,
+        gsm_base_mb,
+        gtt_base_mb,
+        tseg_base_mb,
+        tseg_mb,
+    }
+}
+
+/// Clear any latched D-unit self-refresh status before S3 PHY/controller setup.
+pub fn clear_self_refresh<P: ConfigRegionAccess>(iosf: &Iosf<P>) {
+    let pmsts = iosf.reg(PMSTS_REG);
+    let before = pmsts.get();
+    let pmcon1 = crate::baytrail::pmc::regs().gen_pmcon1.get();
+    if pmsts.is_set(PMSTS::SELF_REFRESH) {
+        // PMSTS.SR is RW/1C on Valleyview; fall back to clearing if RW.
+        pmsts.modify(PMSTS::SELF_REFRESH::SET);
+        if pmsts.is_set(PMSTS::SELF_REFRESH) {
+            pmsts.modify(PMSTS::SELF_REFRESH::CLEAR);
+        }
+    }
+    let after = pmsts.get();
+    fstart_log::info!(
+        "baytrail: S3 PMSTS {:#010x} -> {:#010x} (GEN_PMCON1={:#010x})",
+        before,
+        after,
+        pmcon1
+    );
+}
+
+/// Program rank geometry and B-unit address masks; caller must hold `DCO.IC` clear.
+fn program_geometry<P: ConfigRegionAccess>(iosf: &Iosf<P>, p: &Params) -> Result<(), ServiceError> {
     let d = &p.dimm;
     let width = width_encoding(d.width.bits())?;
     let density = density_encoding(d)?;
-    let dco = iosf.reg(DCO_REG);
-
-    // DRP may only change while IC is clear.
-    dco.modify(DCO::IC::CLEAR);
     let two_ranks = d.ranks > 1;
     iosf.reg(DRP_REG).write(
         DRP::RANK0_EN::SET
@@ -436,78 +466,60 @@ pub fn finalize<P: ConfigRegionAccess>(
         row,
         rank
     );
-    dco.modify(DCO::IC::SET);
+    Ok(())
+}
 
-    // Memory map: a 2 GiB MMIO hole below 4 GiB, the rest reclaimed.
-    let tom_mb = d.size_mb();
+/// Program BMBOUND, BMBOUND_HI, TXE/GFX IMRs and TSEG SMRRs.
+fn program_memory_map<P: ConfigRegionAccess>(iosf: &Iosf<P>, map: &MemoryMap) {
     const MMIO_MB: u32 = 0x800;
-    let bmbound_mb = (0x1000 - MMIO_MB).min(tom_mb);
-    let bmbound_hi = if tom_mb > bmbound_mb {
-        ((tom_mb + MMIO_MB) & !0xff) >> 8
+    let bmbound_hi = if map.tom_mb > map.bmbound_mb {
+        ((map.tom_mb + MMIO_MB) & !0xff) >> 8
     } else {
-        tom_mb >> 8
+        map.tom_mb >> 8
     };
     iosf.reg(bunit::BMBOUND_REG)
-        .modify(BMBOUND::ADDRESS.val(bmbound_mb >> 7));
+        .modify(BMBOUND::ADDRESS.val(map.bmbound_mb >> 7));
     iosf.reg(bunit::BMBOUND_HI_REG)
         .modify(BMBOUND_HI::ADDRESS.val(bmbound_hi));
 
-    // Top down below BMBOUND: TXE UMA, graphics stolen, GTT, TSEG.
-    let txe_base_mb = bmbound_mb - txe_mb;
-    let gsm_base_mb = txe_base_mb - stolen.gsm_mb;
-    let gtt_base_mb = gsm_base_mb - stolen.gtt_mb;
-    if txe_mb != 0 {
+    if map.txe_mb != 0 {
         // Fence the stolen regions off from the host cores.
-        iosf.reg(bunit::bimr_low(0)).set(gtt_base_mb << 10);
+        iosf.reg(bunit::bimr_low(0)).set(map.gtt_base_mb << 10);
         iosf.reg(bunit::bimr_high(0))
-            .set(((txe_base_mb << 10) - 1) | 1 << 31);
+            .set(((map.txe_base_mb << 10) - 1) | 1 << 31);
         iosf.reg(bunit::bimr_rac(0)).set(bunit::IMR_AC_GFX);
         iosf.reg(bunit::bimr_wac(0)).set(bunit::IMR_AC_GFX);
-        iosf.reg(bunit::bimr_low(1)).set(txe_base_mb << 10);
+        iosf.reg(bunit::bimr_low(1)).set(map.txe_base_mb << 10);
         iosf.reg(bunit::bimr_high(1))
-            .set(((bmbound_mb << 10) - 1) | 1 << 31);
+            .set(((map.bmbound_mb << 10) - 1) | 1 << 31);
         iosf.reg(bunit::bimr_rac(1)).set(bunit::IMR_AC_SEC);
         iosf.reg(bunit::bimr_wac(1)).set(bunit::IMR_AC_SEC);
     }
-    let tseg_base_mb = (gtt_base_mb - tseg_mb) & !(tseg_mb - 1);
-    iosf.reg(bunit::SMRRL).set(tseg_base_mb);
+    iosf.reg(bunit::SMRRL).set(map.tseg_base_mb);
     iosf.reg(bunit::SMRRH)
-        .write(SMRR::MB.val(tseg_base_mb + tseg_mb - 1) + SMRR::ENABLE.val(3));
+        .write(SMRR::MB.val(map.tseg_base_mb + map.tseg_mb - 1) + SMRR::ENABLE.val(3));
     // SMRAM: host cores only.
     iosf.reg(bunit::SMRRAC).set(0x14);
     iosf.reg(bunit::SMRWAC).set(0x14);
-    let map = MemoryMap {
-        tom_mb,
-        bmbound_mb,
-        txe_base_mb,
-        txe_mb,
-        gsm_base_mb,
-        gtt_base_mb,
-        tseg_base_mb,
-        tseg_mb,
-    };
+}
+
+fn log_memory_map(stolen: Stolen, map: &MemoryMap) {
     fstart_log::info!(
         "baytrail: TOM {}M BMBOUND {}M TXE {}M@{} GSM {}M@{} GTT {}M@{} TSEG {}M@{}",
-        tom_mb,
-        bmbound_mb,
-        txe_mb,
-        txe_base_mb,
+        map.tom_mb,
+        map.bmbound_mb,
+        map.txe_mb,
+        map.txe_base_mb,
         stolen.gsm_mb,
-        gsm_base_mb,
+        map.gsm_base_mb,
         stolen.gtt_mb,
-        gtt_base_mb,
-        tseg_mb,
-        tseg_base_mb
+        map.gtt_base_mb,
+        map.tseg_mb,
+        map.tseg_base_mb
     );
+}
 
-    // Normal operation: no CKE/ODT forcing, refresh and periodic ZQ on.
-    iosf.reg(DRMC_REG).modify(
-        DRMC::COLD_WAKE::CLEAR
-            + DRMC::CKE_VAL.val(0)
-            + DRMC::CKE_MODE::CLEAR
-            + DRMC::ODT_VAL.val(0)
-            + DRMC::ODT_MODE::CLEAR,
-    );
+fn enable_refresh_and_pm<P: ConfigRegionAccess>(iosf: &Iosf<P>) {
     iosf.reg(DRFC_REG).modify(
         DRFC::TREFI.val(3)
             + DRFC::REFWMLO.val(0xd)
@@ -528,6 +540,9 @@ pub fn finalize<P: ConfigRegionAccess>(
             + DPMC0::ENPHYCLKGATE::SET
             + DPMC0::ENCORECLKGATE::SET,
     );
+}
+
+fn program_scheduler_and_bmisc<P: ConfigRegionAccess>(iosf: &Iosf<P>) {
     iosf.reg(DSCH_REG).modify(
         DSCH::OOODIS::CLEAR
             + DSCH::OOOST3DIS::SET
@@ -541,6 +556,121 @@ pub fn finalize<P: ConfigRegionAccess>(
     // E and F segments to DRAM; B0+ PnP setting.
     iosf.reg(bunit::BMISC_REG)
         .modify(BMISC::EDSEG_TO_DRAM::SET + BMISC::FDSEG_TO_DRAM::SET + BMISC::PNP.val(0xe));
+}
+
+/// Geometry, address map, stolen and TSEG carve-outs, refresh, power
+/// management, and the locks.
+pub fn finalize<P: ConfigRegionAccess>(
+    iosf: &Iosf<P>,
+    p: &Params,
+    stolen: Stolen,
+    txe_mb: u32,
+    tseg_mb: u32,
+) -> Result<MemoryMap, ServiceError> {
+    fstart_log::info!("baytrail: memory controller finalization");
+    let dco = iosf.reg(DCO_REG);
+
+    // DRP may only change while IC is clear.
+    dco.modify(DCO::IC::CLEAR);
+    program_geometry(iosf, p)?;
+    dco.modify(DCO::IC::SET);
+
+    let map = compute_memory_map(p.dimm.size_mb(), stolen, txe_mb, tseg_mb);
+    program_memory_map(iosf, &map);
+
+    // Normal operation: no CKE/ODT forcing, refresh and periodic ZQ on.
+    iosf.reg(DRMC_REG).modify(
+        DRMC::COLD_WAKE::CLEAR
+            + DRMC::CKE_VAL.val(0)
+            + DRMC::CKE_MODE::CLEAR
+            + DRMC::ODT_VAL.val(0)
+            + DRMC::ODT_MODE::CLEAR,
+    );
+    enable_refresh_and_pm(iosf);
+    program_scheduler_and_bmisc(iosf);
+    log_memory_map(stolen, &map);
+    Ok(map)
+}
+
+/// S3 resume finalization: configure pre-wake D-unit/B-unit and rank geometry,
+/// signal `SPID_INIT_COMPLETE`, exit self-refresh (`OP_DRAM_WAKE` with
+/// `COLD_WAKE` clear), run an initial RCOMP pass and full `ZQCL`, replay the
+/// cached PHY delays and reset DQ FIFOs while clock gating is still off, then
+/// assert `DCO.IC`, re-enable refresh and PM immediately (avoiding any UART
+/// latency while `TREFI=0`), and install the memory map and scheduler settings.
+pub fn finalize_s3<P: ConfigRegionAccess>(
+    iosf: &Iosf<P>,
+    p: &Params,
+    stolen: Stolen,
+    txe_mb: u32,
+    tseg_mb: u32,
+) -> Result<MemoryMap, ServiceError> {
+    fstart_log::info!("baytrail: S3 self-refresh exit");
+    iosf.reg(bunit::BMISC_REG).modify(BMISC::DUAL_CHAN.val(0));
+    iosf.reg(bunit::BISOC_REG).modify(BISOC::PRIORITY.val(0x10));
+    iosf.reg(DPMC0_REG).modify(DPMC0::BLMODE::SET);
+    iosf.reg(DRFC_REG).modify(DRFC::TREFI.val(0));
+    iosf.reg(DCAL_REG)
+        .modify(DCAL::ZQCINT.val(0) + DCAL::SRXZQCL.val(0));
+
+    let dco = iosf.reg(DCO_REG);
+    dco.modify(DCO::IC::CLEAR);
+    program_geometry(iosf, p)?;
+
+    // Warm wake (COLD_WAKE=0) exits self-refresh without resetting DRAM.
+    iosf.reg(DRMC_REG).modify(
+        DRMC::COLD_WAKE::CLEAR
+            + DRMC::CKE_VAL.val(0)
+            + DRMC::CKE_MODE::CLEAR
+            + DRMC::ODT_VAL.val(0)
+            + DRMC::ODT_MODE::CLEAR,
+    );
+
+    let map = compute_memory_map(p.dimm.size_mb(), stolen, txe_mb, tseg_mb);
+    super::ddrio::pre_jedec(iosf);
+
+    // Self-refresh exit wake message (keep the TREFI=0 window free of UART I/O).
+    iosf.message(DUNIT_CH0, OP_DRAM_WAKE, 0);
+    udelay(20);
+
+    // Run an initial synchronous RCOMP pass; keep periodic RCOMP off until
+    // trained PHY delays are restored and DQ FIFOs are reset.
+    let cmp = iosf.reg(super::ddrio_regs::cmpctrl());
+    let cmp_before = cmp.get();
+    cmp.modify(super::ddrio_regs::CMPCTRL::INIT_COMP::SET);
+    for _ in 0..10_000 {
+        if !cmp.is_set(super::ddrio_regs::CMPCTRL::INIT_COMP) {
+            break;
+        }
+        udelay(1);
+    }
+
+    // Run a full ZQCL on every active rank after self-refresh exit.
+    for rank in 0..p.ranks {
+        jedec_command(
+            iosf,
+            JEDEC::COMMAND::Zqcal + JEDEC::ADDRESS.val(1 << 10) + JEDEC::RANK.val(rank),
+        );
+        udelay(20);
+    }
+
+    // Restore trained delays and reset DQ FIFOs before enabling periodic RCOMP,
+    // DCO.IC, and clock gating.
+    super::training::restore_for_s3(iosf, p);
+    cmp.modify(super::ddrio_regs::CMPCTRL::RCOMP_EN::SET);
+    let cmp_after = cmp.get();
+
+    dco.modify(DCO::PMICTL::CLEAR + DCO::PMIDIS::CLEAR + DCO::IC::SET);
+    program_memory_map(iosf, &map);
+    enable_refresh_and_pm(iosf);
+    program_scheduler_and_bmisc(iosf);
+
+    fstart_log::debug!(
+        "baytrail: S3 RCOMP {:#010x} -> {:#010x}",
+        cmp_before,
+        cmp_after
+    );
+    log_memory_map(stolen, &map);
     Ok(map)
 }
 

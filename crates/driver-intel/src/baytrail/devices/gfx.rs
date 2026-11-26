@@ -394,3 +394,12 @@ pub fn publish_opregion(config: &GfxConfig, memory: crate::igd::OpRegionMemory<'
         crate::igd::publish_opregion(&igd, OpRegionSci::Swsmisci, source, memory);
     }
 }
+
+/// Restore the cold-boot OpRegion pointer and SWSMISCI routing on S3 resume.
+pub fn restore_opregion(address: u32) {
+    let igd = igd();
+    if !igd.is_present() {
+        return;
+    }
+    crate::igd::register_opregion(&igd, OpRegionSci::Swsmisci, address);
+}
