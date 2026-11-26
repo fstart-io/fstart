@@ -59,6 +59,12 @@ impl GpioPort0 {
         }
         Ok(PioRegister::<u8>::new(self.base + u16::from(bank) * 4 + 1).get())
     }
+
+    /// The data latch, typed with the board's bitfields for its wiring.
+    #[must_use]
+    pub const fn register<R: tock_registers::RegisterLongName>(&self) -> PioRegister<u8, R> {
+        PioRegister::new(self.base)
+    }
 }
 
 tock_registers::register_bitfields![u8,

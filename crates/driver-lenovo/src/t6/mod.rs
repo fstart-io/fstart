@@ -29,6 +29,10 @@ static BLUETOOTH_PRESENT: AtomicBool = AtomicBool::new(false);
 
 pub const fn h8_config(ec_gpe: u8) -> H8Config {
     H8Config {
+        config: [0xa6, 0x05, 0xa0, 0x01],
+        beep_masks: [0xfe, 0x96],
+        event_masks: EVENT_MASKS,
+        has_power_management_beeps: true,
         has_bluetooth: true,
         has_wwan: true,
         has_thinklight: true,
@@ -79,12 +83,7 @@ pub fn ec_init(
     pmh7.dock_event_enable(true);
     pmh7.touchpad_enable(options.touchpad);
     pmh7.trackpoint_enable(options.trackpoint);
-    let mut events = EVENT_MASKS;
-    if model == Model::T61 {
-        events[5] = 0x3c;
-        events[12] = 0xff;
-    }
-    H8::new(Ec::new(config.resources.os)).init_legacy_thinkpad(&events, bluetooth, options, resume)
+    H8::new(Ec::new(config.resources.os)).enable(config, bluetooth, options, resume)
 }
 
 #[cfg(test)]

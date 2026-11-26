@@ -8,14 +8,6 @@ use fstart_driver_lenovo::ec::Ec;
 use fstart_driver_lenovo::h8::{self, H8, H8Config};
 use fstart_driver_lenovo::pmh7::Pmh7;
 
-/// coreboot `event2_enable`..`eventd_enable`; event 0/1 and e/f stay off.
-const EVENT_MASKS: [u8; 16] = [
-    0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x80, 0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
-];
-
-/// devicetree `config1`; X60/X61 use 0x05.
-const CONFIG1: u8 = 0x04;
-
 /// ICH GPIO reading low when the Bluetooth daughter card is fitted
 /// (devicetree `bdc_gpio_num`/`bdc_gpio_lvl`).
 pub const BDC_PRESENCE_GPIO: u8 = 7;
@@ -65,22 +57,11 @@ pub fn init(
     options: &fstart_driver_lenovo::options::Options,
     resume: bool,
 ) -> (bool, bool) {
-    let bluetooth = if crate::config::IS_X301 {
-        // coreboot x200/Kconfig: H8_HAS_BDC_GPIO_DETECTION is X200-only;
-        // without it coreboot assumes the Bluetooth card is installed.
-        true
-    } else {
-        bdc_presence.is_low().unwrap_or(false)
-    };
-    let pmh7 = Pmh7::new(h8_config.resources.pmh7_base.raw());
-    pmh7.backlight_enable(true);
-    pmh7.dock_event_enable(!crate::config::IS_X301);
-    pmh7.trackpoint_enable(options.trackpoint);
-    pmh7.touchpad_enable(options.touchpad);
+    let bluetooth = h8_config.bdc_installed(bdc_presence);
+    Pmh7::new(h8_config.resources.pmh7_base.raw()).enable(&crate::config::X200_PMH7, options);
 
     let ec = Ec::new(h8_config.resources.os);
-    let h8 = H8::new(ec);
-    let initialized = h8.init_thinkpad(CONFIG1, &EVENT_MASKS, bluetooth, true, options, resume);
+    let initialized = H8::new(ec).enable(h8_config, bluetooth, options, resume);
     let dock = if crate::config::IS_X301 {
         true
     } else {
@@ -113,8 +94,7 @@ pub fn digitizer_init(part_number: Option<&str>) -> bool {
         return false;
     }
     fstart_driver_superio::pc87382::configure(PC87382_BASE, PC87382_DEVICES);
-    fstart_driver_superio::pc87382::sid(PC87382_BASE) != 0xff
-        && part_number.is_some_and(fstart_driver_lenovo::wacom::is_tablet)
+    fstart_driver_lenovo::wacom::is_present(PC87382_BASE, part_number)
 }
 
 #[cfg(test)]

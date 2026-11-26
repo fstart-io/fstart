@@ -7,11 +7,14 @@ use fstart_driver_intel::southbridge::smi::{
 };
 use fstart_driver_lenovo::ec::Ec;
 use fstart_driver_lenovo::h8::H8;
-use fstart_driver_lenovo::x201::{self, DockAction};
 use fstart_platform_intel::ironlake::{IBEXPEAK_GPIOBASE, IBEXPEAK_PMBASE};
 use fstart_platform_intel::smm::SmmContext;
 
 use crate::config::X201_H8;
+use crate::ec::{
+    DOCK_CONNECT_GPIO, DockAction, EC_SCI_GPI, EC_WAKE_GPI, dock_disconnect, smm_dock_connected,
+    smm_ec_event, smm_wake_from_ec,
+};
 
 fn smi() -> IchSmi {
     IchSmi::new(IBEXPEAK_PMBASE, ICH8_GPE0)
@@ -38,12 +41,12 @@ fn handle_ec_event() {
         return;
     };
     let mut connect = fstart_driver_intel::southbridge::gpio_ich::IchGpio::new(IBEXPEAK_GPIOBASE)
-        .pin(x201::DOCK_CONNECT_GPIO);
-    match x201::smm_ec_event(ec, event) {
+        .pin(DOCK_CONNECT_GPIO);
+    match smm_ec_event(ec, event) {
         Some(DockAction::Disconnect) => {
-            x201::dock_disconnect(ec, &mut connect);
+            dock_disconnect(ec, &mut connect);
         }
-        Some(DockAction::Connect) => x201::smm_dock_connected(ec, &mut connect),
+        Some(DockAction::Connect) => smm_dock_connected(ec, &mut connect),
         None => {}
     }
 }
@@ -58,7 +61,7 @@ fn acpi_switch(command: u8) {
         _ => return,
     };
     // SAFETY: SMM rendezvous owns PCI config and decoded PM registers.
-    unsafe { smi().route_gpi(x201::EC_SCI_GPI, acpi) };
+    unsafe { smi().route_gpi(EC_SCI_GPI, acpi) };
     let ports = if acpi {
         X201_H8.resources.smm()
     } else {
@@ -70,9 +73,9 @@ fn acpi_switch(command: u8) {
 /// coreboot `mainboard_smi_sleep()`: S3 wakes on the EC when the OS armed
 /// an EC wake source.
 fn sleep(state: u8) {
-    if state == 3 && x201::smm_wake_from_ec(ec_channel()) {
+    if state == 3 && smm_wake_from_ec(ec_channel()) {
         // SAFETY: SMM rendezvous owns PCI config and decoded PM registers.
-        unsafe { smi().route_gpi(x201::EC_WAKE_GPI, true) };
+        unsafe { smi().route_gpi(EC_WAKE_GPI, true) };
     }
 }
 
@@ -82,7 +85,7 @@ fn smi_handler(_ctx: &mut SmmContext<'_>, config: &IchSmmConfig) {
     if let Some(command) = pending.apm {
         acpi_switch(command);
     }
-    if pending.gpi & (1 << x201::EC_SCI_GPI) != 0 {
+    if pending.gpi & (1 << EC_SCI_GPI) != 0 {
         handle_ec_event();
     }
     if let Some(state) = pending.sleep {

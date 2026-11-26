@@ -39,8 +39,10 @@ pub static SMBIOS: fstart_acpi::smbios::SmbiosIdentity<'static> =
         bb_serial: None,
         chassis_type: 0x23,
         chassis_manufacturer: "LENOVO",
+        chassis_serial: None,
         processor_sockets: &["LGA1151"],
         oem_string: None,
+        ipmi: None,
     };
 
 /// The host ACPI baseline: what the ramstage describes on a board with its

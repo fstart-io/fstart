@@ -17,14 +17,14 @@ const R500_EVENT_MASKS: [u8; 16] = [
     0x00, 0x00, 0xff, 0xff, 0xf4, 0x3c, 0x87, 0x09, 0x5b, 0xff, 0x83, 0x00, 0xff, 0xff, 0x00, 0x00,
 ];
 
-/// `[config1, config2, config3]` per variant.
-const CONTROLS: [u8; 3] = if crate::config::IS_R500 {
-    [0x05, 0xa0, 0x40]
+/// EC CONFIG0 through CONFIG3 for each variant.
+pub(crate) const CONTROLS: [u8; 4] = if crate::config::IS_R500 {
+    [0xa6, 0x05, 0xa0, 0x40]
 } else {
-    [0x04, 0xa0, 0x01]
+    [0xa6, 0x04, 0xa0, 0x01]
 };
 
-const EVENT_MASKS: [u8; 16] = if crate::config::IS_R500 {
+pub(crate) const EVENT_MASKS: [u8; 16] = if crate::config::IS_R500 {
     R500_EVENT_MASKS
 } else {
     T400_EVENT_MASKS
@@ -58,8 +58,6 @@ pub fn init(
     pmh7.touchpad_enable(options.touchpad);
 
     let ec = Ec::new(h8_config.resources.os);
-    let h8 = H8::new(ec);
-    let initialized =
-        h8.init_thinkpad_controls(CONTROLS, &EVENT_MASKS, bluetooth, true, options, resume);
+    let initialized = H8::new(ec).enable(h8_config, bluetooth, options, resume);
     (bluetooth, initialized)
 }

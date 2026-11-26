@@ -15,6 +15,7 @@ build-profile = { dependency = "fstart-platform-intel" }
 fstart-core = { workspace = true, features = ["pci"] }
 fstart-platform-intel = { workspace = true }
 fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { workspace = true, optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 fstart-driver-intel = { workspace = true }
 fstart-pci = { workspace = true }
@@ -27,13 +28,14 @@ fstart-log = { workspace = true }
 # Required at the crate root wherever fstart_log macros expand
 # (ufmt's macros emit `ufmt::` paths; see fstart-log docs).
 ufmt = { workspace = true }
+tock-registers = { workspace = true }
 
 [features]
 # Host tests and tools see the whole board. fbuild builds every stage with
 # --no-default-features and adds `acpi` to the ramstage only.
 default = ["acpi"]
 # The ACPI and SMBIOS tables (`src/acpi.rs`), which need the ramstage heap.
-acpi = ["dep:fstart-acpi", "fstart-driver-lenovo/acpi"]
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-lenovo/acpi"]
 # The SMM handler module, enabled only for the SMM image.
 smm = ["fstart-platform-intel/bundle-smm"]
 
