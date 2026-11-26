@@ -1430,6 +1430,7 @@ fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
 fstart-options = { workspace = true, features = ["alloc", "varstore"] }
 fstart-driver-tpm = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
+fstart-timestamp.workspace = true
 zerocopy.workspace = true
 
 # build.rs lays the SMM image out as the installer will (TSEG fit check).

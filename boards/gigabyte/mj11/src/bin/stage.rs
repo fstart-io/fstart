@@ -22,16 +22,20 @@ fn main() -> ! {
     };
     mj11::early_init(&stage.hw().fch);
     let stage = stage.console(&CONSOLE, mj11::console()).init_fch();
+    fstart_timestamp::add(fstart_timestamp::id::BOARD_EARLY_BUS);
     let riser = mj11::program_i2c_devices(&stage.hw().gpio(), stage.clock());
     mj11::clear_pm1(&stage.hw().fch);
     let stage = stage.train_dxio(&mj11::dxio(riser));
+    fstart_timestamp::add(fstart_timestamp::id::BOARD_POST_DXIO);
     mj11::apply_phy_tuning(&stage.hw().dies[0]);
     mj11::wait_for_bmc(&stage.hw().gpio(), stage.clock());
     let mut stage = stage.init_chipset(()).start_cpus().scan_bus();
+    fstart_timestamp::add(fstart_timestamp::id::BOARD_POST_SCAN);
     mj11::program_vendor_gpios(&stage.hw().gpio());
     mj11::set_vga_ssid(&stage.hw().dies[0]);
     // The board waited for its BMC above; use its initialized shared DRAM.
     // Native modesetting must not execute a VGA ROM or reset the BMC.
+    fstart_timestamp::add(fstart_timestamp::id::DISPLAY_INIT);
     let pci = stage.pci();
     let address = pci
         .devices()
@@ -56,6 +60,7 @@ fn main() -> ! {
             stage.fail("ASPEED display")
         });
     stage.set_framebuffer(framebuffer);
+    fstart_timestamp::add(fstart_timestamp::id::BOARD_BMC_POST_DONE);
     mj11::bmc::post_done(&stage.hw().fch, stage.clock());
     let stage = stage.ready_to_boot();
     mj11::hand_dimm_smbus_to_bmc(&stage.hw().gpio(), &stage.hw().fch);
