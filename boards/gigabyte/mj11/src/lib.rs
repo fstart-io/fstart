@@ -23,31 +23,20 @@ use fstart_driver_amd::{ccx::tsc::Tsc, fch::gpio::Gpio, window::Window};
 use fstart_driver_amd::{
     fch::{
         self, FchHw,
-        acpimmio::{ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Pm1Enable, Pm1Status, iomux},
-        gpio::Control,
+        acpimmio::{ACPI_PM1_ENABLE, ACPI_PM1_STATUS, Pm1Enable, Pm1Status},
         irq::{self, Route},
-        lpc::{self, IoPortDecode},
     },
     smn::{apply, write},
 };
-use fstart_driver_superio::aspeed_ast2400::{self as ast, Ast2400, SuperIoConfig};
-use fstart_driver_uart::ns16550::{AccessMode, Ns16550Config};
-use fstart_pci::ConfigRegionAccess;
 use fstart_pci::ecam::GlobalEcam;
 use fstart_platform_amd::zeppelin::{self as soc, Die, Zeppelin};
 use fstart_platform_amd::zeppelin::{CcxConfig, Config, DxioConfig, FchConfig};
-use tock_registers::{
-    interfaces::{ReadWriteable, Readable, Writeable},
-    register_bitfields,
-};
+use tock_registers::interfaces::ReadWriteable;
 
 pub struct Board;
 
 /// The BMC's diagnostic interrupt button.
 const NMI_BUTTON_GEVENT: u8 = 11;
-
-const COM1: u16 = 0x3f8;
-const COM1_IRQ: u8 = 4;
 
 /// The IOAPIC side matches the vendor firmware; the vendor PIC values aren't
 /// known, so INTA-D are left for the OS to route through ACPI. MISC..MISC2
@@ -97,35 +86,6 @@ pub fn clear_pm1(fch: &impl FchHw) {
         .modify(Pm1Enable::PCIEXP_WAKE_DIS::CLEAR);
 }
 
-register_bitfields![u32,
-    /// The IOMUX bytes of pins 136-139 as one dword.
-    Iomux136 [
-        PIN137_BIT1 OFFSET(9) NUMBITS(1) [],
-        PIN139_HIGH OFFSET(28) NUMBITS(4) []
-    ]
-];
-/// The select of the DIMM SMBus switch: high connects the DIMMs (SPD and
-/// thermal sensors, behind the PCA954x at 0x71) to the FCH's SMBus port 0,
-/// low to the BMC.
-const GPIO137: u8 = 137;
-
-/// GbtPreBootSvid: the AST2500 VGA on the last bus behind 00:01.1 gets the
-/// Gigabyte subsystem ID; config register 0x80 unlocks the write.
-fn ast_vga_set_ssid(pci: &impl ConfigRegionAccess) {
-    use fstart_pci::PciAddress;
-    // SAFETY: the enumerated root port and the device behind it.
-    unsafe {
-        let bus = (pci.read(PciAddress::new(0, 0, 1, 1), 0x18) >> 16) as u8;
-        let vga = PciAddress::new(0, bus, 0, 0);
-        if bus == 0 || pci.read(vga, 0) != 0x2000_1a03 {
-            return;
-        }
-        pci.write(vga, 0x80, 0xaa1a_03aa);
-        pci.write(vga, 0x2c, CONFIG.subsystem_id);
-        pci.write(vga, 0x80, 0);
-    }
-}
-
 /// How the MJ11 wires the Zeppelin blocks.
 pub static CONFIG: Config = Config {
     // Gigabyte
@@ -160,39 +120,6 @@ impl fstart_platform_amd::board::Board for Board {
 
     fn acpi_board() -> fstart_platform_amd::acpi::Board {
         crate::acpi()
-    }
-}
-
-/// LPC decodes and the AST2500 SuperIO routing for COM1, before the console.
-pub fn early_init(fch: &impl FchHw) {
-    lpc::enable_super_io(fch, true, false);
-    lpc::enable_io_decode(fch, IoPortDecode::SERIAL0::SET);
-    // AST2500 SIO runtime registers (0xa00-0xbff) and the IPMI KCS interface.
-    let _ = lpc::set_wideio_range(fch, 0xa00, 512);
-    let _ = lpc::set_wideio_range(fch, 0xca0, 16);
-    let Ok(sio) = Ast2400::new_at_base(SuperIoConfig::default(), ast::CONFIG_PORT) else {
-        return;
-    };
-    sio.route_uart1_pins();
-    // SUART4 carries the BMC's IPMI SOL; the host must leave it alone.
-    sio.disable(&[
-        ast::SUART2,
-        ast::SWC,
-        ast::KBC,
-        ast::GPIO,
-        ast::SUART3,
-        ast::SUART4,
-        ast::MAILBOX,
-    ]);
-    sio.enable_uart(ast::SUART1, COM1, COM1_IRQ, 0);
-}
-
-/// COM1, routed to the AST2500's SUART1.
-pub const fn console() -> Ns16550Config {
-    Ns16550Config {
-        regs: AccessMode::Pio { base: COM1 as u64 },
-        clock_freq: 1_843_200,
-        baud_rate: 115_200,
     }
 }
 
@@ -258,49 +185,11 @@ pub fn apply_phy_tuning(die0: &Die<GlobalEcam>) {
     apply(&die0.smn(), records);
 }
 
-/// Wait for the BMC before its VGA is used.
-pub fn wait_for_bmc(gpio: &Gpio<impl Window>, clock: Tsc) {
-    gpio::wait_for_bmc(gpio, &mut { clock });
-}
-
 /// The vendor GPIO table, after PCI enumeration.
 pub fn program_vendor_gpios(gpio: &Gpio<impl Window>) {
     if gpio.configure(gpio::VENDOR, &[]).is_err() {
         fstart_log::error!("Vendor GPIO table rejected");
     }
-}
-
-/// The AST2500 VGA's subsystem ID.
-pub fn set_vga_ssid(die0: &Die<GlobalEcam>) {
-    ast_vga_set_ssid(&die0.pci());
-}
-
-/// The vendor's SMBusSwitch at ReadyToBoot: hand the DIMM SMBus to the BMC,
-/// which reads the DIMM temperature (`DIMMG0_TEMP`) from it while the OS
-/// runs. The host keeps the bus only during POST, when the PSP reads the
-/// SPDs. Linux still probes SMBus port 0 for SPDs at boot because SMBIOS
-/// lists DDR4 DIMMs, so `ee1004 ... error -5` is expected on this board.
-/// The vendor writes the IOMUX of pins 136-139 through SMN; it is the same
-/// register as the ACPI MMIO one.
-pub fn hand_dimm_smbus_to_bmc(gpio: &Gpio<impl Window>, fch: &impl FchHw) {
-    // Bit 1 of the GPIO137 IOMUX byte set, bits 7:4 of pin 139 cleared.
-    fch.acpi()
-        .at(iomux::at::<u32, Iomux136::Register>(136))
-        .modify(Iomux136::PIN137_BIT1::SET + Iomux136::PIN139_HIGH.val(0));
-    // GPIO137 driven low, keeping the drive strength and STS_EN bits.
-    if let Ok(control) = gpio.control(GPIO137) {
-        let old = control.extract();
-        control.write(
-            Control::DRIVE_STRENGTH.val(old.read(Control::DRIVE_STRENGTH))
-                + Control::STATUS_ENABLE.val(old.read(Control::STATUS_ENABLE))
-                + Control::OUTPUT_ENABLE::SET,
-        );
-    }
-    clear_pm1(fch);
-    // Pins 113-117 back to function 0 (SMBus0): two unaligned dword
-    // writes, as in the vendor code.
-    fch.acpi().at(iomux::at::<u32, ()>(113)).set(0);
-    fch.acpi().at(iomux::at::<u32, ()>(114)).set(0);
 }
 
 /// What the board adds to the ACPI tables.
