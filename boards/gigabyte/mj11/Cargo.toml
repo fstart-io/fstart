@@ -54,6 +54,7 @@ fstart-driver-superio = { workspace = true, features = ["acpi"] }
 fstart-driver-uart = { workspace = true, features = ["pio"] }
 fstart-pci = { workspace = true }
 fstart-log = { workspace = true }
+fstart-timestamp = { workspace = true }
 ufmt = { workspace = true }
 embedded-hal = { workspace = true }
 fstart-driver-ipmi = { workspace = true, features = ["acpi"] }

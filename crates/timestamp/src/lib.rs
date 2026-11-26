@@ -69,6 +69,20 @@ pub mod id {
     pub const EMIT_TABLES: Id = Id(1112);
     pub const SEAL_STORE: Id = Id(1113);
     pub const FINALIZE: Id = Id(1114);
+
+    pub const INIT_FCH: Id = Id(1200);
+    pub const BOARD_EARLY_BUS: Id = Id(1201);
+    pub const TRAIN_DXIO: Id = Id(1202);
+    pub const BOARD_POST_DXIO: Id = Id(1203);
+    pub const INIT_CHIPSET: Id = Id(1204);
+    pub const START_CPUS: Id = Id(1205);
+    pub const INSTALL_SMM: Id = Id(1206);
+    pub const BOARD_POST_SCAN: Id = Id(1207);
+    pub const BOARD_BMC_POST_DONE: Id = Id(1208);
+    pub const READY_TO_BOOT: Id = Id(1209);
+    pub const MAP_PAYLOAD_RAM: Id = Id(1210);
+    pub const PARK_APS: Id = Id(1211);
+    pub const BOOT_DONE: Id = Id(1212);
 }
 
 /// Human-readable milestone name.
@@ -109,6 +123,19 @@ pub fn name(id: Id) -> &'static str {
         id::EMIT_TABLES => "emit tables",
         id::SEAL_STORE => "seal store",
         id::FINALIZE => "finalize",
+        id::INIT_FCH => "init FCH",
+        id::BOARD_EARLY_BUS => "board early bus init",
+        id::TRAIN_DXIO => "train DXIO",
+        id::BOARD_POST_DXIO => "board post-DXIO / BMC wait",
+        id::INIT_CHIPSET => "init chipset",
+        id::START_CPUS => "start CPUs",
+        id::INSTALL_SMM => "install SMM",
+        id::BOARD_POST_SCAN => "board post-scan",
+        id::BOARD_BMC_POST_DONE => "BMC post done",
+        id::READY_TO_BOOT => "ready to boot",
+        id::MAP_PAYLOAD_RAM => "map payload RAM",
+        id::PARK_APS => "park APs",
+        id::BOOT_DONE => "PSP boot done",
         _ => "unknown",
     }
 }

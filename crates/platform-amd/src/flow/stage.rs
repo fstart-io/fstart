@@ -67,8 +67,20 @@ pub struct Early<S: Soc> {
     entered: Entered<S>,
 }
 
+#[repr(C, align(8))]
+struct TimestampTable([u8; fstart_timestamp::table_size(64)]);
+
+static mut TIMESTAMPS: TimestampTable = TimestampTable([0; fstart_timestamp::table_size(64)]);
+
 impl<S: Soc> Early<S> {
     fn enter(board: crate::board::Facts, config: S::Config) -> Self {
+        // SAFETY: BSP-only single-threaded entry; BSS table lives for the entire
+        // stage lifetime and is never aliased outside `fstart_timestamp`.
+        unsafe {
+            let ptr = core::ptr::addr_of_mut!(TIMESTAMPS.0).cast::<u8>();
+            fstart_timestamp::init(ptr, fstart_timestamp::table_size(64), 0);
+        }
+        fstart_timestamp::add(fstart_timestamp::id::RAMSTAGE_START);
         fstart_stage::anchor::initial_stage();
         // SAFETY: BSP only, single-threaded cold boot.
         let msr = unsafe { NativeMsr::new() };
@@ -121,6 +133,7 @@ impl<S: Soc> Early<S> {
             fail::<S>("console")
         }
         let console = slot.install(console);
+        fstart_timestamp::add(fstart_timestamp::id::CONSOLE_READY);
         fstart_log::info!("{} ramstage: entered", S::NAME);
         if let Err(what) = pre_init {
             fail::<S>(what);
@@ -138,6 +151,7 @@ impl<S: Soc> Early<S> {
         let Some(clock) = clock else {
             fail::<S>("CPU identification")
         };
+        fstart_timestamp::add(fstart_timestamp::id::MOUNT_BOOT_MEDIA);
         let Mapped {
             top_mem,
             top_mem2,
@@ -337,6 +351,7 @@ impl<S: Soc> Stage<S, Console> {
     /// The silicon up to the FCH's buses; the board's devices on them and
     /// its early pads come next.
     pub fn init_fch(self) -> Stage<S, FchUp<S>> {
+        fstart_timestamp::add(fstart_timestamp::id::INIT_FCH);
         let up = S::init_fch(&self.machine.ctx()).unwrap_or_else(|what| fail::<S>(what));
         Stage {
             machine: self.machine,
@@ -349,6 +364,7 @@ impl<S: Soc> Stage<S, FchUp<S>> {
     /// Link training of the board's `lanes`; board work that needs trained
     /// links comes next.
     pub fn train_dxio(self, lanes: S::Lanes<'_>) -> Stage<S, Trained<S>> {
+        fstart_timestamp::add(fstart_timestamp::id::TRAIN_DXIO);
         let Stage {
             machine,
             phase: FchUp(up),
@@ -366,6 +382,7 @@ impl<S: Soc> Stage<S, Trained<S>> {
     /// The rest of the silicon init before MP, with what the board learned
     /// at run time since the FCH came up (`runtime`).
     pub fn init_chipset(self, runtime: S::Runtime) -> Stage<S, Chipset<S>> {
+        fstart_timestamp::add(fstart_timestamp::id::INIT_CHIPSET);
         let Stage {
             machine,
             phase: Trained(trained),
@@ -383,6 +400,7 @@ impl<S: Soc> Stage<S, Chipset<S>> {
     /// MP init with the SoC's CPU driver on every CPU, SMM with the PSP's
     /// SMM info, then what the SoC does before PCI enumeration.
     pub fn start_cpus(self) -> Stage<S, Cpus<S>> {
+        fstart_timestamp::add(fstart_timestamp::id::START_CPUS);
         let Stage {
             mut machine,
             phase: Chipset(chipset),
@@ -397,6 +415,7 @@ impl<S: Soc> Stage<S, Chipset<S>> {
             crate::media::reserve(&mut machine.e820, range.start, range.end - range.start)
                 .unwrap_or_else(|what| fail::<S>(what));
         }
+        fstart_timestamp::add(fstart_timestamp::id::INSTALL_SMM);
         let silicon = install_smm(&machine, cpus, state).unwrap_or_else(|what| fail::<S>(what));
         Stage {
             machine,
@@ -449,6 +468,7 @@ impl<S: Soc> Stage<S, Cpus<S>> {
     /// SoC reports, write-combining for the framebuffer apertures, then
     /// what the SoC does after the allocation.
     pub fn scan_bus(self) -> Stage<S, Enumerated<S>> {
+        fstart_timestamp::add(fstart_timestamp::id::BUS_SCAN);
         let Stage {
             machine,
             phase: Cpus(mut silicon),
@@ -508,6 +528,7 @@ impl<S: Soc> Stage<S, Enumerated<S>> {
     /// Graphics POST may patch the ROM and contribute its ACPI; everything
     /// the tables describe is ready afterwards.
     pub fn ready_to_boot(self) -> Stage<S, Ready<S>> {
+        fstart_timestamp::add(fstart_timestamp::id::READY_TO_BOOT);
         let Stage {
             machine,
             phase: Enumerated { mut silicon, pci },
@@ -533,6 +554,7 @@ impl<S: Soc> Stage<S, Ready<S>> {
     /// and `IPI0001`) is also its SMBIOS Type 38, unless `smbios` names one
     /// itself.
     pub fn emit_tables(self, smbios: &crate::acpi::SmbiosIdentity<'_>) -> Stage<S, Published<S>> {
+        fstart_timestamp::add(fstart_timestamp::id::EMIT_TABLES);
         let Stage {
             machine,
             phase: Ready { mut silicon, pci },
@@ -566,6 +588,7 @@ impl<S: Soc> Stage<S, Published<S>> {
     /// SoC whose PSP wants BootDone before the APs are parked sends it with
     /// its locks.)
     pub fn boot(self) -> ! {
+        fstart_timestamp::add(fstart_timestamp::id::FINALIZE);
         let Stage {
             machine,
             phase:
@@ -583,17 +606,21 @@ impl<S: Soc> Stage<S, Published<S>> {
         }
         post(0x43);
 
+        fstart_timestamp::add(fstart_timestamp::id::MAP_PAYLOAD_RAM);
         if S::map_payload_ram(&machine.e820, &pci).is_err() {
             fail::<S>("page tables");
         }
+        fstart_timestamp::add(fstart_timestamp::id::PARK_APS);
         if !fstart_arch::x86::mp::park_aps_for_payload() {
             fail::<S>("parking the APs");
         }
+        fstart_timestamp::add(fstart_timestamp::id::BOOT_DONE);
         if let Err(what) = S::boot_done(&ctx, &mut silicon.state) {
             fail::<S>(what);
         }
         fstart_log::info!("{}: starting the payload", S::NAME);
         post(0x44);
+        fstart_timestamp::add(fstart_timestamp::id::LOAD_PAYLOAD);
         use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
         let ffs = &machine.ffs;
         let mut description = Description::new(
