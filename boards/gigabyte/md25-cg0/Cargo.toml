@@ -1,0 +1,87 @@
+[package]
+name = "fstart-board-gigabyte-md25-cg0"
+description = "GIGABYTE MD25-CG0: 1P SP7 server board, AMD Venice"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+board = "gigabyte-md25-cg0"
+name = "MD25-CG0"
+arch = "x86_64"
+build-profile = { dependency = "fstart-platform-amd" }
+
+# Board APCBs and eSPI strap for MD25-CG0 (AST2700 BMC on eSPI0); Venice's
+# SoC blobs live in fstart-platform-amd's [package.metadata.fstart.amd.venice].
+[package.metadata.fstart.amd]
+soc = "venice"
+efs-espi = [0x0e, 0xff, 0xff, 0xff]
+# Identical in F01 release and debug. Meaning not yet established.
+efs-byte-59 = 0x71
+apcb = { entries = [
+  { type = 0x60, instance = 0, writable = true, file = "md25-cg0/apcb-60-0.bin" },
+  { type = 0x60, instance = 1, writable = true, file = "md25-cg0/apcb-60-1.bin" },
+  { type = 0x68, instance = 0, file = "md25-cg0/apcb-68-0.bin" },
+  { type = 0x68, instance = 8, file = "md25-cg0/apcb-68-8.bin" },
+  { type = 0x68, instance = 9, file = "md25-cg0/apcb-68-9.bin" },
+] }
+# ABL tokens the board's code relies on (docs/amd-apcb.md), as GIGABYTE's
+# F01 APCBs have them (venice reports/research/VALUES/apcb-tokens.json),
+# except PspPsbAutoFuse; another value is written into every APCB that
+# has the token.
+apcb-tokens = [
+  # The ECAM, 0x2FFC_8000_0000 and one segment: `sp7::Config::ecam`
+  # (2P_COMPLETE §2.2; the test `apcb_tokens_agree_with_the_config`).
+  { name = "DfPciMmioBaseLo", value = 0x8000_0000 },
+  { name = "DfPciMmioBaseHi", value = 0x2ffc },
+  { name = "DfPciMmioSize", value = 0x1000_0000 },
+  # IOMMU on: `nbio::wh::Policy::iommu` (PcdCfgIommuSupport, same CBS option).
+  { name = "NbioIommu", value = 1 },
+  # ROM3 at 0x2FFD_0000_0000, inside Venice's 128 TiB identity map, where
+  # `sp7::flash` reads the reset image (else through SMN).
+  { name = "FchRom3BaseHigh", value = 0x2ffd },
+  # The ABL sets the BMC up before DRAM training; `Mpio::early_bmc` keeps
+  # the link it trained at lane 0x80 (Dell has 0 and an early BMC link too:
+  # what the token adds is not established).
+  { name = "BmcInitBeforeDram", value = 1 },
+  # xHCI 0..3 on: fstart leaves USB as the ABL set it up (`Config::usb`).
+  { name = "CbsCmnFchUsbXHCI0Enable", value = 1 },
+  { name = "CbsCmnFchUsbXHCI1Enable", value = 1 },
+  { name = "CbsCmnFchUsbXHCI2Enable", value = 1 },
+  { name = "CbsCmnFchUsbXHCI3Enable", value = 1 },
+  # Never let the PSP fuse Platform Secure Boot on first boot: a fused
+  # CPU only runs images signed with the fused key, which an fstart image
+  # is not. F01 ships 1, Dell 0 (VALUES.md); this is fstart's one
+  # deliberate departure from the donor's APCB.
+  { name = "PspPsbAutoFuse", value = 0 },
+]
+
+[features]
+# The SMM handler module, enabled only for the SMM image.
+smm = ["fstart-platform-amd/smm"]
+
+[dependencies]
+fstart-platform-amd = { workspace = true }
+fstart-driver-amd = { workspace = true }
+fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
+fstart-driver-superio = { workspace = true, features = ["acpi"] }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
+fstart-acpi = { workspace = true, features = ["x86"] }
+fstart-log = { workspace = true }
+tock-registers = { workspace = true }
+
+[dev-dependencies]
+fstart-driver-amd = { workspace = true, features = ["testing"] }
+# The APCB token test reads this manifest's `apcb-tokens`.
+fstart-amdfw-format = { workspace = true }
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
+
+[[bin]]
+name = "stage"
+path = "src/bin/stage.rs"
+test = false
+bench = false
+
+[lints]
+workspace = true
