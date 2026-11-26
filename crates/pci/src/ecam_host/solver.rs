@@ -746,11 +746,15 @@ impl PciEcam {
                     need.io = need.io.saturating_add(child.io);
                 }
             }
+            let [min_io, min_mem, min_pref] = self.devices[bridge].hotplug_min;
+            let np = round(need.np, WindowKind::Memory).max(min_mem);
+            let prefetchable = need.prefetchable.max(min_pref);
+            let memory = round(need.memory, WindowKind::Memory).max(np.saturating_add(min_pref));
             arena.need[bridge] = Need {
-                memory: round(need.memory, WindowKind::Memory),
-                np: round(need.np, WindowKind::Memory),
-                prefetchable: need.prefetchable,
-                io: round(need.io, WindowKind::Io),
+                memory,
+                np,
+                prefetchable,
+                io: round(need.io, WindowKind::Io).max(min_io),
             };
         }
         Ok(())
@@ -838,6 +842,9 @@ impl PciEcam {
         let Some(bridge) = leaf else {
             return Ok(None);
         };
+        if self.devices[bridge].hotplug_min.iter().any(|&min| min != 0) {
+            return Ok(None);
+        }
         if self
             .on_bus(root, None)
             .any(|dev| self.bars_in(dev, Space::Memory).next().is_some())
@@ -859,12 +866,15 @@ impl PciEcam {
                 .collect()
         };
         let (low, high) = (pieces(&pools.0), pieces(&pools.1));
+        let [_, min_mem, min_pref] = self.devices[bridge].hotplug_min;
         let prefetch = self.devices[bridge].prefetch;
         let fits = move |kind, (base, end)| window_fits(kind, prefetch, base, end);
         let memory = (need.np == 0).then_some(None).into_iter().chain(
             low.iter()
                 .copied()
-                .filter(|&range| fits(WindowKind::Memory, range))
+                .filter(|&(base, end)| {
+                    fits(WindowKind::Memory, (base, end)) && end - base >= min_mem
+                })
                 .map(Some),
         );
         for memory in memory {
@@ -872,9 +882,15 @@ impl PciEcam {
                 .then(|| low.iter().chain(&high).copied())
                 .into_iter()
                 .flatten()
-                .filter(|&range| fits(WindowKind::Prefetchable, range))
+                .filter(|&(base, end)| {
+                    fits(WindowKind::Prefetchable, (base, end)) && end - base >= min_pref
+                })
                 .map(Some);
-            for prefetchable in [None].into_iter().chain(prefetchable) {
+            for prefetchable in (min_pref == 0)
+                .then_some(None)
+                .into_iter()
+                .chain(prefetchable)
+            {
                 if prefetchable.is_some() && prefetchable == memory
                     || memory.is_none() && prefetchable.is_none()
                 {
@@ -1296,6 +1312,9 @@ impl PciEcam {
     ) -> Result<u64, PciEcamError> {
         arena.charge(self.devices.len())?;
         let granule = kind.granularity();
+        if self.devices[bridge].hotplug_min[kind as usize] != 0 {
+            return Ok(granule);
+        }
         let space = Space::of(kind);
         let root = self.devices[bridge].root;
         let mut step = u64::MAX;
@@ -1337,13 +1356,14 @@ impl PciEcam {
         }
         let size = |kind| self.open(bridge, kind).map_or(0, |(base, end)| end - base);
         let need = arena.need[bridge];
+        let min_pref = self.devices[bridge].hotplug_min[WindowKind::Prefetchable as usize];
         let space = Space::of(kind);
         let enough = match space {
             Space::Io => size(WindowKind::Io) >= need.io,
             Space::Memory => {
                 let memory = size(WindowKind::Memory);
-                memory >= need.np
-                    && (!last || memory + size(WindowKind::Prefetchable) >= need.memory)
+                let pref = size(WindowKind::Prefetchable);
+                memory >= need.np && (!last || (pref >= min_pref && memory + pref >= need.memory))
             }
         };
         if !enough {
@@ -1370,9 +1390,9 @@ impl PciEcam {
     }
 
     /// Whether the windows of `bridge` the search chose range by range
-    /// ([`Cursor::Range`]) are the 1 MiB (4 KiB) hulls of what is in them,
-    /// `arena.taken` once its bus is packed. Its windows' steps end at
-    /// `last`.
+    /// ([`Cursor::Range`]) are the 1 MiB (4 KiB) hulls of what is in them
+    /// (respecting any hotplug minimum), `arena.taken` once its bus is
+    /// packed. Its windows' steps end at `last`.
     fn tight(&self, arena: &mut Arena, bridge: usize, last: usize) -> Result<bool, PciEcamError> {
         arena.charge(2 * (arena.taken.len() + 1))?;
         let steps = arena.steps[last.saturating_sub(1)..=last].iter();
@@ -1392,7 +1412,7 @@ impl PciEcam {
             let Some((base, end)) = self.open(bridge, kind) else {
                 return true;
             };
-            self.hull(&arena.taken, (base, end), kind.granularity()) == Some((base, end))
+            self.min_window(bridge, kind, &arena.taken, (base, end)) == Some((base, end))
         }))
     }
 
@@ -1410,8 +1430,37 @@ impl PciEcam {
         (low < high).then(|| (low & !(granule - 1), high.next_multiple_of(granule)))
     }
 
+    /// The tightest valid window inside `(base, end)` covering `taken` and
+    /// meeting `bridge`'s hotplug minimum for `kind`.
+    fn min_window(
+        &self,
+        bridge: usize,
+        kind: WindowKind,
+        taken: &[Item],
+        (base, end): (u64, u64),
+    ) -> Option<(u64, u64)> {
+        let min = self.devices[bridge].hotplug_min[kind as usize];
+        let hull = self.hull(taken, (base, end), kind.granularity());
+        if min == 0 {
+            return hull;
+        }
+        match hull {
+            Some((h_base, h_end)) => {
+                if h_end - h_base >= min {
+                    Some((h_base, h_end))
+                } else {
+                    let target_base = h_base.min(end.saturating_sub(min)).max(base);
+                    let target_end = target_base.saturating_add(min).max(h_end).min(end);
+                    Some((target_base, target_end))
+                }
+            }
+            None => Some((base, base.saturating_add(min).min(end))),
+        }
+    }
+
     /// Shrink every window of `space` of root `root` to the hull of what is
-    /// in it, deepest first; close those with nothing.
+    /// in it (preserving any hotplug minimum), deepest first; close those
+    /// with nothing and no hotplug minimum.
     fn shrink(
         &mut self,
         arena: &mut Arena,
@@ -1434,8 +1483,8 @@ impl PciEcam {
             arena.charge(2 * (arena.taken.len() + 1))?;
             for &kind in space.kinds() {
                 if let Some(window) = self.open(bridge, kind) {
-                    let hull = self.hull(&arena.taken, window, kind.granularity());
-                    self.set_window(bridge, kind, hull);
+                    let target = self.min_window(bridge, kind, &arena.taken, window);
+                    self.set_window(bridge, kind, target);
                 }
             }
         }

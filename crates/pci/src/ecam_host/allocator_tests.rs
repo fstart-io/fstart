@@ -905,3 +905,270 @@ fn mmio_reservations_and_allocations_do_not_shrink_the_os_parent_aperture() {
         ]
     );
 }
+
+fn setup_pcie_bridge(
+    pci: &PciEcam,
+    addr: PciAddress,
+    port_type: u16,
+    hotplug: bool,
+    prefetch_64: bool,
+) {
+    let dev = pci.device(addr).unwrap();
+    dev.write32(PCI_VENDOR_ID, 0x15d3_8086);
+    dev.write32(0x08, 0x0604_0000);
+    dev.write8(PCI_HEADER_TYPE, PCI_HEADER_TYPE_BRIDGE);
+    dev.write16(PCI_COMMAND, 0);
+    // Status bit 4 = Capabilities List, Capabilities Pointer = 0x40.
+    dev.write16(0x06, 0x0010);
+    dev.write8(0x34, 0x40);
+    // Clear BARs and bridge windows; advertise 64-bit prefetchable window if requested.
+    dev.write32(PCI_BAR0, 0);
+    dev.write32(PCI_BAR0 + 4, 0);
+    dev.write32(PCI_PRIMARY_BUS, 0);
+    dev.write32(PCI_IO_BASE, 0);
+    dev.write32(PCI_MEMORY_BASE, 0);
+    dev.write32(
+        PCI_PREF_MEMORY_BASE,
+        if prefetch_64 { 0x0001_0001 } else { 0 },
+    );
+    dev.write32(PCI_PREF_BASE_UPPER32, 0);
+    dev.write32(PCI_PREF_LIMIT_UPPER32, 0);
+    // PCIe capability at 0x40: Cap ID = 0x10, next = 0.
+    let slot_bit = if hotplug { 1u16 << 8 } else { 0 };
+    let pcie_caps = (port_type << 4) | slot_bit;
+    dev.write32(0x40, 0x10 | (u32::from(pcie_caps) << 16));
+    dev.write32(0x40 + 0x14, if hotplug { 1 << 6 } else { 0 });
+}
+
+fn setup_endpoint(pci: &PciEcam, addr: PciAddress) {
+    let dev = pci.device(addr).unwrap();
+    dev.write32(PCI_VENDOR_ID, 0x15d4_8086);
+    dev.write32(0x08, 0x0880_0000);
+    dev.write8(PCI_HEADER_TYPE, 0);
+    dev.write16(PCI_COMMAND, 0);
+    for bar in 0..6u16 {
+        dev.write32(PCI_BAR0 + bar * 4, 0);
+    }
+}
+
+#[test]
+fn hotplug_empty_root_port_reserves_default_buses_and_windows() {
+    let (mut pci, mut ram) = super::tests::test_pci_with_buses(32);
+    ram.fill(u32::MAX);
+    let rp = PciAddress::new(0, 0, 0x1d, 0);
+    setup_pcie_bridge(&pci, rp, 4, true, true);
+    pci.add_hotplug_ports(&[PciHotplugPort::new(rp)]).unwrap();
+
+    pci.enumerate_and_allocate().unwrap();
+
+    let dev = pci.devices.iter().find(|d| d.addr == rp).unwrap();
+    assert_eq!(dev.secondary_bus, 1);
+    assert_eq!(
+        dev.subordinate_bus,
+        1 + PciHotplugResources::DEFAULT.extra_buses
+    );
+    assert_eq!(
+        dev.windows[WindowKind::Io as usize].size,
+        PciHotplugResources::DEFAULT.io_size
+    );
+    assert_eq!(
+        dev.windows[WindowKind::Memory as usize].size,
+        PciHotplugResources::DEFAULT.mmio_size
+    );
+    assert_eq!(
+        dev.windows[WindowKind::Prefetchable as usize].size,
+        PciHotplugResources::DEFAULT.pref_mmio_size
+    );
+    assert!(dev.windows[WindowKind::Io as usize].placed);
+    assert!(dev.windows[WindowKind::Memory as usize].placed);
+    assert!(dev.windows[WindowKind::Prefetchable as usize].placed);
+    assert_ne!(pci.read16(rp, PCI_COMMAND) & PCI_CMD_IO, 0);
+    assert_ne!(pci.read16(rp, PCI_COMMAND) & PCI_CMD_MEMORY, 0);
+}
+
+#[test]
+fn hotplug_thunderbolt_switch_propagates_budget_to_downstream_hotplug_port() {
+    let (mut pci, mut ram) = super::tests::test_pci_with_buses(32);
+    ram.fill(u32::MAX);
+    // Exact Alpine Ridge topology:
+    // 00:1d.0 (root port, hotplug configured)
+    //   -> bus 1: 01:00.0 (switch upstream port)
+    //     -> bus 2: 02:00.0 (non-hotplug downstream) -> bus 3 (NHI)
+    //               02:01.0 (hotplug downstream)     -> bus 4..=4+16 (empty)
+    //               02:02.0 (non-hotplug downstream) -> bus 21 (xHCI)
+    let rp = PciAddress::new(0, 0, 0x1d, 0);
+    let up = PciAddress::new(0, 1, 0, 0);
+    let ds_nhi = PciAddress::new(0, 2, 0, 0);
+    let ds_hp = PciAddress::new(0, 2, 1, 0);
+    let ds_xhci = PciAddress::new(0, 2, 2, 0);
+    let nhi = PciAddress::new(0, 3, 0, 0);
+    let xhci = PciAddress::new(0, 21, 0, 0);
+
+    setup_pcie_bridge(&pci, rp, 4, true, true);
+    setup_pcie_bridge(&pci, up, 5, false, true);
+    setup_pcie_bridge(&pci, ds_nhi, 6, false, true);
+    setup_pcie_bridge(&pci, ds_hp, 6, true, true);
+    setup_pcie_bridge(&pci, ds_xhci, 6, false, true);
+    setup_endpoint(&pci, nhi);
+    setup_endpoint(&pci, xhci);
+
+    pci.add_hotplug_ports(&[PciHotplugPort::new(rp)]).unwrap();
+    pci.enumerate_and_allocate().unwrap();
+
+    let find = |addr| pci.devices.iter().find(|d| d.addr == addr).unwrap();
+    assert_eq!(
+        (find(ds_nhi).secondary_bus, find(ds_nhi).subordinate_bus),
+        (3, 3)
+    );
+    assert_eq!(
+        (find(ds_hp).secondary_bus, find(ds_hp).subordinate_bus),
+        (4, 20)
+    );
+    assert_eq!(
+        (find(ds_xhci).secondary_bus, find(ds_xhci).subordinate_bus),
+        (21, 21)
+    );
+    assert_eq!((find(up).secondary_bus, find(up).subordinate_bus), (2, 21));
+    assert_eq!((find(rp).secondary_bus, find(rp).subordinate_bus), (1, 21));
+
+    // Only the hotplug downstream port gets hotplug minimums; ancestors inherit them.
+    assert_eq!(
+        find(ds_hp).hotplug_min,
+        [8 * 1024, 32 * 1024 * 1024, 64 * 1024 * 1024]
+    );
+    assert_eq!(find(ds_nhi).hotplug_min, [0, 0, 0]);
+    assert_eq!(find(ds_xhci).hotplug_min, [0, 0, 0]);
+    assert_eq!(
+        find(ds_hp).windows[WindowKind::Memory as usize].size,
+        32 * 1024 * 1024
+    );
+    assert_eq!(
+        find(ds_hp).windows[WindowKind::Prefetchable as usize].size,
+        64 * 1024 * 1024
+    );
+    assert_eq!(find(ds_hp).windows[WindowKind::Io as usize].size, 8 * 1024);
+    // RAM-backed endpoints probe as 16-byte Memory32 BARs (1 MiB window), never hotplug-sized.
+    assert_eq!(
+        find(ds_nhi).windows[WindowKind::Memory as usize].size,
+        1024 * 1024
+    );
+    assert!(!find(ds_nhi).windows[WindowKind::Prefetchable as usize].placed);
+    assert!(!find(ds_nhi).windows[WindowKind::Io as usize].placed);
+    assert_eq!(
+        find(ds_xhci).windows[WindowKind::Memory as usize].size,
+        1024 * 1024
+    );
+    assert!(!find(ds_xhci).windows[WindowKind::Prefetchable as usize].placed);
+    assert!(!find(ds_xhci).windows[WindowKind::Io as usize].placed);
+    assert!(find(up).windows[WindowKind::Memory as usize].size >= 34 * 1024 * 1024);
+    assert_eq!(
+        find(rp).windows[WindowKind::Prefetchable as usize].size,
+        64 * 1024 * 1024
+    );
+    assert_eq!(find(rp).windows[WindowKind::Io as usize].size, 8 * 1024);
+}
+
+#[test]
+fn hotplug_dual_downstream_switch_ports_split_budget_evenly() {
+    let (mut pci, mut ram) = super::tests::test_pci_with_buses(32);
+    ram.fill(u32::MAX);
+    let rp = PciAddress::new(0, 0, 0x1d, 0);
+    let up = PciAddress::new(0, 1, 0, 0);
+    let ds1 = PciAddress::new(0, 2, 1, 0);
+    let ds2 = PciAddress::new(0, 2, 4, 0);
+
+    setup_pcie_bridge(&pci, rp, 4, true, true);
+    setup_pcie_bridge(&pci, up, 5, false, true);
+    setup_pcie_bridge(&pci, ds1, 6, true, true);
+    setup_pcie_bridge(&pci, ds2, 6, true, true);
+
+    pci.add_hotplug_ports(&[PciHotplugPort::new(rp)
+        .with_extra_buses(12)
+        .with_mmio(32 * 1024 * 1024)
+        .with_pref_mmio(64 * 1024 * 1024)
+        .with_io(8 * 1024)])
+        .unwrap();
+    pci.enumerate_and_allocate().unwrap();
+
+    let find = |addr| pci.devices.iter().find(|d| d.addr == addr).unwrap();
+    assert_eq!((find(ds1).secondary_bus, find(ds1).subordinate_bus), (3, 9));
+    assert_eq!(
+        (find(ds2).secondary_bus, find(ds2).subordinate_bus),
+        (10, 16)
+    );
+    for ds in [ds1, ds2] {
+        assert_eq!(
+            find(ds).hotplug_min,
+            [4 * 1024, 16 * 1024 * 1024, 32 * 1024 * 1024]
+        );
+        assert_eq!(
+            find(ds).windows[WindowKind::Memory as usize].size,
+            16 * 1024 * 1024
+        );
+        assert_eq!(
+            find(ds).windows[WindowKind::Prefetchable as usize].size,
+            32 * 1024 * 1024
+        );
+        assert_eq!(find(ds).windows[WindowKind::Io as usize].size, 4 * 1024);
+    }
+    // Root port covers both 16 MiB hotplug ports plus RAM-probed bridge BARs.
+    assert!(find(rp).windows[WindowKind::Memory as usize].size >= 32 * 1024 * 1024);
+    assert_eq!(
+        find(rp).windows[WindowKind::Prefetchable as usize].size,
+        64 * 1024 * 1024
+    );
+    assert_eq!(find(rp).windows[WindowKind::Io as usize].size, 8 * 1024);
+}
+
+#[test]
+fn hotplug_windows_are_preserved_by_window_search_solver() {
+    let (mut pci, _ram) = super::tests::test_pci_with_buses(8);
+    pci.allocators = Allocators::Search(solver::Budget::FIRMWARE);
+    pci.configure_windows(0x8000_0000, 0x0800_0000, 0, 0, 0x2000, 0x4000)
+        .unwrap();
+    let rp = PciAddress::new(0, 0, 1, 0);
+    let mut b = bridge(rp, 1, 4);
+    b.prefetch = PrefetchWindow::Bits64;
+    b.hotplug_min = [0x2000, 0x0100_0000, 0x0200_0000];
+    assert!(pci.devices.push(b).is_ok());
+
+    pci.allocate_resources().unwrap();
+    assert_eq!(pci.devices[0].windows[WindowKind::Io as usize].size, 0x2000);
+    assert_eq!(
+        pci.devices[0].windows[WindowKind::Memory as usize].size,
+        0x0100_0000
+    );
+    assert_eq!(
+        pci.devices[0].windows[WindowKind::Prefetchable as usize].size,
+        0x0200_0000
+    );
+}
+
+#[test]
+fn add_hotplug_ports_validates_inputs() {
+    let (mut pci, mut ram) = test_pci();
+    ram.fill(u32::MAX);
+    let rp = PciAddress::new(0, 0, 1, 0);
+    // Out-of-root segment rejected.
+    assert_eq!(
+        pci.add_hotplug_ports(&[PciHotplugPort::new(PciAddress::new(1, 0, 1, 0))]),
+        Err(PciEcamError::ConfigError)
+    );
+    // Duplicate rejected.
+    assert_eq!(
+        pci.add_hotplug_ports(&[PciHotplugPort::new(rp), PciHotplugPort::new(rp)]),
+        Err(PciEcamError::ConfigError)
+    );
+    // Oversized I/O rejected.
+    assert_eq!(
+        pci.add_hotplug_ports(&[PciHotplugPort::new(rp).with_io(0x2_0000)]),
+        Err(PciEcamError::ConfigError)
+    );
+    // Valid registration succeeds; post-enumeration registration rejected.
+    pci.add_hotplug_ports(&[PciHotplugPort::new(rp)]).unwrap();
+    pci.enumerate_and_allocate().unwrap();
+    assert_eq!(
+        pci.add_hotplug_ports(&[PciHotplugPort::new(PciAddress::new(0, 0, 2, 0))]),
+        Err(PciEcamError::ConfigError)
+    );
+}

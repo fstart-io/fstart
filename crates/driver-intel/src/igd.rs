@@ -689,6 +689,9 @@ pub enum GfxBacklight {
     /// period in `BLC_PWM_PCH_CTL2` (0xc8256), coreboot's
     /// `INTEL_GMA_BCLV_OFFSET`/`INTEL_GMA_BCLM_OFFSET`.
     Pch,
+    /// Skylake / Kaby Lake (Gen9) PCH backlight PWM (`SBLC_PWM_CTL2` at
+    /// `0xC8254`: low 16 bits duty cycle `BCLV`, high 16 bits period `BCLM`).
+    Gen9,
 }
 
 /// The GMCH layout of [`gfx0_acpi_node_with`].
@@ -761,7 +764,7 @@ pub fn gfx0_acpi_node_configurable<NB: crate::IntelNorthbridgeDriver>(
     };
     let size = match backlight {
         GfxBacklight::Gmch => 0x80000u32,
-        GfxBacklight::Pch => 0x100000u32,
+        GfxBacklight::Pch | GfxBacklight::Gen9 => 0x100000u32,
     };
     OpRegion::new("GFRG".into(), OpRegionSpace::SystemMemory, base, &size).to_aml_bytes(&mut body);
     let registers: alloc::vec::Vec<u8> = match backlight {
@@ -778,6 +781,14 @@ pub fn gfx0_acpi_node_configurable<NB: crate::IntelNorthbridgeDriver>(
                 Offset(0x48254),
                 BCLV, 16,
                 Offset(0xC8256),
+                BCLM, 16,
+            }
+        }
+        .into(),
+        GfxBacklight::Gen9 => fstart_acpi_macros::acpi_dsl! {
+            Field("GFRG", DWordAcc, NoLock, Preserve) {
+                Offset(0xC8254),
+                BCLV, 16,
                 BCLM, 16,
             }
         }

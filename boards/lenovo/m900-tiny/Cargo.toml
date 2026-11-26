@@ -1,0 +1,34 @@
+[package]
+name = "fstart-board-lenovo-m900-tiny"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata.fstart]
+board = "lenovo-m900-tiny"
+name = "ThinkCentre M900 Tiny"
+arch = "x86_64"
+build-profile = { dependency = "fstart-platform-intel" }
+
+[dependencies]
+fstart-core = { workspace = true, features = ["pci"] }
+fstart-platform-intel = { workspace = true }
+fstart-acpi = { workspace = true, features = ["x86"], optional = true }
+fstart-acpi-macros = { workspace = true, optional = true }
+fstart-arch = { workspace = true, features = ["x86_64"] }
+fstart-driver-intel = { workspace = true }
+fstart-driver-superio = { workspace = true }
+fstart-driver-tpm = { workspace = true }
+fstart-driver-uart = { workspace = true, features = ["pio"] }
+fstart-log = { workspace = true }
+embedded-hal = { workspace = true }
+ufmt = { workspace = true }
+
+[features]
+default = ["acpi"]
+acpi = ["dep:fstart-acpi", "dep:fstart-acpi-macros", "fstart-driver-superio/acpi"]
+smm = ["fstart-platform-intel/bundle-smm"]
+
+[lints]
+workspace = true

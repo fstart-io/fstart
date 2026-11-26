@@ -198,6 +198,7 @@ pub struct AuxRegs {
     pub data: [usize; AUX_DATA_REG_COUNT],
     /// Optional DDI AUX mutex register.
     pub mutex: Option<usize>,
+    gen9: bool,
 }
 
 impl AuxRegs {
@@ -245,6 +246,16 @@ impl AuxRegs {
             _ => Err(GmaError::UnsupportedPort),
         }
     }
+    /// Gen9 DDI AUX uses sync pulse lengths rather than a legacy clock divider.
+    pub(crate) const fn gen9_for_port(port: Port) -> Result<Self, GmaError> {
+        match Self::ddi_for_port(port) {
+            Ok(mut regs) => {
+                regs.gen9 = true;
+                Ok(regs)
+            }
+            Err(error) => Err(error),
+        }
+    }
 }
 
 const fn aux_regs(ctl: usize, first_data: usize, mutex: Option<usize>) -> AuxRegs {
@@ -258,6 +269,7 @@ const fn aux_regs(ctl: usize, first_data: usize, mutex: Option<usize>) -> AuxReg
             first_data + 16,
         ],
         mutex,
+        gen9: false,
     }
 }
 
@@ -604,10 +616,21 @@ fn raw_aux_request_once(
     for (register, value) in aux.data.iter().zip(data.iter()) {
         register.set(*value);
     }
-    aux.ctl.set(
+    let start = if regs.gen9 {
+        // Gen9 AUX_CTL: 1.6 ms timeout, 18-bit fast-wake and 32-bit sync pulses.
+        DP_AUX_CTL::SEND_BUSY::SET.value
+            | DP_AUX_CTL_DONE
+            | DP_AUX_CTL_TIME_OUT_ERROR
+            | DP_AUX_CTL_RECEIVE_ERROR
+            | (3 << 26)
+            | aux_ctl_message_size(request.len())?
+            | (17 << 5)
+            | 31
+    } else {
         (aux.ctl.get() & !AUX_CTL_START_CLEAR_MASK)
-            | aux_ctl_start_value_with_timing(request.len(), timing)?,
-    );
+            | aux_ctl_start_value_with_timing(request.len(), timing)?
+    };
+    aux.ctl.set(start);
     let mut timeout = AUX_BUSY_TIMEOUT_POLLS;
     while timeout != 0 {
         if !aux.ctl.is_set(DP_AUX_CTL::SEND_BUSY) {
@@ -869,6 +892,16 @@ impl HardwareDpAuxDdc {
         }
     }
 
+    /// # Safety
+    /// The Gen9 display BAR and the selected AUX channel must be live.
+    pub(crate) unsafe fn gen9(mmio_base: MmioAddr<Mmio32>, port: Port) -> Result<Self, GmaError> {
+        Ok(Self {
+            mmio: unsafe { Mmio::new(mmio_base) },
+            regs: AuxRegs::gen9_for_port(port)?,
+            timing: AuxCtlTiming::LEGACY,
+        })
+    }
+
     fn regs(self) -> AuxRegs {
         self.regs
     }
@@ -1117,6 +1150,105 @@ fn aux_i2c_read(
     }
 }
 
+/// Read a small register window on an I2C device behind DP AUX.
+pub(crate) fn read_i2c_registers(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    address: u8,
+    offset: u8,
+    out: &mut [u8],
+) -> Result<(), GmaError> {
+    if out.is_empty() || out.len() > AUX_MAX_PAYLOAD_LEN {
+        return Err(GmaError::InvalidConfig);
+    }
+    let mut req = [0; AUX_MAX_MESSAGE_LEN];
+    let len = build_i2c_aux_request(AuxI2cCommand::Write, address, &[offset], true, &mut req)?;
+    i2c_aux_write(mmio, regs, &req[..len])?;
+    let len = build_i2c_aux_request(AuxI2cCommand::Read, address, out, false, &mut req)?;
+    let result = i2c_aux_read(mmio, regs, &req[..len], out);
+    if result.is_err() {
+        // Release the I2C transaction if the repeated-start read failed.
+        let _ = i2c_aux_write(mmio, regs, &[0, 0, address]);
+    }
+    result
+}
+
+/// Write one register on an I2C device behind DP AUX, with a STOP.
+pub(crate) fn write_i2c_register(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    address: u8,
+    offset: u8,
+    value: u8,
+) -> Result<(), GmaError> {
+    let mut req = [0; AUX_MAX_MESSAGE_LEN];
+    let len = build_i2c_aux_request(
+        AuxI2cCommand::Write,
+        address,
+        &[offset, value],
+        false,
+        &mut req,
+    )?;
+    i2c_aux_write(mmio, regs, &req[..len])
+}
+
+fn i2c_reply(byte: u8) -> AuxReplyStatus {
+    match AuxReplyStatus::decode(byte) {
+        AuxReplyStatus::Ack => match byte & 0xc0 {
+            0 => AuxReplyStatus::Ack,
+            0x80 => AuxReplyStatus::Defer,
+            other => AuxReplyStatus::NakOrUnknown(other),
+        },
+        status => status,
+    }
+}
+
+fn i2c_aux_write(mmio: &Mmio, regs: AuxRegs, request: &[u8]) -> Result<(), GmaError> {
+    let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
+    for _ in 0..AUX_DEFER_RETRY_COUNT {
+        let response_len = raw_aux_request(mmio, regs, request, &mut response)?;
+        if response_len == 0 {
+            return Err(GmaError::HardwareError);
+        }
+        match i2c_reply(response[0]) {
+            AuxReplyStatus::Ack => return Ok(()),
+            AuxReplyStatus::Defer => delay_us(AUX_DEFER_DELAY_US),
+            AuxReplyStatus::NakOrUnknown(_) => return Err(GmaError::HardwareError),
+        }
+    }
+    Err(GmaError::Timeout)
+}
+
+fn i2c_aux_read(
+    mmio: &Mmio,
+    regs: AuxRegs,
+    request: &[u8],
+    out: &mut [u8],
+) -> Result<(), GmaError> {
+    if out.is_empty() || out.len() > AUX_MAX_PAYLOAD_LEN {
+        return Err(GmaError::InvalidConfig);
+    }
+    let mut response = [0u8; AUX_MAX_MESSAGE_LEN];
+    for _ in 0..AUX_DEFER_RETRY_COUNT {
+        let response_len = raw_aux_request(mmio, regs, request, &mut response)?;
+        if response_len == 0 {
+            return Err(GmaError::HardwareError);
+        }
+        match i2c_reply(response[0]) {
+            AuxReplyStatus::Ack => {
+                if response_len < out.len() + 1 {
+                    return Err(GmaError::HardwareError);
+                }
+                out.copy_from_slice(&response[1..1 + out.len()]);
+                return Ok(());
+            }
+            AuxReplyStatus::Defer => delay_us(AUX_DEFER_DELAY_US),
+            AuxReplyStatus::NakOrUnknown(_) => return Err(GmaError::HardwareError),
+        }
+    }
+    Err(GmaError::Timeout)
+}
+
 /// DisplayPort link bandwidth code from DPCD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DpLinkRate {
@@ -1295,6 +1427,11 @@ impl LinkStatus {
         let mut status = [0u8; 6];
         status.copy_from_slice(&bytes[..6]);
         Ok(Self { bytes: status })
+    }
+
+    /// Raw six-byte DPCD 0x202..0x207 status block.
+    pub const fn raw_bytes(self) -> [u8; 6] {
+        self.bytes
     }
 
     /// Return true when all active lanes have clock recovery done.

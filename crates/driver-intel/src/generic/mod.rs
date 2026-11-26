@@ -2,4 +2,5 @@
 
 pub mod ck505;
 pub mod spd;
+pub(crate) mod temporary_bar;
 pub mod training;

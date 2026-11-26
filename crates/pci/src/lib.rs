@@ -19,8 +19,9 @@ pub mod window;
 pub use config::*;
 pub use ecam::EcamDevice;
 pub use ecam_host::{
-    MAX_PCI_FIXED_BARS, MAX_PCI_ROOTS, PciEcam, PciEcamError, PciExcludedFunctions, PciFixedBar,
-    PciFixedBarType, PciFixedBars,
+    MAX_PCI_FIXED_BARS, MAX_PCI_HOTPLUG_PORTS, MAX_PCI_ROOTS, PciEcam, PciEcamError,
+    PciExcludedFunctions, PciFixedBar, PciFixedBarType, PciFixedBars, PciHotplugPort,
+    PciHotplugResources,
 };
 pub use overlay::{PciType0Config, PciType1Config};
 pub use pci_types::{

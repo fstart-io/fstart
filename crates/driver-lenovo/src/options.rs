@@ -18,6 +18,8 @@ pub struct Options {
     pub touchpad: bool,
     pub sticky_fn: bool,
     pub fn_ctrl_swap: bool,
+    /// Use F1-F12 as primary function without holding Fn (modern ThinkPads).
+    pub f1_to_f12_as_primary: bool,
     /// USB power while off: 0 never, 1 always, 2 on AC only.
     pub usb_always_on: u8,
     pub power_management_beeps: bool,
@@ -39,6 +41,7 @@ impl Options {
         touchpad: true,
         sticky_fn: false,
         fn_ctrl_swap: false,
+        f1_to_f12_as_primary: true,
         usb_always_on: 0,
         power_management_beeps: true,
         low_battery_beep: true,
@@ -132,6 +135,14 @@ switch!(
     "Exchange the Fn and left Ctrl keys."
 );
 switch!(
+    F1_TO_F12_AS_PRIMARY,
+    f1_to_f12_as_primary,
+    "f1_to_f12_as_primary",
+    "Input",
+    "F1-F12 as primary",
+    "Use F1-F12 as primary function without holding Fn."
+);
+switch!(
     POWER_MANAGEMENT_BEEPS,
     power_management_beeps,
     "power_management_beeps",
@@ -201,7 +212,7 @@ mod tests {
 
     #[test]
     fn keys_and_their_cmos_hashes_are_distinct() {
-        const ALL: [Knob<Options>; 13] = [
+        const ALL: [Knob<Options>; 14] = [
             WLAN,
             WWAN,
             BLUETOOTH,
@@ -210,6 +221,7 @@ mod tests {
             TOUCHPAD,
             STICKY_FN,
             FN_CTRL_SWAP,
+            F1_TO_F12_AS_PRIMARY,
             USB_ALWAYS_ON,
             POWER_MANAGEMENT_BEEPS,
             LOW_BATTERY_BEEP,

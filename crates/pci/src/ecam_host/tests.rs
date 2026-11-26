@@ -1340,6 +1340,7 @@ pub(super) fn endpoint(addr: PciAddress, definitions: &[(usize, BarType, u64)]) 
         secondary_bus: 0,
         subordinate_bus: 0,
         windows: Default::default(),
+        hotplug_min: [0; WINDOW_KINDS.len()],
         // What a bridge built from it has: plain RAM cannot model the
         // read-only capability bits enumeration probes.
         prefetch: PrefetchWindow::Bits64,

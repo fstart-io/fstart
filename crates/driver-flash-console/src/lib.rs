@@ -170,10 +170,15 @@ impl<M: Medium> FlashConsole<M> {
         let Some(image) = xip else {
             return;
         };
+        if image.size == 0 {
+            return;
+        }
         for offset in (0..image.size).step_by(CACHE_LINE) {
             // SAFETY: the running image is mapped and readable.
             unsafe { fstart_core::mmio::read8((image.base + offset) as *const u8) };
         }
+        // SAFETY: last byte of the mapped image, in case image.base is not cache-line aligned.
+        unsafe { fstart_core::mmio::read8((image.base + image.size - 1) as *const u8) };
     }
 
     fn with_log(

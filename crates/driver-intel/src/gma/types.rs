@@ -113,6 +113,8 @@ pub enum Port {
     HdmiB,
     /// Third HDMI port.
     HdmiC,
+    /// HDMI connector on DDI D (Gen9).
+    HdmiD,
     /// First DisplayPort.
     DpA,
     /// Second DisplayPort.

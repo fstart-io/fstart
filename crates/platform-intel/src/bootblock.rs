@@ -114,7 +114,89 @@ impl<B: IntelBoard, S> Bootblock<B, S> {
     fn check<T>(&self, what: &str, result: Result<T, ServiceError>) -> T {
         result.unwrap_or_else(|_| self.fail(what))
     }
+
+    /// Cache the BIOS window write-protect for the rest of the bootblock, on
+    /// platforms whose cache-as-RAM entry leaves the ROM uncached.
+    fn cache_bios_window(&self) -> bool {
+        let (base, size) = self.check("BIOS cache window", self.geometry.firmware());
+        // SAFETY: the BSP owns CAR and no AP is running. The window is the
+        // linked BIOS region, which the chipset's early init decoded.
+        match unsafe { fstart_arch::x86::mtrr::cache_car_bios_window(base, size as u64) } {
+            Ok(()) => {
+                fstart_log::debug!("XIP: BIOS window {:#x} (+{:#x}) cached WP", base, size);
+                true
+            }
+            Err(_) => {
+                fstart_log::warn!("XIP: BIOS WP cache unavailable; continuing without it");
+                false
+            }
+        }
+    }
 }
+
+/// Move the entry page tables off flash into CAR so bootblock `--debug
+/// flash-console` can program SPI flash without page walks hitting the busy
+/// chip. The original ROM CR3 is saved and restored right before jumping to
+/// postcar so `_car_teardown` never runs on CAR-resident page tables.
+#[cfg(all(
+    feature = "flash-console",
+    feature = "bundle-bootblock",
+    target_arch = "x86_64"
+))]
+static SAVED_ROM_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(all(
+    feature = "flash-console",
+    feature = "bundle-bootblock",
+    target_arch = "x86_64"
+))]
+fn car_page_tables<B: IntelBoard>() -> bool {
+    use core::sync::atomic::Ordering;
+    use fstart_arch::x86::boot::paging::{copy_entry_tables, load_cr3, read_cr3};
+    let Some(tables) = B::Platform::bootblock_car_page_tables() else {
+        return false;
+    };
+    let original = read_cr3();
+    // SAFETY: `tables` is exclusive, identity-mapped CAR BSS, and CR3 is
+    // restored to `original` before postcar tears down CAR.
+    match unsafe { copy_entry_tables(tables) } {
+        Some(root) => {
+            SAVED_ROM_CR3.store(original, Ordering::Release);
+            load_cr3(root);
+            true
+        }
+        None => false,
+    }
+}
+
+#[cfg(not(all(
+    feature = "flash-console",
+    feature = "bundle-bootblock",
+    target_arch = "x86_64"
+)))]
+fn car_page_tables<B: IntelBoard>() -> bool {
+    false
+}
+
+#[cfg(all(
+    feature = "flash-console",
+    feature = "bundle-bootblock",
+    target_arch = "x86_64"
+))]
+fn restore_rom_page_tables() {
+    use core::sync::atomic::Ordering;
+    let original = SAVED_ROM_CR3.swap(0, Ordering::AcqRel);
+    if original != 0 {
+        fstart_arch::x86::boot::paging::load_cr3(original);
+    }
+}
+
+#[cfg(not(all(
+    feature = "flash-console",
+    feature = "bundle-bootblock",
+    target_arch = "x86_64"
+)))]
+fn restore_rom_page_tables() {}
 
 /// [`Bootblock::fail`], once per board rather than once per phase.
 #[inline(never)]
@@ -191,10 +273,15 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             fstart_arch::x86::boot::halt()
         }
         slot.install(console);
-        // Code and page tables still live in the SPI ROM. Cache warming is
-        // not sufficient to guarantee progress while that chip is busy.
-        // Keep EHCI here; postcar installs the flash log once it runs in DRAM.
-        crate::debug_console::install::<B>(false);
+        let bios_cached = if B::Platform::CACHE_BIOS_WINDOW {
+            self.cache_bios_window()
+        } else {
+            true
+        };
+        // Platforms with ample CAR copy entry page tables to CAR BSS and WP-cache
+        // the BIOS window so XipImage warming keeps flash-console writes off ROM.
+        let flash_log = bios_cached && car_page_tables::<B>();
+        crate::debug_console::install::<B>(flash_log);
         fstart_timestamp::add(fstart_timestamp::id::CONSOLE_READY);
         fstart_log::info!(
             "{} bootblock: entered ({} console ready)",
@@ -208,6 +295,9 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             .northbridge
             .early_init()
             .and_then(|()| self.southbridge.early_init());
+        if early.is_err() && self.southbridge.detect_s3_resume() {
+            self.boot_path = BootPath::S3Resume;
+        }
         self.check("early init", early);
         // Consume the southbridge indication exactly once, before board clock
         // programming. Resume work must not perturb retained DRAM frequency.
@@ -303,23 +393,18 @@ impl<B: IntelBoard> Bootblock<B, Console> {
         self.bring_up(None, &mut []).map(drop)
     }
 
-    /// The northbridge's [`MemoryInit`](fstart_core::services::MemoryInit)
-    /// from the SPDs on the southbridge's SMBus.
+    /// The platform's [`IntelEarlyPlatform::train_memory`].
     fn bring_up(
         &mut self,
         cached: Option<&[u8]>,
         capture: &mut [u8],
     ) -> Result<Option<usize>, ServiceError> {
-        use fstart_core::services::MemoryInit;
-        let smbus = self
-            .southbridge
-            .smbus_mut()
-            .ok_or(ServiceError::NotInitialized)?;
-        self.northbridge.bring_up(fstart_driver_intel::SpdTraining {
-            smbus,
+        B::Platform::train_memory(
+            &mut self.northbridge,
+            &mut self.southbridge,
             cached,
             capture,
-        })
+        )
     }
 }
 
@@ -477,6 +562,7 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
             verified.entry()
         );
         crate::store::write_back(&store);
+        restore_rom_page_tables();
         fstart_arch::x86::boot::jump_to(verified.entry())
     }
 }

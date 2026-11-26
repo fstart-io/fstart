@@ -254,6 +254,17 @@ pub unsafe fn copy_entry_tables(tables: &mut EntryTables) -> Option<u64> {
     Some(root)
 }
 
+/// Read CR3.
+#[inline]
+pub fn read_cr3() -> u64 {
+    let value: u64;
+    // SAFETY: reading CR3 has no side effects.
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
 /// Load CR3.
 #[inline]
 pub fn load_cr3(value: u64) {

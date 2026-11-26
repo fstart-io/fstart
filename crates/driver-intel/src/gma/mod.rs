@@ -143,12 +143,18 @@ const PORTS_HASWELL_LP: &[Port] = &[
     Port::DpC,
 ];
 
-/// Return static platform capabilities for a CPU.
-///
-/// Broadwell and newer report their port set for planning purposes, but their
-/// modeset executors are not implemented: `init_display` returns
-/// [`GmaError::UnsupportedPlatform`] rather than half-applying a modeset. I945,
-/// G45, Ironlake, and Haswell (Traditional/ULT/ULX) currently drive hardware.
+const PORTS_GEN9: &[Port] = &[
+    Port::Edp,
+    Port::DpB,
+    Port::DpC,
+    Port::DpD,
+    Port::HdmiB,
+    Port::HdmiC,
+    Port::HdmiD,
+];
+
+/// Return static platform capabilities for a CPU. A planning capability does
+/// not imply that every generation has a live modeset executor.
 pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
     match cpu {
         Cpu::I945G => PlatformCaps {
@@ -285,7 +291,7 @@ pub const fn caps_for(cpu: Cpu) -> PlatformCaps {
             generation: Generation::Skylake,
             cpu,
             pipes: PIPES_ABC,
-            ports: PORTS_DDI,
+            ports: PORTS_GEN9,
             has_pch_split: true,
             has_fdi: false,
             has_gmbus: true,
@@ -381,6 +387,7 @@ pub(crate) fn init<G: GenerationOps>(
     config: &GmaInitConfig<'_>,
 ) -> Result<GmaInitResult, GmaError> {
     resources.validate()?;
+    validate_generation::<G>(config.cpu)?;
     validate_outputs(config.cpu, config.outputs)?;
     let mut state = GmaDisplayState::new();
     state
@@ -419,7 +426,7 @@ pub(crate) fn prepare_framebuffer(
     surface: &SurfaceConfig,
 ) -> Result<(), GmaError> {
     let supported = match caps_for(cpu).generation {
-        Generation::I945 | Generation::G45 | Generation::Ironlake => true,
+        Generation::I945 | Generation::G45 | Generation::Ironlake | Generation::Skylake => true,
         Generation::Haswell => cpu.is_haswell(),
         _ => false,
     };
@@ -432,7 +439,9 @@ pub(crate) fn prepare_framebuffer(
         gtt::clear_legacy_fences(&mmio, cpu);
         gtt::add_legacy_fence(&mmio, cpu, surface)?;
     }
-    gtt::flush_gfx_for_cpu(&mmio, cpu);
+    if caps_for(cpu).generation != Generation::Skylake {
+        gtt::flush_gfx_for_cpu(&mmio, cpu);
+    }
     // SAFETY: the validated aperture now maps the complete shared surface.
     unsafe { surface.fill_opaque_black() }
 }
@@ -447,9 +456,9 @@ pub(crate) fn disable_generation_output<G: GenerationOps>(
     cpu: Cpu,
     pipe: Pipe,
     port: Port,
-) {
+) -> Result<(), GmaError> {
     let mmio = mmio_from_validated_resources(resources);
-    let _ = G::disable_output(&mmio, cpu, pipe, port);
+    G::disable_output(&mmio, cpu, pipe, port)
 }
 
 /// Return all pipes, ports and PLLs to libgfxinit's `Clean_State`.
@@ -478,7 +487,7 @@ pub(crate) fn mmio_from_validated_resources(resources: &GmaResources) -> mmio::M
 /// generation without an executor, before touching display registers.
 pub(crate) fn validate_generation<G: GenerationOps>(cpu: Cpu) -> Result<(), GmaError> {
     let executable = match G::GENERATION {
-        Generation::I945 | Generation::G45 | Generation::Ironlake => true,
+        Generation::I945 | Generation::G45 | Generation::Ironlake | Generation::Skylake => true,
         Generation::Haswell => cpu.is_haswell(),
         _ => false,
     };
@@ -529,7 +538,7 @@ const fn hdmi_max_dotclock_khz(cpu: Cpu) -> u32 {
 
 /// Clamp an HDMI mode's dot clock to the platform maximum.
 pub(crate) fn clamp_hdmi_dotclock(cpu: Cpu, port: Port, mut mode: Mode) -> Mode {
-    if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC) {
+    if matches!(port, Port::HdmiA | Port::HdmiB | Port::HdmiC | Port::HdmiD) {
         let max = hdmi_max_dotclock_khz(cpu);
         if mode.pixel_clock_khz > max {
             mode.pixel_clock_khz = max;
@@ -563,6 +572,16 @@ pub(crate) fn choose_mode(
     resources: &GmaResources,
     config: &GmaInitConfig<'_>,
 ) -> Result<Mode, GmaError> {
+    choose_mode_where(resources, config, |_| true)
+}
+
+/// [`choose_mode`], taking only the EDID modes `accept` passes (what the
+/// display engine can drive), in EDID order.
+pub(crate) fn choose_mode_where(
+    resources: &GmaResources,
+    config: &GmaInitConfig<'_>,
+    accept: impl Fn(&Mode) -> bool,
+) -> Result<Mode, GmaError> {
     let port = config
         .outputs
         .iter()
@@ -578,15 +597,14 @@ pub(crate) fn choose_mode(
                 .and_then(|vbt| vbt.lfp_fixed_mode().ok())
                 // Panel policy explicitly permits VBT/static fallback.
                 // EDID-only policy below instead requires a present display.
-                .or_else(|| edid_mode(resources, config).ok())
+                .or_else(|| edid_mode_where(resources, config, &accept).ok())
                 .or_else(|| fallback_mode(&config.framebuffer).ok())
                 .ok_or(GmaError::ModeUnavailable)
         }
-        PreferredMode::VbtPanel => {
-            edid_mode(resources, config).or_else(|_| fallback_mode(&config.framebuffer))
-        }
+        PreferredMode::VbtPanel => edid_mode_where(resources, config, &accept)
+            .or_else(|_| fallback_mode(&config.framebuffer)),
         PreferredMode::Fixed => fallback_mode(&config.framebuffer),
-        PreferredMode::Edid => edid_mode(resources, config),
+        PreferredMode::Edid => edid_mode_where(resources, config, &accept),
     }
 }
 
@@ -595,6 +613,14 @@ pub(crate) fn choose_mode(
 /// Call after generation-specific panel/DDC preparation. Initialization uses
 /// this for each connector; failure does not establish display presence.
 pub fn edid_mode(resources: &GmaResources, config: &GmaInitConfig<'_>) -> Result<Mode, GmaError> {
+    edid_mode_where(resources, config, |_| true)
+}
+
+fn edid_mode_where(
+    resources: &GmaResources,
+    config: &GmaInitConfig<'_>,
+    accept: impl Fn(&Mode) -> bool,
+) -> Result<Mode, GmaError> {
     let port = selected_enabled_port(config.outputs)?;
     let caps = caps_for(config.cpu);
     if let Some(detect) = initialize_port_detect(resources, config.cpu)
@@ -636,7 +662,11 @@ pub fn edid_mode(resources: &GmaResources, config: &GmaInitConfig<'_>) -> Result
         .with_clock_gate(gate);
         gmbus::read_edid_modes(&mut bus, port, &mut storage, &mut extension_storage)?
     };
-    modes.first().copied().ok_or(GmaError::ModeUnavailable)
+    modes
+        .iter()
+        .copied()
+        .find(|mode| accept(mode))
+        .ok_or(GmaError::ModeUnavailable)
 }
 
 fn uses_aux_ddc(port: Port) -> bool {
@@ -674,7 +704,10 @@ fn aux_ddc_bus(
             }
         }
         // SAFETY: DDI AUX registers are in the decoded display MMIO BAR.
-        Generation::Broxton | Generation::Skylake | Generation::Tigerlake => unsafe {
+        Generation::Skylake => unsafe {
+            dp_aux::HardwareDpAuxDdc::gen9(resources.gtt_mmio_base, port)
+        },
+        Generation::Broxton | Generation::Tigerlake => unsafe {
             dp_aux::HardwareDpAuxDdc::ddi(resources.gtt_mmio_base, port)
         },
         Generation::I945 => Err(GmaError::UnsupportedPort),
@@ -690,6 +723,14 @@ fn ddc_pin_for_config(port: Port, config: &GmaInitConfig<'_>) -> Option<gmbus::G
             .and_then(|metadata| metadata.crt_ddc_pin)
     {
         return Some(pin);
+    }
+    if caps_for(config.cpu).generation == Generation::Skylake {
+        return match port {
+            Port::HdmiB => Some(gmbus::GmbusPin::DigitalB),
+            Port::HdmiC => Some(gmbus::GmbusPin::DigitalC),
+            Port::HdmiD => Some(gmbus::GmbusPin::DigitalD),
+            _ => None,
+        };
     }
     gmbus::ddc_pin_for_port(port)
 }
@@ -732,7 +773,9 @@ mod tests {
         assert!(validate_generation::<Haswell>(Cpu::HaswellUlt).is_ok());
         assert!(validate_generation::<Haswell>(Cpu::HaswellUlx).is_ok());
         assert!(validate_generation::<Haswell>(Cpu::Broadwell).is_err());
-        assert!(validate_generation::<generation::skylake::Skylake>(Cpu::Skylake).is_err());
+        assert!(validate_generation::<generation::skylake::Skylake>(Cpu::Skylake).is_ok());
+        assert!(validate_generation::<generation::skylake::Skylake>(Cpu::Kabylake).is_ok());
+        assert!(validate_generation::<generation::skylake::Skylake>(Cpu::Haswell).is_err());
     }
 
     #[test]
@@ -941,8 +984,6 @@ mod tests {
             Cpu::Haswell,
             Cpu::Broadwell,
             Cpu::Broxton,
-            Cpu::Skylake,
-            Cpu::Kabylake,
             Cpu::Tigerlake,
             Cpu::Alderlake,
         ] {
@@ -959,6 +1000,38 @@ mod tests {
                 Ok(())
             );
         }
+    }
+
+    #[test]
+    fn gen9_hdmi_uses_ddi_pin_numbers_without_shifting_legacy_boards() {
+        let config = GmaInitConfig {
+            cpu: Cpu::Kabylake,
+            outputs: &[],
+            framebuffer: FramebufferConfig::edid(FallbackMode {
+                width: 1024,
+                height: 768,
+                refresh_hz: 60,
+            }),
+            vbt: None,
+        };
+        for (port, pin) in [
+            (Port::HdmiB, gmbus::GmbusPin::DigitalB),
+            (Port::HdmiC, gmbus::GmbusPin::DigitalC),
+            (Port::HdmiD, gmbus::GmbusPin::DigitalD),
+        ] {
+            assert_eq!(ddc_pin_for_config(port, &config), Some(pin));
+        }
+        assert_eq!(
+            ddc_pin_for_config(
+                Port::HdmiC,
+                &GmaInitConfig {
+                    cpu: Cpu::Ironlake,
+                    ..config
+                }
+            ),
+            Some(gmbus::GmbusPin::DigitalD)
+        );
+        assert!(!caps_for(Cpu::Kabylake).ports.contains(&Port::Lvds));
     }
 
     #[test]

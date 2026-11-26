@@ -783,10 +783,10 @@ const fn acpi_sleep_state(pm1_cnt: u32) -> Option<u8> {
 /// # Safety
 /// The caller owns PCI configuration access (the SMM rendezvous).
 #[inline(always)]
-unsafe fn busmaster_disable_all() {
+pub(crate) unsafe fn busmaster_disable_on_bus(start_bus: u8) {
     let mut pending = [0u64; 4];
-    pending[0] = 1; // Start from root bus 0.
-    for bus in 0..=255u8 {
+    pending[usize::from(start_bus >> 6)] = 1u64 << (start_bus & 63);
+    for bus in start_bus..=255u8 {
         if pending[usize::from(bus >> 6)] & (1u64 << (bus & 63)) == 0 {
             continue;
         }
@@ -809,6 +809,12 @@ unsafe fn busmaster_disable_all() {
             }
         }
     }
+}
+
+#[inline(always)]
+unsafe fn busmaster_disable_all() {
+    // SAFETY: forwarded from caller.
+    unsafe { busmaster_disable_on_bus(0) };
 }
 
 /// The SMI handler of a board with no SMI sources of its own: the ICH's

@@ -41,9 +41,11 @@ pub(crate) enum GttPteEncoding {
     I945Simple,
     /// Other 32-bit GTTs: physical bits 38:32 are carried in PTE bits 10:4.
     Bits32,
+    /// Gen9: 64-bit PTE carrying physical bits 38:12.
+    Gen9,
 }
 
-/// PTE encoding for a CPU, or `None` for platforms with 64-bit PTEs.
+/// PTE encoding implemented for a CPU.
 pub(crate) const fn gtt_pte_encoding(cpu: Cpu) -> Option<GttPteEncoding> {
     match cpu {
         Cpu::I945G | Cpu::I945GM => Some(GttPteEncoding::I945Simple),
@@ -59,6 +61,7 @@ pub(crate) const fn gtt_pte_encoding(cpu: Cpu) -> Option<GttPteEncoding> {
         | Cpu::HaswellUlt
         | Cpu::HaswellUlx => Some(GttPteEncoding::Bits32),
         // Broadwell and later use 64-bit PTEs (libgfxinit Has_64bit_GTT := Broadwell_On).
+        Cpu::Skylake | Cpu::Kabylake => Some(GttPteEncoding::Gen9),
         _ => None,
     }
 }
@@ -80,6 +83,8 @@ pub(crate) const fn gtt_pte_offset(cpu: Cpu) -> Option<usize> {
         | Cpu::Haswell
         | Cpu::HaswellUlt
         | Cpu::HaswellUlx => Some(0x0020_0000),
+        // libgfxinit MMIO_GTT_64_Offset.
+        Cpu::Skylake | Cpu::Kabylake => Some(0x0080_0000),
         _ => None,
     }
 }
@@ -88,6 +93,7 @@ pub(crate) const fn gtt_pte_offset(cpu: Cpu) -> Option<usize> {
 pub(crate) const fn gtt_pte_size(encoding: GttPteEncoding) -> usize {
     match encoding {
         GttPteEncoding::I945Simple | GttPteEncoding::Bits32 => 4,
+        GttPteEncoding::Gen9 => 8,
     }
 }
 
@@ -101,6 +107,7 @@ pub(crate) const fn encode_gtt_pte(phys: u64, encoding: GttPteEncoding) -> (u32,
             let high = (((phys >> 28) & 0x7f0) as u32) & 0x0000_07f0;
             (base | high | 1, 0)
         }
+        GttPteEncoding::Gen9 => (base | 1, ((phys >> 32) & 0x7f) as u32),
     }
 }
 
@@ -224,6 +231,16 @@ pub(crate) unsafe fn map_framebuffer_to_stolen(
         .stolen_base
         .checked_add(phys_offset)
         .ok_or(GmaError::GttSetupFailed)?;
+    if encoding == GttPteEncoding::Gen9
+        && (rotation
+            || base_phys & (u64::from(GTT_PAGE_SIZE) - 1) != 0
+            || (gtt_aperture as usize) & 7 != 0
+            || base_phys
+                .checked_add((pages as u64) * u64::from(GTT_PAGE_SIZE))
+                .is_none_or(|end| end > 1 << 39))
+    {
+        return Err(GmaError::GttSetupFailed);
+    }
     // SAFETY: bounds were checked against `gtt_entries` above.
     unsafe {
         write_gtt_run(
@@ -235,7 +252,31 @@ pub(crate) unsafe fn map_framebuffer_to_stolen(
             pte_words,
         );
     }
+    // Gen9 guard PTEs alias the final owned page, not memory beyond the surface.
     let guard_phys = base_phys + (pages as u64) * u64::from(GTT_PAGE_SIZE);
+    if encoding == GttPteEncoding::Gen9 {
+        for page in last_page + 1..last_page + 1 + GTT_DUMMY_PAGES_AFTER_FB {
+            // SAFETY: same checked range; every guard points at the last data page.
+            unsafe {
+                write_gtt_run(
+                    gtt_aperture,
+                    page,
+                    1,
+                    guard_phys - 4096,
+                    encoding,
+                    pte_words,
+                )
+            };
+        }
+        // SAFETY: the last PTE is in the checked, 8-byte aligned aperture.
+        let _ = unsafe {
+            (&*gtt_aperture
+                .add(last_page * 2)
+                .cast::<fstart_core::mmio::MmioReadWrite<u64>>())
+                .get()
+        };
+        return Ok(());
+    }
     // SAFETY: guard PTEs are covered by the `last_page + 1 + 128` bound above.
     unsafe {
         write_gtt_run(
@@ -286,11 +327,14 @@ unsafe fn write_gtt_run(
         let phys = base_phys + (idx as u64) * u64::from(GTT_PAGE_SIZE);
         let (low, high) = encode_gtt_pte(phys, encoding);
         let slot = first_page + idx;
-        // SAFETY: caller bounds-checked the range.
+        // SAFETY: caller checked the range and alignment. Gen9 uses one 64-bit write.
         unsafe {
-            (&*gtt_aperture.add(slot * pte_words)).set(low);
-            if pte_words == 2 {
-                (&*gtt_aperture.add(slot * pte_words + 1)).set(high);
+            let entry = gtt_aperture.add(slot * pte_words);
+            if encoding == GttPteEncoding::Gen9 {
+                (&*entry.cast::<fstart_core::mmio::MmioReadWrite<u64>>())
+                    .set(u64::from(low) | (u64::from(high) << 32));
+            } else {
+                (&*entry).set(low);
             }
         }
     }
@@ -309,10 +353,16 @@ pub(crate) fn map_surface_to_stolen(
         // must supply; the MMIO-relative offset is the fallback for the rest.
         None => {
             let offset = gtt_pte_offset(cpu).ok_or(GmaError::UnsupportedPlatform)?;
+            if encoding == GttPteEncoding::Gen9
+                && (offset as u64 + u64::from(resources.gtt_size)
+                    > u64::from(resources.gtt_mmio_size))
+            {
+                return Err(GmaError::GttSetupFailed);
+            }
             resources.gtt_mmio_base.raw() + offset as u64
         }
     };
-    let gtt_entries = (resources.gtt_size / gtt_pte_size(encoding) as u32) as usize;
+    let gtt_entries = (resources.gtt_size / 4) as usize;
     // SAFETY: generation callers invoke this only after board/chipset code has
     // supplied a decoded display MMIO BAR; resources describe the MMIO-visible
     // GTT table and selected stolen-memory framebuffer surface.
@@ -560,6 +610,30 @@ mod tests {
     }
 
     #[test]
+    fn gen9_maps_64_bit_entries_and_keeps_prefetch_guards_within_stolen_memory() {
+        let resources = GmaResources {
+            stolen_base: 0x1_2345_0000,
+            stolen_size: 8192,
+            ..resources()
+        };
+        let surface = SurfaceConfig::packed(0xd000_0000, 64, 32, PixelFormat::Xrgb8888);
+        let mut ptes = [0u64; 131];
+        unsafe {
+            map_framebuffer_to_stolen(
+                &resources,
+                &surface,
+                ptes.as_mut_ptr().cast(),
+                ptes.len() * 2,
+                GttPteEncoding::Gen9,
+            )
+        }
+        .unwrap();
+        assert_eq!(ptes[0], 0x1_2345_0001);
+        assert!(ptes[1..130].iter().all(|&entry| entry == 0x1_2345_1001));
+        assert_eq!(ptes[130], 0);
+    }
+
+    #[test]
     fn zero_sized_surface_rejects_without_pte_underflow() {
         let surface = SurfaceConfig::packed(0xd000_0000, 0, 0, PixelFormat::Xrgb8888);
         let mut ptes = [0u32; 1];
@@ -651,7 +725,7 @@ mod tests {
         }
         assert!(gtt_pte_encoding(Cpu::Broadwell).is_none());
         assert!(gtt_pte_offset(Cpu::Broadwell).is_none());
-        assert!(gtt_pte_offset(Cpu::Skylake).is_none());
+        assert_eq!(gtt_pte_offset(Cpu::Skylake), Some(0x0080_0000));
         assert_eq!(
             gtt_pte_encoding(Cpu::I945G),
             Some(GttPteEncoding::I945Simple)
@@ -660,7 +734,11 @@ mod tests {
             gtt_pte_encoding(Cpu::Pineview),
             Some(GttPteEncoding::Bits32)
         );
-        assert!(gtt_pte_encoding(Cpu::Skylake).is_none());
+        assert_eq!(gtt_pte_encoding(Cpu::Skylake), Some(GttPteEncoding::Gen9));
+        assert_eq!(
+            encode_gtt_pte(0x7f_1234_5000, GttPteEncoding::Gen9),
+            (0x1234_5001, 0x7f)
+        );
     }
 
     #[test]

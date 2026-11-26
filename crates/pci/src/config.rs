@@ -78,6 +78,11 @@ register_bitfields! [u32,
         PRIMARY OFFSET(0) NUMBITS(8) [],
         SECONDARY OFFSET(8) NUMBITS(8) [],
         SUBORDINATE OFFSET(16) NUMBITS(8) []
+    ],
+    /// Slot Capabilities dword at PCI Express capability+14h.
+    pub PCI_EXPRESS_SLOT_CAPABILITIES [
+        HOT_PLUG_SURPRISE OFFSET(5) NUMBITS(1) [],
+        HOT_PLUG_CAPABLE OFFSET(6) NUMBITS(1) []
     ]
 ];
 

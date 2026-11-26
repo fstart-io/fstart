@@ -1,5 +1,6 @@
 //! Host-clean board facts and chipset identity shared by build and firmware.
 use fstart_core::FlashLayout;
+pub use fstart_pci::{PciAddress, PciHotplugPort, PciHotplugResources};
 
 /// Physical base addresses of the DRAM stage and firmware-store windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,11 @@ pub trait IntelPlatformConfig {
     /// `n` being 00:1c.n: the slots and onboard devices of the SMBIOS
     /// tables.
     fn pcie_attached(&self) -> &[Option<&'static fstart_core::smbios::Attached<'static>>] {
+        &[]
+    }
+    /// PCIe bridges declared hotplug-capable with their bus, MMIO, prefetchable
+    /// MMIO, and I/O reservations.
+    fn pci_hotplug_ports(&self) -> &'static [PciHotplugPort] {
         &[]
     }
 }

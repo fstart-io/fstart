@@ -125,6 +125,14 @@ register_bitfields![u64,
         X2APIC_ENABLE OFFSET(10) NUMBITS(1) [],
         ENABLE OFFSET(11) NUMBITS(1) []
     ],
+    pub PlatformInfo [
+        MAX_NON_TURBO_RATIO OFFSET(8) NUMBITS(8) [],
+        SAMPLE_PART OFFSET(27) NUMBITS(1) [],
+        POWER_LIMITS_WRITABLE OFFSET(29) NUMBITS(1) [],
+        TCC_OFFSET_WRITABLE OFFSET(30) NUMBITS(1) [],
+        CONFIG_TDP_LEVELS OFFSET(33) NUMBITS(2) [],
+        MAX_EFFICIENT_RATIO OFFSET(40) NUMBITS(8) []
+    ],
     pub MtrrCap [
         VARIABLE_COUNT OFFSET(0) NUMBITS(8) [],
         FIXED OFFSET(8) NUMBITS(1) [],
@@ -151,6 +159,7 @@ pub const APIC_BASE: Msr<ApicBase::Register> = Msr::new(0x1b);
 pub const SPEC_CTRL: Msr<SpecCtrl::Register> = Msr::new(0x48);
 /// IA32_BIOS_SIGN_ID: the installed microcode patch level.
 pub const PATCH_LEVEL: Msr = Msr::new(0x8b);
+pub const PLATFORM_INFO: Msr<PlatformInfo::Register> = Msr::new(0xce);
 pub const MTRR_CAP: Msr<MtrrCap::Register> = Msr::new(crate::x86::mtrr::IA32_MTRR_CAP);
 pub const PAT: Msr = Msr::new(0x277);
 pub const MTRR_DEF_TYPE: Msr<MtrrDefType::Register> =
