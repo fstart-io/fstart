@@ -1,10 +1,10 @@
 //! Sans-IO SPDM 1.2 Requester state machine (DSP0274).
 
 use crate::crypto::{
-    EphemeralP256, HASH_LEN, P256_PUB_LEN, Rng, SIG_LEN, Sha256Transcript, hmac_sha256, sha256,
-    spdm12_signing_digest, verify_p256_prehash,
+    EphemeralP256, HASH_LEN, P256_PUB_LEN, Rng, SIG_LEN, Sha256Transcript, ct_eq, hmac_sha256,
+    sha256, spdm12_signing_digest, verify_p256_prehash,
 };
-use crate::secured::{SecuredSession, SessionTransport};
+use crate::secured::{OPAQUE_SUPPORTED_VERSION_1_1, SecuredSession, SessionTransport};
 use crate::{
     AEAD_AES_256_GCM, BASE_ASYM_ECDSA_ECC_NIST_P256, BASE_HASH_SHA_256, CAP_CERT, CAP_CHAL,
     CAP_ENCRYPT, CAP_HBEAT, CAP_KEY_EX, CAP_KEY_UPD, CAP_MAC, DHE_SECP256R1, Error,
@@ -17,6 +17,7 @@ pub struct SpdmRequester<const MAX_CERT: usize = 512> {
     version: u8,
     transport: SessionTransport,
     vca: Sha256Transcript,
+    m_transcript: Sha256Transcript,
     peer_cert_chain: [u8; MAX_CERT],
     peer_cert_len: usize,
     peer_cert_hash: [u8; HASH_LEN],
@@ -35,6 +36,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             version: SPDM_VERSION_1_2,
             transport,
             vca: Sha256Transcript::new(),
+            m_transcript: Sha256Transcript::new(),
             peer_cert_chain: [0; MAX_CERT],
             peer_cert_len: 0,
             peer_cert_hash: [0; HASH_LEN],
@@ -51,6 +53,8 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             return Err(Error::BufferTooSmall);
         }
         self.vca = Sha256Transcript::new();
+        self.kx_transcript = None;
+        self.session = None;
         out[..4].copy_from_slice(&[SPDM_VERSION_1_0, SpdmCode::GetVersion as u8, 0, 0]);
         self.vca.update(&out[..4]);
         Ok(4)
@@ -163,14 +167,16 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             return Err(Error::UnsupportedAlgorithm);
         }
         self.vca.update(resp);
+        self.m_transcript = self.vca.clone();
         Ok(())
     }
 
-    pub fn build_get_digests(&self, out: &mut [u8]) -> Result<usize, Error> {
+    pub fn build_get_digests(&mut self, out: &mut [u8]) -> Result<usize, Error> {
         if out.len() < 4 {
             return Err(Error::BufferTooSmall);
         }
         out[..4].copy_from_slice(&[self.version, SpdmCode::GetDigests as u8, 0, 0]);
+        self.m_transcript.update(&out[..4]);
         Ok(4)
     }
 
@@ -180,11 +186,12 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             return Err(Error::InvalidMessage);
         }
         self.peer_cert_hash.copy_from_slice(&body[..HASH_LEN]);
+        self.m_transcript.update(resp);
         Ok(self.peer_cert_hash)
     }
 
     pub fn build_get_certificate(
-        &self,
+        &mut self,
         offset: u16,
         length: u16,
         out: &mut [u8],
@@ -195,6 +202,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         out[0..4].copy_from_slice(&[self.version, SpdmCode::GetCertificate as u8, 0, 0]);
         out[4..6].copy_from_slice(&offset.to_le_bytes());
         out[6..8].copy_from_slice(&length.to_le_bytes());
+        self.m_transcript.update(&out[..8]);
         Ok(8)
     }
 
@@ -213,9 +221,10 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         self.peer_cert_chain[self.peer_cert_len..self.peer_cert_len + portion]
             .copy_from_slice(&body[4..4 + portion]);
         self.peer_cert_len += portion;
+        self.m_transcript.update(resp);
         if remainder == 0 {
             let calc = sha256(&self.peer_cert_chain[..self.peer_cert_len]);
-            if self.peer_cert_hash != [0; HASH_LEN] && calc != self.peer_cert_hash {
+            if self.peer_cert_hash != [0; HASH_LEN] && !ct_eq(&calc, &self.peer_cert_hash) {
                 return Err(Error::VerifyDataMismatch);
             }
             self.peer_cert_hash = calc;
@@ -239,7 +248,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             return Err(Error::InvalidMessage);
         }
         let sig_off = resp.len() - SIG_LEN;
-        let mut t = self.vca.clone();
+        let mut t = self.m_transcript.clone();
         t.update(req);
         t.update(&resp[..sig_off]);
         let m1_hash = t.finalize_clone();
@@ -288,7 +297,8 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         rng: &mut R,
         out: &mut [u8],
     ) -> Result<usize, Error> {
-        let total = 4 + 2 + 1 + 1 + 32 + P256_PUB_LEN + 2;
+        let opaque = &OPAQUE_SUPPORTED_VERSION_1_1;
+        let total = 4 + 2 + 1 + 1 + 32 + P256_PUB_LEN + 2 + opaque.len();
         if out.len() < total {
             return Err(Error::BufferTooSmall);
         }
@@ -302,22 +312,30 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         out[7] = 0; // Reserved
         rng.fill_bytes(&mut out[8..40]);
         out[40..104].copy_from_slice(eph.public_xy());
-        out[104..106].copy_from_slice(&0u16.to_le_bytes());
+        out[104..106].copy_from_slice(&(opaque.len() as u16).to_le_bytes());
+        out[106..total].copy_from_slice(opaque);
 
         self.eph = Some(eph);
         Ok(total)
     }
 
     pub fn handle_key_exchange_rsp(&mut self, req: &[u8], resp: &[u8]) -> Result<u32, Error> {
+        if req.len() < 106 {
+            return Err(Error::ShortBuffer);
+        }
         let (hdr, body) = SpdmHeader::parse(resp)?;
         if hdr.code == SpdmCode::Error as u8 {
             return Err(Error::RemoteError(hdr.param1));
         }
-        let before_sig = 4 + 2 + 1 + 1 + 32 + P256_PUB_LEN + 2;
+        if hdr.code != SpdmCode::KeyExchangeRsp as u8 || resp.len() < 106 {
+            return Err(Error::InvalidMessage);
+        }
+        let opaque_len = u16::from_le_bytes([resp[104], resp[105]]) as usize;
+        let before_sig = 106 + opaque_len;
         let before_verify = before_sig + SIG_LEN;
         let total = before_verify + HASH_LEN;
-        if hdr.code != SpdmCode::KeyExchangeRsp as u8 || resp.len() < total {
-            return Err(Error::InvalidMessage);
+        if resp.len() < total {
+            return Err(Error::ShortBuffer);
         }
         let req_sid = u16::from_le_bytes([req[4], req[5]]);
         let rsp_sid = u16::from_le_bytes([body[0], body[1]]);
@@ -353,7 +371,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             &th1,
         )?;
         let expected_verify = hmac_sha256(&sess.rsp_finished_key, &th1)?;
-        if resp[before_verify..total] != expected_verify {
+        if !ct_eq(&resp[before_verify..total], &expected_verify) {
             return Err(Error::VerifyDataMismatch);
         }
         t.update(&resp[before_verify..total]);
@@ -365,10 +383,11 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
 
     /// Build an encrypted `FINISH` secured record into `secured_out`.
     pub fn build_secured_finish(&mut self, secured_out: &mut [u8]) -> Result<usize, Error> {
-        let t = self.kx_transcript.as_mut().ok_or(Error::SessionInactive)?;
+        let t_orig = self.kx_transcript.as_ref().ok_or(Error::SessionInactive)?;
         let sess = self.session.as_mut().ok_or(Error::SessionInactive)?;
 
         let prefix_len = usize::from(self.transport == SessionTransport::Mctp);
+        let mut t = t_orig.clone();
         let mut pt = [0u8; 40];
         if prefix_len == 1 {
             pt[0] = fstart_mctp::MessageType::Spdm as u8;
@@ -381,11 +400,14 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         spdm[4..4 + HASH_LEN].copy_from_slice(&verify_data);
         t.update(&verify_data);
 
-        sess.encrypt(&pt[..prefix_len + 4 + HASH_LEN], secured_out)
+        let n = sess.encrypt(&pt[..prefix_len + 4 + HASH_LEN], secured_out)?;
+        self.kx_transcript = Some(t);
+        Ok(n)
     }
 
-    /// Decrypt and verify `FINISH_RSP`, transitioning the session to application
-    /// data keys.
+    /// Decrypt and verify `FINISH_RSP` (4 bytes when `HANDSHAKE_IN_THE_CLEAR_CAP`
+    /// is not negotiated, DSP0274 Table 60), transitioning the session to
+    /// application data keys.
     pub fn handle_secured_finish_rsp(&mut self, secured_rsp: &[u8]) -> Result<(), Error> {
         let mut t = self.kx_transcript.take().ok_or(Error::SessionInactive)?;
         let sess = self.session.as_mut().ok_or(Error::SessionInactive)?;
@@ -393,21 +415,18 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let mut pt = [0u8; 128];
         let pt_len = sess.decrypt(secured_rsp, &mut pt)?;
         let prefix_len = usize::from(self.transport == SessionTransport::Mctp);
-        if pt_len < prefix_len + 4 + HASH_LEN {
+        if pt_len < prefix_len + 4 {
             return Err(Error::ShortBuffer);
         }
+        if prefix_len == 1 && (pt[0] & 0x7F) != fstart_mctp::MessageType::Spdm as u8 {
+            return Err(Error::InvalidMessage);
+        }
         let spdm = &pt[prefix_len..pt_len];
-        let (hdr, body) = SpdmHeader::parse(spdm)?;
-        if hdr.code != SpdmCode::FinishRsp as u8 || body.len() < HASH_LEN {
+        let (hdr, _body) = SpdmHeader::parse(spdm)?;
+        if hdr.code != SpdmCode::FinishRsp as u8 {
             return Err(Error::InvalidMessage);
         }
         t.update(&spdm[..4]);
-        let th_rsp_fin = t.finalize_clone();
-        let expected = hmac_sha256(&sess.rsp_finished_key, &th_rsp_fin)?;
-        if body[..HASH_LEN] != expected {
-            return Err(Error::VerifyDataMismatch);
-        }
-        t.update(&body[..HASH_LEN]);
         let th2 = t.finalize_clone();
         sess.derive_data_keys(&th2)?;
         Ok(())
@@ -429,7 +448,20 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             pt[0] = fstart_mctp::MessageType::Spdm as u8;
         }
         pt[prefix_len..prefix_len + 4].copy_from_slice(&[self.version, code as u8, param1, param2]);
-        sess.encrypt(&pt[..prefix_len + 4], secured_out)
+        let n = sess.encrypt(&pt[..prefix_len + 4], secured_out)?;
+        // DSP0274 §10.21.1: for UpdateAllKeys (param1 == 2), the responder
+        // encrypts KEY_UPDATE_ACK with its NEW key, so ratchet rsp_keys now.
+        if code == SpdmCode::KeyUpdate {
+            match param1 {
+                1 => sess.req_keys.ratchet(self.version)?,
+                2 => {
+                    sess.req_keys.ratchet(self.version)?;
+                    sess.rsp_keys.ratchet(self.version)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(n)
     }
 
     /// Decrypt and validate an in-session ACK (`HEARTBEAT_ACK`, `KEY_UPDATE_ACK`,
@@ -446,20 +478,14 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if pt_len < prefix_len + 4 {
             return Err(Error::ShortBuffer);
         }
+        if prefix_len == 1 && (pt[0] & 0x7F) != fstart_mctp::MessageType::Spdm as u8 {
+            return Err(Error::InvalidMessage);
+        }
         let (hdr, _) = SpdmHeader::parse(&pt[prefix_len..pt_len])?;
         if hdr.code != expected_code as u8 {
             return Err(Error::InvalidMessage);
         }
-        if expected_code == SpdmCode::KeyUpdateAck {
-            match hdr.param1 {
-                1 => sess.req_keys.ratchet(self.version)?,
-                2 => {
-                    sess.req_keys.ratchet(self.version)?;
-                    sess.rsp_keys.ratchet(self.version)?;
-                }
-                _ => {}
-            }
-        } else if expected_code == SpdmCode::EndSessionAck {
+        if expected_code == SpdmCode::EndSessionAck {
             sess.active = false;
             self.session = None;
         }

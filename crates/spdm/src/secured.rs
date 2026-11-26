@@ -18,6 +18,27 @@ use crate::crypto::{
 use fstart_mctp::{MctpChannel, MessageType, ReceivedMessage};
 use zeroize::Zeroize;
 
+/// DSP0277 §6.1 `OpaqueDataFmt1` SupportedVersion list (advertising DSP0277 1.1)
+/// sent in `KEY_EXCHANGE`.
+pub const OPAQUE_SUPPORTED_VERSION_1_1: [u8; 16] = [
+    0x01, 0x00, 0x00, 0x00, // TotalElements=1, Reserved[3]=0
+    0x00, 0x00, // ID=DMTF(0x00), VendorLen=0
+    0x06, 0x00, // OpaqueElementDataLen=6
+    0x01, 0x01, // SMDataVersion=1, SMDataID=SupportedVersion(1)
+    0x01, 0x00, 0x11, 0x00, // VersionCount=1, Version=1.1 (0x1100 LE) + 1B pad
+    0x00, 0x00, // 4-byte alignment padding
+];
+
+/// DSP0277 §6.1 `OpaqueDataFmt1` VersionSelection (selecting DSP0277 1.1)
+/// sent in `KEY_EXCHANGE_RSP`.
+pub const OPAQUE_SELECTED_VERSION_1_1: [u8; 12] = [
+    0x01, 0x00, 0x00, 0x00, // TotalElements=1, Reserved[3]=0
+    0x00, 0x00, // ID=DMTF(0x00), VendorLen=0
+    0x04, 0x00, // OpaqueElementDataLen=4
+    0x01, 0x00, // SMDataVersion=1, SMDataID=VersionSelection(0)
+    0x00, 0x11, // SelectedVersion=1.1 (0x1100 LE)
+];
+
 /// Encapsulation rules that differ between MCTP (DSP0276) and PCIe DOE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionTransport {
@@ -38,6 +59,15 @@ impl SessionTransport {
     pub const fn header_len(self) -> usize {
         4 + self.seq_num_wire_len() + 2
     }
+}
+
+/// Lifecycle phase of a [`SecuredSession`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPhase {
+    /// Handshake traffic keys active (only `FINISH` / `FINISH_RSP` permitted).
+    Handshake,
+    /// Application data traffic keys active (PLDM, HEARTBEAT, KEY_UPDATE, END_SESSION).
+    Application,
 }
 
 /// Directional traffic key, base IV, and 64-bit monotonic sequence counter.
@@ -82,6 +112,7 @@ impl DirectionKeys {
             &mut next_secret,
         )?;
         *self = Self::derive(version, next_secret)?;
+        next_secret.zeroize();
         Ok(())
     }
 }
@@ -92,6 +123,7 @@ pub struct SecuredSession {
     pub version: u8,
     pub transport: SessionTransport,
     pub is_requester: bool,
+    pub phase: SessionPhase,
     pub handshake_secret: [u8; HASH_LEN],
     pub req_finished_key: [u8; HASH_LEN],
     pub rsp_finished_key: [u8; HASH_LEN],
@@ -146,12 +178,15 @@ impl SecuredSession {
 
         let req_keys = DirectionKeys::derive(version, req_hs)?;
         let rsp_keys = DirectionKeys::derive(version, rsp_hs)?;
+        req_hs.zeroize();
+        rsp_hs.zeroize();
 
         Ok(Self {
             session_id,
             version,
             transport,
             is_requester,
+            phase: SessionPhase::Handshake,
             handshake_secret,
             req_finished_key,
             rsp_finished_key,
@@ -162,7 +197,7 @@ impl SecuredSession {
     }
 
     /// Transition from handshake keys to application data keys after `FINISH_RSP`
-    /// (DSP0277 §6.3).
+    /// (DSP0277 §6.3 / DSP0274 Table 89).
     pub fn derive_data_keys(&mut self, th2: &[u8; HASH_LEN]) -> Result<(), Error> {
         let mut salt1 = [0u8; HASH_LEN];
         hkdf_expand_spdm(
@@ -173,27 +208,36 @@ impl SecuredSession {
             &mut salt1,
         )?;
         let zero_ikm = [0u8; HASH_LEN];
-        let master_secret = hkdf_extract_sha256(&salt1, &zero_ikm);
+        let mut master_secret = hkdf_extract_sha256(&salt1, &zero_ikm);
+        salt1.zeroize();
 
         let mut req_data = [0u8; HASH_LEN];
         let mut rsp_data = [0u8; HASH_LEN];
+        // DSP0274 Table 89: exact labels are "req app data" and "rsp app data".
         hkdf_expand_spdm(
             &master_secret,
             self.version,
-            b"req data",
+            b"req app data",
             Some(th2),
             &mut req_data,
         )?;
         hkdf_expand_spdm(
             &master_secret,
             self.version,
-            b"rsp data",
+            b"rsp app data",
             Some(th2),
             &mut rsp_data,
         )?;
+        master_secret.zeroize();
 
         self.req_keys = DirectionKeys::derive(self.version, req_data)?;
         self.rsp_keys = DirectionKeys::derive(self.version, rsp_data)?;
+        req_data.zeroize();
+        rsp_data.zeroize();
+        self.handshake_secret.zeroize();
+        self.req_finished_key.zeroize();
+        self.rsp_finished_key.zeroize();
+        self.phase = SessionPhase::Application;
         Ok(())
     }
 
@@ -226,7 +270,6 @@ impl SecuredSession {
             out[4..6].copy_from_slice(&(record_len as u16).to_le_bytes());
         }
 
-        // Plaintext = [app_data_len_le16, app_data...]
         out[hdr_len..hdr_len + 2].copy_from_slice(&(app_data.len() as u16).to_le_bytes());
         out[hdr_len + 2..hdr_len + pt_len].copy_from_slice(app_data);
 
@@ -268,16 +311,22 @@ impl SecuredSession {
             u16::from_le_bytes([record[4], record[5]]) as usize
         };
 
-        if record.len() != hdr_len + rec_len || rec_len < 2 + AEAD_TAG_LEN {
+        let expected_len = hdr_len + rec_len;
+        let len_ok = if self.transport == SessionTransport::Doe {
+            // PCIe DOE pads data objects to 4-byte DW boundaries (0..3 pad bytes).
+            record.len() >= expected_len && record.len() - expected_len <= 3
+        } else {
+            record.len() == expected_len
+        };
+        if !len_ok || rec_len < 2 + AEAD_TAG_LEN {
             return Err(Error::InvalidMessage);
         }
         let pt_len = rec_len - AEAD_TAG_LEN;
         let aad = &record[..hdr_len];
         let ct_slice = &record[hdr_len..hdr_len + pt_len];
         let mut tag = [0u8; AEAD_TAG_LEN];
-        tag.copy_from_slice(&record[hdr_len + pt_len..]);
+        tag.copy_from_slice(&record[hdr_len + pt_len..expected_len]);
 
-        // Decrypt in caller buffer (temporary space needs pt_len; we shift 2B left).
         if out.len() < pt_len {
             return Err(Error::BufferTooSmall);
         }
@@ -311,9 +360,13 @@ impl<C: MctpChannel> MctpChannel for SecuredMctpChannel<'_, C> {
         reply_tag: Option<u8>,
         payload: &[u8],
     ) -> Result<u8, fstart_mctp::Error> {
-        // DSP0276: inner application data begins with MCTP message type byte.
-        let mut app = [0u8; 1024];
-        let mut enc = [0u8; 1088];
+        if (msg_type & 0x7F) == MessageType::SecuredMsg as u8
+            || self.session.phase != SessionPhase::Application
+        {
+            return Err(fstart_mctp::Error::InvalidHeader);
+        }
+        let mut app = [0u8; 512];
+        let mut enc = [0u8; 576];
         if 1 + payload.len() > app.len() {
             return Err(fstart_mctp::Error::BufferTooSmall);
         }
@@ -335,12 +388,15 @@ impl<C: MctpChannel> MctpChannel for SecuredMctpChannel<'_, C> {
         &mut self,
         buf: &'b mut [u8],
     ) -> Result<ReceivedMessage<'b>, fstart_mctp::Error> {
-        let mut enc_buf = [0u8; 1088];
+        if self.session.phase != SessionPhase::Application {
+            return Err(fstart_mctp::Error::InvalidHeader);
+        }
+        let mut enc_buf = [0u8; 576];
         let msg = self.inner.recv_message(&mut enc_buf)?;
         if msg.msg_type != MessageType::SecuredMsg as u8 {
             return Err(fstart_mctp::Error::InvalidHeader);
         }
-        let mut dec_buf = [0u8; 1024];
+        let mut dec_buf = [0u8; 512];
         let dlen = self
             .session
             .decrypt(msg.payload, &mut dec_buf)

@@ -1,10 +1,10 @@
 //! Sans-IO SPDM 1.2 Responder state machine (DSP0274).
 
 use crate::crypto::{
-    EphemeralP256, HASH_LEN, P256_PUB_LEN, Rng, SIG_LEN, Sha256Transcript, SpdmKeyPair,
+    EphemeralP256, HASH_LEN, P256_PUB_LEN, Rng, SIG_LEN, Sha256Transcript, SpdmKeyPair, ct_eq,
     hmac_sha256, sha256, spdm12_signing_digest,
 };
-use crate::secured::{SecuredSession, SessionTransport};
+use crate::secured::{OPAQUE_SELECTED_VERSION_1_1, SecuredSession, SessionPhase, SessionTransport};
 use crate::{
     AEAD_AES_256_GCM, BASE_ASYM_ECDSA_ECC_NIST_P256, BASE_HASH_SHA_256, CAP_CERT, CAP_CHAL,
     CAP_ENCRYPT, CAP_HBEAT, CAP_KEY_EX, CAP_KEY_UPD, CAP_MAC, CAP_MEAS_SIG, DHE_SECP256R1, Error,
@@ -30,9 +30,12 @@ pub struct SpdmResponder<const MAX_CERT: usize = 512, const MAX_MEAS: usize = 4>
     cert_chain_len: usize,
     cert_chain_hash: [u8; HASH_LEN],
     measurements: [Option<MeasurementBlock>; MAX_MEAS],
-    /// VCA transcript (`GET_VERSION..ALGORITHMS`), cloned into challenge,
-    /// measurement, and key-exchange transcripts per SPDM 1.2.
+    /// VCA transcript (`GET_VERSION..ALGORITHMS`), cloned into measurement and
+    /// key-exchange transcripts per SPDM 1.2.
     vca: Sha256Transcript,
+    /// M1/M2 base transcript: VCA || GET_DIGESTS/DIGESTS || GET_CERTIFICATE/CERTIFICATE
+    /// per DSP0274 Table 36.
+    m_transcript: Sha256Transcript,
     /// Active key-exchange transcript (VCA || cert_hash || KEY_EXCHANGE || KEY_EXCHANGE_RSP).
     kx_transcript: Option<Sha256Transcript>,
     /// Active secured session (created at KEY_EXCHANGE, promoted to data keys at FINISH).
@@ -69,6 +72,7 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
             cert_chain_hash,
             measurements: [None; MAX_MEAS],
             vca: Sha256Transcript::new(),
+            m_transcript: Sha256Transcript::new(),
             kx_transcript: None,
             session: None,
             next_rsp_session_id: 0x0001,
@@ -106,8 +110,10 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
             x if x == SpdmCode::NegotiateAlgorithms as u8 => {
                 self.on_negotiate_algorithms(req, hdr, body, resp)
             }
-            x if x == SpdmCode::GetDigests as u8 => self.on_get_digests(hdr, resp),
-            x if x == SpdmCode::GetCertificate as u8 => self.on_get_certificate(hdr, body, resp),
+            x if x == SpdmCode::GetDigests as u8 => self.on_get_digests(req, hdr, resp),
+            x if x == SpdmCode::GetCertificate as u8 => {
+                self.on_get_certificate(req, hdr, body, resp)
+            }
             x if x == SpdmCode::Challenge as u8 => self.on_challenge(req, hdr, body, resp, rng),
             x if x == SpdmCode::GetMeasurements as u8 => {
                 self.on_get_measurements(req, hdr, body, resp, rng)
@@ -139,8 +145,12 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         if pt_len < prefix_len + SpdmHeader::LEN {
             return Err(Error::ShortBuffer);
         }
+        if prefix_len == 1 && (pt_in[0] & 0x7F) != fstart_mctp::MessageType::Spdm as u8 {
+            return Err(Error::InvalidMessage);
+        }
         let spdm_req = &pt_in[prefix_len..pt_len];
         let (hdr, body) = SpdmHeader::parse(spdm_req)?;
+        let phase = self.session.as_ref().ok_or(Error::SessionInactive)?.phase;
 
         let mut pt_out = [0u8; 512];
         if prefix_len == 1 {
@@ -149,17 +159,23 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         let spdm_out = &mut pt_out[prefix_len..];
 
         let mut ratchet_req = false;
-        let mut ratchet_rsp = false;
+        let mut ratchet_rsp_before_ack = false;
         let mut promote_th2: Option<[u8; HASH_LEN]> = None;
         let mut close_session = false;
 
         let rsp_len = match hdr.code {
             x if x == SpdmCode::Finish as u8 => {
+                if phase != SessionPhase::Handshake {
+                    return Err(Error::InvalidMessage);
+                }
                 let (n, th2) = self.on_finish(spdm_req, hdr, body, spdm_out)?;
                 promote_th2 = Some(th2);
                 n
             }
             x if x == SpdmCode::Heartbeat as u8 => {
+                if phase != SessionPhase::Application {
+                    return Err(Error::SessionInactive);
+                }
                 if spdm_out.len() < 4 {
                     return Err(Error::BufferTooSmall);
                 }
@@ -167,12 +183,17 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
                 4
             }
             x if x == SpdmCode::KeyUpdate as u8 => {
-                // param1: 1 = UpdateKey (req only), 2 = UpdateAllKeys (req + rsp), 3 = VerifyNewKey
+                if phase != SessionPhase::Application {
+                    return Err(Error::SessionInactive);
+                }
+                // DSP0274 §10.21.1:
+                // param1: 1 = UpdateKey (req only), 2 = UpdateAllKeys (req + rsp BEFORE ACK),
+                // 3 = VerifyNewKey.
                 match hdr.param1 {
                     1 => ratchet_req = true,
                     2 => {
                         ratchet_req = true;
-                        ratchet_rsp = true;
+                        ratchet_rsp_before_ack = true;
                     }
                     3 => {}
                     _ => {
@@ -196,6 +217,9 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
                 4
             }
             x if x == SpdmCode::EndSession as u8 => {
+                if phase != SessionPhase::Application {
+                    return Err(Error::SessionInactive);
+                }
                 close_session = true;
                 if spdm_out.len() < 4 {
                     return Err(Error::BufferTooSmall);
@@ -208,16 +232,14 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
 
         let enc_len = {
             let sess = self.session.as_mut().ok_or(Error::SessionInactive)?;
-            // For KEY_UPDATE (UpdateKey / UpdateAllKeys), the requester key
-            // updates before the next requester message; response is encrypted
-            // with the current responder key, then responder key updates.
             if ratchet_req {
                 sess.req_keys.ratchet(self.version)?;
             }
-            let n = sess.encrypt(&pt_out[..prefix_len + rsp_len], secured_resp)?;
-            if ratchet_rsp {
+            // DSP0274 §10.21.1: UpdateAllKeys encrypts KEY_UPDATE_ACK with the NEW rsp key.
+            if ratchet_rsp_before_ack {
                 sess.rsp_keys.ratchet(self.version)?;
             }
+            let n = sess.encrypt(&pt_out[..prefix_len + rsp_len], secured_resp)?;
             if let Some(th2) = promote_th2 {
                 sess.derive_data_keys(&th2)?;
             }
@@ -244,9 +266,11 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         if resp.len() < 8 {
             return Err(Error::BufferTooSmall);
         }
-        // Reset VCA transcript on GET_VERSION (DSP0274 §10.3).
+        // Reset VCA, M1/M2 transcript, and any active session on GET_VERSION (DSP0274 §10.2).
         self.vca = Sha256Transcript::new();
         self.vca.update(req);
+        self.kx_transcript = None;
+        self.session = None;
 
         resp[0..4].copy_from_slice(&[SPDM_VERSION_1_0, SpdmCode::Version as u8, 0, 0]);
         resp[4] = 0; // reserved
@@ -254,6 +278,7 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         // Version 1.2.0.0 encoded as u16 LE: 0x1200 -> [0x00, 0x12]
         resp[6..8].copy_from_slice(&0x1200u16.to_le_bytes());
         self.vca.update(&resp[..8]);
+        self.m_transcript = self.vca.clone();
         Ok(8)
     }
 
@@ -332,10 +357,16 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         resp[46..48].copy_from_slice(&KEY_SCHEDULE_SPDM.to_le_bytes());
 
         self.vca.update(&resp[..48]);
+        self.m_transcript = self.vca.clone();
         Ok(48)
     }
 
-    fn on_get_digests(&self, hdr: SpdmHeader, resp: &mut [u8]) -> Result<usize, Error> {
+    fn on_get_digests(
+        &mut self,
+        req: &[u8],
+        hdr: SpdmHeader,
+        resp: &mut [u8],
+    ) -> Result<usize, Error> {
         if hdr.version != self.version {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
@@ -346,11 +377,15 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         // param2 = slot mask (slot 0 populated = 0x01)
         resp[0..4].copy_from_slice(&[self.version, SpdmCode::Digests as u8, 0, 0x01]);
         resp[4..total].copy_from_slice(&self.cert_chain_hash);
+        // DSP0274 Table 36: M1/M2 includes GET_DIGESTS and DIGESTS.
+        self.m_transcript.update(req);
+        self.m_transcript.update(&resp[..total]);
         Ok(total)
     }
 
     fn on_get_certificate(
-        &self,
+        &mut self,
+        req: &[u8],
         hdr: SpdmHeader,
         body: &[u8],
         resp: &mut [u8],
@@ -374,6 +409,9 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         resp[4..6].copy_from_slice(&(portion as u16).to_le_bytes());
         resp[6..8].copy_from_slice(&(remainder as u16).to_le_bytes());
         resp[8..total].copy_from_slice(&self.cert_chain[offset..offset + portion]);
+        // DSP0274 Table 36: M1/M2 includes every GET_CERTIFICATE / CERTIFICATE pair.
+        self.m_transcript.update(req);
+        self.m_transcript.update(&resp[..total]);
         Ok(total)
     }
 
@@ -400,7 +438,7 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         rng.fill_bytes(&mut resp[36..68]);
         resp[68..70].copy_from_slice(&0u16.to_le_bytes()); // opaque_data_len = 0
 
-        let mut t = self.vca.clone();
+        let mut t = self.m_transcript.clone();
         t.update(req);
         t.update(&resp[..unsigned_len]);
         let m1_hash = t.finalize_clone();
@@ -476,9 +514,17 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         resp: &mut [u8],
         rng: &mut R,
     ) -> Result<usize, Error> {
+        // Enforce single-session limit.
+        if self.session.is_some() {
+            return write_error(self.version, SpdmErrorCode::Busy, 0, resp);
+        }
         // KEY_EXCHANGE body: ReqSessionID(2) + SessionPolicy(1) + Reserved(1) +
         // RandomData(32) + ExchangeData(64) + OpaqueLen(2) + Opaque(...)
         if hdr.version != self.version || body.len() < 102 {
+            return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
+        }
+        let req_opaque_len = u16::from_le_bytes([body[100], body[101]]) as usize;
+        if body.len() < 102 + req_opaque_len {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
         let req_session_id = u16::from_le_bytes([body[0], body[1]]);
@@ -494,8 +540,9 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         let session_id = (u32::from(rsp_session_id) << 16) | u32::from(req_session_id);
 
         // KEY_EXCHANGE_RSP: header(4) + RspSessionID(2) + MutAuth(1=0) + SlotID(1=0) +
-        // RandomData(32) + ExchangeData(64) + OpaqueLen(2=0) + Sig(64) + VerifyData(32) = 202B
-        let before_sig = 4 + 2 + 1 + 1 + 32 + P256_PUB_LEN + 2;
+        // RandomData(32) + ExchangeData(64) + OpaqueLen(2) + Opaque(12) + Sig(64) + VerifyData(32)
+        let opaque = &OPAQUE_SELECTED_VERSION_1_1;
+        let before_sig = 4 + 2 + 1 + 1 + 32 + P256_PUB_LEN + 2 + opaque.len();
         let before_verify = before_sig + SIG_LEN;
         let total = before_verify + HASH_LEN;
         if resp.len() < total {
@@ -508,7 +555,8 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         resp[7] = 0; // SlotIDParam = 0
         rng.fill_bytes(&mut resp[8..40]);
         resp[40..104].copy_from_slice(eph.public_xy());
-        resp[104..106].copy_from_slice(&0u16.to_le_bytes()); // OpaqueLen = 0
+        resp[104..106].copy_from_slice(&(opaque.len() as u16).to_le_bytes());
+        resp[106..before_sig].copy_from_slice(opaque);
 
         // Transcript up to signature: VCA || cert_chain_hash || KEY_EXCHANGE || KEY_EXCHANGE_RSP[..before_sig]
         let mut t = self.vca.clone();
@@ -560,24 +608,20 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
 
         let sess = self.session.as_ref().ok_or(Error::SessionInactive)?;
         let expected_req_verify = hmac_sha256(&sess.req_finished_key, &th_req_fin)?;
-        if body[..HASH_LEN] != expected_req_verify {
+        if !ct_eq(&body[..HASH_LEN], &expected_req_verify) {
             return Err(Error::VerifyDataMismatch);
         }
         t.update(&body[..HASH_LEN]);
 
-        // FINISH_RSP = header(4) + ResponderVerifyData(32)
-        let total = 4 + HASH_LEN;
-        if resp.len() < total {
+        // DSP0274 Table 60: when HANDSHAKE_IN_THE_CLEAR_CAP is not set,
+        // encrypted FINISH_RSP is 4 bytes only (no ResponderVerifyData).
+        if resp.len() < 4 {
             return Err(Error::BufferTooSmall);
         }
         resp[0..4].copy_from_slice(&[self.version, SpdmCode::FinishRsp as u8, 0, 0]);
         t.update(&resp[..4]);
-        let th_rsp_fin = t.finalize_clone();
-        let rsp_verify = hmac_sha256(&sess.rsp_finished_key, &th_rsp_fin)?;
-        resp[4..total].copy_from_slice(&rsp_verify);
-        t.update(&rsp_verify);
 
         let th2 = t.finalize_clone();
-        Ok((total, th2))
+        Ok((4, th2))
     }
 }

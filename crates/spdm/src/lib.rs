@@ -15,7 +15,7 @@ pub mod secured;
 pub use crypto::{Rng, Sha256Transcript, SpdmKeyPair};
 pub use requester::SpdmRequester;
 pub use responder::{MeasurementBlock, SpdmResponder};
-pub use secured::{SecuredMctpChannel, SecuredSession, SessionTransport};
+pub use secured::{SecuredMctpChannel, SecuredSession, SessionPhase, SessionTransport};
 
 /// SPDM version byte encoding (`major << 4 | minor`).
 pub const SPDM_VERSION_1_0: u8 = 0x10;
