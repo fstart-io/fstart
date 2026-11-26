@@ -14,6 +14,19 @@
 //! | done | `READY` and no command | as ZP | no command | as SSP |
 //! | status | `cmd[15:0]`, the header status or a changed header size is an error (AGESA Naples ignores them) | as ZP | copied into the buffer header, `!= 0` is an error | `cmd[15:0] != 0` is an error |
 //!
+//! The WH PSP (Venice, [`Variant::Wh`]) has its mailbox at `PSP_BAR +
+//! 0x1_0970` (SMN `0x0381_0970`): the vendor modules' profile table maps
+//! CPUIDs to the C2P base and has no WH row, so they use their default
+//! base `0x1_0900` (Dell AmdPspDxeV2Wh `0x26a40`, MD25 `0x16550`). Its
+//! sender (Dell AmdPspDxeV2Wh `0x10390`, MD25 `0x9354`, decompiler and
+//! instruction-checked IDs) refuses while bit 30 (recovery) or bit 28
+//! (an asynchronous command in progress) is set, waits for `READY`, writes
+//! `id << 16 | old & 0x7f00_0000` (bits 30:24 kept), waits for
+//! `cmd[23:16] == 0` and copies `cmd[15:0]` into the header status;
+//! non-zero is an error. Its PEI checks bit 29 (reset required, with bit
+//! 30 clear) once `READY` shows and warm-resets ([`Mailbox::reset_required`],
+//! AmdPspPeiV2Wh `0xe4fde0`).
+//!
 //! Every poll checks for an all-ones register and the recovery firmware.
 //! [`Session`] owns a mailbox and its buffer for a boot flow.
 //!
@@ -40,9 +53,17 @@ register_bitfields![u32,
         STATUS OFFSET(0) NUMBITS(16) [],
         /// Command id; the PSP clears it when done.
         COMMAND OFFSET(16) NUMBITS(8) [],
-        /// Naples: AGESA waits for this or `RECOVERY` before the first
-        /// command; set in normal mode, meaning not public (PSP_APOB §7).
-        NORMAL OFFSET(29) NUMBITS(1) [],
+        /// WH: bits 30:24, which the vendor's sender writes back with the
+        /// command.
+        PRESERVED OFFSET(24) NUMBITS(7) [],
+        /// WH: an asynchronous command is in progress; the vendor sends
+        /// nothing while it is set.
+        ASYNC_IN_PROGRESS OFFSET(28) NUMBITS(1) [],
+        /// Bit 29, by generation. Naples: AGESA waits for this or
+        /// `RECOVERY` before the first command; set in normal mode, meaning
+        /// not public (PSP_APOB §7). WH: with `RECOVERY` clear, the PSP asks
+        /// for a warm reset before the boot goes on.
+        NORMAL_OR_RESET_REQUIRED OFFSET(29) NUMBITS(1) [],
         /// The PSP booted its recovery firmware; no commands are accepted.
         RECOVERY OFFSET(30) NUMBITS(1) [],
         /// The PSP accepts a command.
@@ -57,6 +78,32 @@ pub const C2P_MMIO_OFFSET: u64 = 0x1_0570;
 /// (Oxide's public Milan driver, PSP_APOB §3.1). AGESA never uses it; it is
 /// proven for Milan only, Naples and Rome are unproven.
 pub const C2P_SMN: SmnAddr = 0x0381_0570;
+
+/// The WH command register in the PSP BAR: `0x1_0900 + 28 * 4` (see the
+/// module documentation).
+pub const C2P_MMIO_OFFSET_WH: u64 = 0x1_0970;
+
+/// SMN address of the WH command register, which the vendor's SMN path
+/// (HSTI) reads (`0x0381_0970/74/78`).
+pub const C2P_SMN_WH: SmnAddr = 0x0381_0970;
+
+impl Variant {
+    /// Offset of the C2P command register in the PSP BAR.
+    pub const fn c2p_mmio_offset(self) -> u64 {
+        match self {
+            Self::Zp | Self::Rv | Self::Ssp | Self::Gn => C2P_MMIO_OFFSET,
+            Self::Wh => C2P_MMIO_OFFSET_WH,
+        }
+    }
+
+    /// SMN address of the C2P command register.
+    pub const fn c2p_smn(self) -> SmnAddr {
+        match self {
+            Self::Zp | Self::Rv | Self::Ssp | Self::Gn => C2P_SMN,
+            Self::Wh => C2P_SMN_WH,
+        }
+    }
+}
 
 /// The three mailbox dwords.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,13 +167,14 @@ pub struct MmioTransport {
 }
 
 impl MmioTransport {
-    /// The mailbox of the PSP whose BAR is at `bar`.
+    /// The mailbox of the `generation` PSP whose BAR is at `bar` (the
+    /// generation places it: [`Variant::c2p_mmio_offset`]).
     ///
     /// # Safety
     /// `bar` is an enabled PSP BAR mapped uncached and identity mapped.
-    pub const unsafe fn new(bar: u64) -> Self {
+    pub const unsafe fn new(bar: u64, generation: Variant) -> Self {
         Self {
-            cmd: (bar + C2P_MMIO_OFFSET) as usize,
+            cmd: (bar + generation.c2p_mmio_offset()) as usize,
         }
     }
 }
@@ -148,25 +196,30 @@ impl C2pTransport for MmioTransport {
 #[derive(Clone, Copy)]
 pub struct SmnTransport<P> {
     smn: Smn<P>,
+    cmd: SmnAddr,
 }
 
 impl<P: ConfigRegionAccess> SmnTransport<P> {
-    /// The mailbox of the socket whose SMN `smn` reaches.
+    /// The mailbox of the `generation` PSP of the socket whose SMN `smn`
+    /// reaches ([`Variant::c2p_smn`]).
     ///
     /// # Safety
     /// The caller owns the SMN index/data pair while the transport is used.
-    pub const unsafe fn new(smn: Smn<P>) -> Self {
-        Self { smn }
+    pub const unsafe fn new(smn: Smn<P>, generation: Variant) -> Self {
+        Self {
+            smn,
+            cmd: generation.c2p_smn(),
+        }
     }
 }
 
 impl<P: ConfigRegionAccess> C2pTransport for SmnTransport<P> {
     fn read(&self, reg: C2pReg) -> u32 {
-        self.smn.read32(C2P_SMN + reg as u32)
+        self.smn.read32(self.cmd + reg as u32)
     }
 
     fn write(&self, reg: C2pReg, value: u32) {
-        self.smn.write32(C2P_SMN + reg as u32, value)
+        self.smn.write32(self.cmd + reg as u32, value)
     }
 }
 
@@ -203,6 +256,9 @@ pub enum PspError {
     Finished,
     /// The [`Session`] storage isn't below 4 GiB.
     Placement,
+    /// WH: an asynchronous command is in progress
+    /// ([`C2P_CMD::ASYNC_IN_PROGRESS`]); nothing was sent.
+    Busy,
 }
 
 impl PspError {
@@ -229,6 +285,7 @@ impl PspError {
             Self::Poisoned => ("poisoned by an earlier failure", 0),
             Self::Finished => ("after BootDone", 0),
             Self::Placement => ("buffer placement", 0),
+            Self::Busy => ("asynchronous command in progress", 0),
         }
     }
 }
@@ -244,7 +301,32 @@ pub struct Mailbox<T> {
     timeout_us: u64,
 }
 
+impl Mailbox<MmioTransport> {
+    /// The C2P mailbox of the `generation` PSP whose BAR is at `bar`: the
+    /// transport at the generation's offset.
+    ///
+    /// # Safety
+    /// As [`MmioTransport::new`].
+    pub const unsafe fn mmio(bar: u64, generation: Variant) -> Self {
+        // SAFETY: the caller's contract.
+        Self::new(unsafe { MmioTransport::new(bar, generation) }, generation)
+    }
+}
+
+impl<P: ConfigRegionAccess> Mailbox<SmnTransport<P>> {
+    /// The C2P mailbox of the `generation` PSP of the socket `smn` reaches.
+    ///
+    /// # Safety
+    /// As [`SmnTransport::new`].
+    pub const unsafe fn smn(smn: Smn<P>, generation: Variant) -> Self {
+        // SAFETY: the caller's contract.
+        Self::new(unsafe { SmnTransport::new(smn, generation) }, generation)
+    }
+}
+
 impl<T: C2pTransport> Mailbox<T> {
+    /// A mailbox over `transport`, which must be `generation`'s (the
+    /// generation places the register: [`Self::mmio`], [`Self::smn`]).
     pub const fn new(transport: T, generation: Variant) -> Self {
         Self {
             transport,
@@ -301,8 +383,25 @@ impl<T: C2pTransport> Mailbox<T> {
     fn recovery(&self, value: u32) -> bool {
         let recovery = C2P_CMD::RECOVERY.is_set(value);
         match self.generation {
-            Variant::Zp => recovery && !C2P_CMD::NORMAL.is_set(value),
-            Variant::Rv | Variant::Ssp | Variant::Gn => recovery,
+            Variant::Zp => recovery && !C2P_CMD::NORMAL_OR_RESET_REQUIRED.is_set(value),
+            Variant::Rv | Variant::Ssp | Variant::Gn | Variant::Wh => recovery,
+        }
+    }
+
+    /// WH: whether the PSP asks for a warm reset before the boot goes on
+    /// (bit 29 with `RECOVERY` clear, once `READY` shows), as the vendor's
+    /// PEI checks it (AmdPspPeiV2Wh `0xe4fde0`, then a warm
+    /// reset, `0xe4fef0`). Other generations: `Ok(false)`.
+    pub fn reset_required(&self, timer: &impl Timer) -> Result<bool, PspError> {
+        if self.generation != Variant::Wh {
+            return Ok(false);
+        }
+        // `wait` fails on the recovery firmware, which the vendor treats
+        // as no reset.
+        match self.wait(timer, Wait::Ready, |v| C2P_CMD::READY.is_set(v)) {
+            Ok(value) => Ok(C2P_CMD::NORMAL_OR_RESET_REQUIRED.is_set(value)),
+            Err(PspError::Recovery) => Ok(false),
+            Err(error) => Err(error),
         }
     }
 
@@ -311,11 +410,19 @@ impl<T: C2pTransport> Mailbox<T> {
     /// native MJ11 flow saw nothing else).
     fn precheck(&self, timer: &impl Timer) -> Result<(), PspError> {
         let any = |v| {
-            C2P_CMD::NORMAL.is_set(v) || C2P_CMD::RECOVERY.is_set(v) || C2P_CMD::READY.is_set(v)
+            C2P_CMD::NORMAL_OR_RESET_REQUIRED.is_set(v)
+                || C2P_CMD::RECOVERY.is_set(v)
+                || C2P_CMD::READY.is_set(v)
         };
         match self.generation {
             Variant::Zp => self.wait(timer, Wait::Boot, any),
             Variant::Rv | Variant::Ssp | Variant::Gn => self.wait(timer, Wait::Boot, |_| true),
+            // The vendor refuses outright while an asynchronous command
+            // runs.
+            Variant::Wh => match self.wait(timer, Wait::Boot, |_| true)? {
+                v if C2P_CMD::ASYNC_IN_PROGRESS.is_set(v) => Err(PspError::Busy),
+                v => Ok(v),
+            },
         }
         .map(drop)
     }
@@ -330,12 +437,22 @@ impl<T: C2pTransport> Mailbox<T> {
         Reg::<T>::new(&self.transport, C2pReg::BufHi).set((buffer >> 32) as u32);
         // The buffer must be in memory before the PSP sees the command.
         fence(Ordering::SeqCst);
-        // READY is written 0 ("clear the ready bit", GN `ffcf4e08`).
-        self.cmd().write(C2P_CMD::COMMAND.val(id.into()));
+        match self.generation {
+            // READY is written 0 ("clear the ready bit", GN `ffcf4e08`).
+            Variant::Zp | Variant::Rv | Variant::Ssp | Variant::Gn => {
+                self.cmd().write(C2P_CMD::COMMAND.val(id.into()))
+            }
+            // WH: READY and the status written 0, bits 30:24 kept.
+            Variant::Wh => {
+                let kept = self.cmd().read(C2P_CMD::PRESERVED);
+                self.cmd()
+                    .write(C2P_CMD::PRESERVED.val(kept) + C2P_CMD::COMMAND.val(id.into()))
+            }
+        }
         // The native RV/ZP flows also wait for READY again.
         let value = match self.generation {
             Variant::Rv | Variant::Zp => self.wait(timer, Wait::Done, ready)?,
-            Variant::Ssp | Variant::Gn => {
+            Variant::Ssp | Variant::Gn | Variant::Wh => {
                 self.wait(timer, Wait::Done, |v| C2P_CMD::COMMAND.read(v) == 0)?
             }
         };
@@ -375,7 +492,8 @@ impl<T: C2pTransport> Mailbox<T> {
             status,
         };
         match self.generation {
-            Variant::Ssp => {
+            // WH copies the status into the header (`0x10390`).
+            Variant::Ssp | Variant::Wh => {
                 buffer.header.status = status.into();
                 match status {
                     0 => Ok(()),
@@ -496,13 +614,49 @@ impl<T: C2pTransport> Session<T> {
             &mut *buffer
         };
         if C::ID == super::command::BootDone::ID {
-            // Never retried, whatever the outcome.
+            // Never retried, whatever the outcome, unless it was never
+            // sent (the WH PSP was busy).
             self.state = State::Finished;
-            return self.mailbox.send(timer, buffer).map(|()| *buffer);
+            return self
+                .mailbox
+                .send(timer, buffer)
+                .map(|()| *buffer)
+                .inspect_err(|error| {
+                    if *error == PspError::Busy {
+                        self.state = State::Ready;
+                    }
+                });
         }
-        self.mailbox.send(timer, buffer)?;
-        self.state = State::Ready;
+        match self.mailbox.send(timer, buffer) {
+            Ok(()) => self.state = State::Ready,
+            // Not sent: the buffer stays ours.
+            Err(PspError::Busy) => {
+                self.state = State::Ready;
+                return Err(PspError::Busy);
+            }
+            Err(error) => return Err(error),
+        }
         Ok(*buffer)
+    }
+
+    /// [`Self::send`] for a command whose refusal the vendor ignores: an
+    /// answer the PSP completed with an error status (or a refusal before
+    /// sending) leaves the session usable; only an uncertain completion
+    /// ([`PspError::uncertain`]) poisons it.
+    pub fn send_unchecked<C: Command>(
+        &mut self,
+        timer: &impl Timer,
+        request: C,
+    ) -> Result<C2pBuffer<C>, PspError> {
+        let ready = self.state == State::Ready && C::ID != super::command::BootDone::ID;
+        let result = self.send(timer, request);
+        if let Err(error) = &result
+            && ready
+            && !error.uncertain()
+        {
+            self.state = State::Ready;
+        }
+        result
     }
 
     /// The generation of its PSP.
@@ -528,6 +682,8 @@ pub(crate) mod model {
         pub buf: u64,
         /// Commands seen, with the buffer address.
         pub log: Vec<(u8, u64)>,
+        /// The raw values written to the command register.
+        pub writes: Vec<u32>,
         /// Completion: `(command, buffer) -> status`.
         pub handler: Box<dyn Fn(u8, u64) -> u16>,
         /// Polls until `READY` shows (Naples boot wait / busy PSP).
@@ -544,6 +700,7 @@ pub(crate) mod model {
                 cmd,
                 buf: 0,
                 log: Vec::new(),
+                writes: Vec::new(),
                 handler: Box::new(handler),
                 busy_polls: 0,
                 hang: false,
@@ -574,11 +731,12 @@ pub(crate) mod model {
                     let id = (value >> 16) as u8;
                     let buf = p.buf;
                     p.log.push((id, buf));
+                    p.writes.push(value);
                     p.cmd = if p.hang {
                         value
                     } else {
                         let status = (p.handler)(id, buf);
-                        p.cmd & 0x6000_0000 | 0x8000_0000 | u32::from(status)
+                        p.cmd & 0x7000_0000 | 0x8000_0000 | u32::from(status)
                     };
                 }
             }
@@ -780,11 +938,111 @@ mod tests {
     }
 
     #[test]
+    fn wh_mailbox_is_at_0x10970() {
+        assert_eq!(Variant::Wh.c2p_mmio_offset(), 0x1_0970);
+        assert_eq!(Variant::Wh.c2p_smn(), 0x0381_0970);
+        assert_eq!(Variant::Gn.c2p_mmio_offset(), C2P_MMIO_OFFSET);
+        // SAFETY: never dereferenced.
+        let (wh, gn) = unsafe {
+            (
+                Mailbox::mmio(0xd000_0000, Variant::Wh),
+                Mailbox::mmio(0xd000_0000, Variant::Gn),
+            )
+        };
+        assert_eq!(
+            (wh.transport.cmd, gn.transport.cmd),
+            (0xd001_0970, 0xd001_0570)
+        );
+    }
+
+    #[test]
+    fn wh_keeps_bits_30_24_and_copies_the_status() {
+        // Bit 26 is one of the kept bits the vendor writes back.
+        let model = Model::new(READY | 1 << 26, |_, _| 0);
+        let mbox = Mailbox::new(&model, Variant::Wh);
+        let mut buf = C2pBuffer::new(LockDfReg);
+        mbox.send(&ManualTimer::new(), &mut buf).unwrap();
+        assert_eq!(model.0.borrow().writes, [1 << 26 | 0x1b << 16]);
+
+        let model = Model::new(READY, |_, _| 7);
+        let mbox = Mailbox::new(&model, Variant::Wh);
+        let mut buf = C2pBuffer::new(LockDfReg);
+        assert_eq!(
+            mbox.send(&ManualTimer::new(), &mut buf),
+            Err(PspError::Status {
+                command: 0x1b,
+                status: 7
+            })
+        );
+        assert_eq!(buf.header.status, 7);
+    }
+
+    #[test]
+    fn wh_sends_nothing_while_an_async_command_runs() {
+        fn storage() -> &'static mut Storage {
+            std::boxed::Box::leak(std::boxed::Box::new(Storage::new()))
+        }
+        let model = Model::new(READY | 1 << 28, |_, _| 0);
+        let mut session = Session::new(Mailbox::new(&model, Variant::Wh), storage()).unwrap();
+        let timer = ManualTimer::new();
+        assert_eq!(session.send(&timer, LockDfReg).err(), Some(PspError::Busy));
+        assert_eq!(session.send(&timer, BootDone).err(), Some(PspError::Busy));
+        assert!(model.0.borrow().log.is_empty());
+        assert!(!PspError::Busy.uncertain());
+        // Not sent, so the session goes on once the PSP is done.
+        model.0.borrow_mut().cmd = READY;
+        session.send(&timer, LockDfReg).unwrap();
+        // Bit 28 means nothing to the other generations.
+        let model = Model::new(READY | 1 << 28, |_, _| 0);
+        let mbox = Mailbox::new(&model, Variant::Gn);
+        mbox.send(&ManualTimer::new(), &mut C2pBuffer::new(LockDfReg))
+            .unwrap();
+    }
+
+    #[test]
+    fn wh_reset_required_is_bit_29_without_recovery() {
+        let timer = ManualTimer::new();
+        let reset =
+            |cmd| Mailbox::new(&Model::new(cmd, |_, _| 0), Variant::Wh).reset_required(&timer);
+        assert_eq!(reset(READY | 1 << 29), Ok(true));
+        assert_eq!(reset(READY), Ok(false));
+        assert_eq!(reset(READY | 3 << 29), Ok(false));
+        assert_eq!(reset(u32::MAX), Err(PspError::Unavailable));
+        let model = Model::new(READY | 1 << 29, |_, _| 0);
+        assert_eq!(
+            Mailbox::new(&model, Variant::Gn).reset_required(&timer),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn an_unchecked_refusal_leaves_the_session_usable() {
+        use crate::psp::command::Default32;
+        let model = Model::new(READY, |id, _| if id == 0x1b { 5 } else { 0 });
+        let storage = std::boxed::Box::leak(std::boxed::Box::new(Storage::new()));
+        let mut session = Session::new(Mailbox::new(&model, Variant::Wh), storage).unwrap();
+        let timer = ManualTimer::new();
+        assert!(session.send_unchecked(&timer, LockDfReg).is_err());
+        session.send(&timer, Default32::<BootDone>::new()).unwrap();
+        // A poisoned session stays poisoned.
+        let hung = Model::new(READY, |_, _| 0);
+        hung.0.borrow_mut().hang = true;
+        let storage = std::boxed::Box::leak(std::boxed::Box::new(Storage::new()));
+        let mut session =
+            Session::new(Mailbox::new(&hung, Variant::Wh).with_timeout(100), storage).unwrap();
+        assert!(session.send_unchecked(&timer, LockDfReg).is_err());
+        assert_eq!(
+            session.send_unchecked(&timer, LockDfReg).err(),
+            Some(PspError::Poisoned)
+        );
+    }
+
+    #[test]
     fn smn_transport_addresses() {
         use crate::smn::model::Model as Pci;
         let pci = Pci::default();
         pci.0.borrow_mut().smn.insert((0, C2P_SMN), READY);
-        let transport = unsafe { SmnTransport::new(Smn::on_bus(pci.clone(), 0)) };
+        let transport = unsafe { SmnTransport::new(Smn::on_bus(pci.clone(), 0), Variant::Gn) };
         transport.write(C2pReg::BufLo, 0x1234_5000);
         transport.write(C2pReg::BufHi, 0);
         assert_eq!(transport.read(C2pReg::Cmd), READY);

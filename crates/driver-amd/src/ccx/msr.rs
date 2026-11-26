@@ -51,6 +51,11 @@ register_bitfields![u64,
     ],
     /// Core::X86::Msr::TW_CFG.
     pub TwCfg [
+        /// Meaning not public. Zen 6: AmdCcxZen6Dxe sets it on every
+        /// thread with SMM_ADDR/SMM_MASK (`CcxInitTsegAp`, Dell `0xed00`)
+        /// and clears it after HWCR.SmmLock (`CcxSmmLockAp`, `0xe840`),
+        /// instruction-checked; AmdCcxZen6Pei's lock (`0xeec170`) the same.
+        SMM_SETUP OFFSET(27) NUMBITS(1) [],
         COMBINE_CR0_CD OFFSET(49) NUMBITS(1) []
     ],
     /// Core::X86::Msr::CSTATE_CONFIG.
@@ -60,7 +65,10 @@ register_bitfields![u64,
         CCR1_CC1DFSID OFFSET(8) NUMBITS(6) [],
         CCR1_CC6EN OFFSET(14) NUMBITS(1) [],
         CCR2_CC1DFSID OFFSET(16) NUMBITS(6) [],
-        CCR2_CC6EN OFFSET(22) NUMBITS(1) []
+        CCR2_CC6EN OFFSET(22) NUMBITS(1) [],
+        /// WH: openSIL Zen6CStateInit (`f526e0`) programs a fourth field.
+        CCR3_CC1DFSID OFFSET(24) NUMBITS(6) [],
+        CCR3_CC6EN OFFSET(30) NUMBITS(1) []
     ],
     /// Core::X86::Msr::CStateBaseAddr.
     pub CstateBaseAddr [
@@ -73,6 +81,26 @@ register_bitfields![u64,
         COUNT_SEL OFFSET(3) NUMBITS(4) [],
         /// Rome/Milan only (reserved on Raven and ZP).
         SEVERITY OFFSET(7) NUMBITS(3) []
+    ],
+    /// Core::X86::Msr::CPPC_CAPABILITY_1 (C001_02B0).
+    pub CppcCap1 [
+        LOWEST_PERF OFFSET(0) NUMBITS(8) [],
+        LOWEST_NONLINEAR_PERF OFFSET(8) NUMBITS(8) [],
+        NOMINAL_PERF OFFSET(16) NUMBITS(8) [],
+        HIGHEST_PERF OFFSET(24) NUMBITS(8) []
+    ],
+    /// Core::X86::Msr::CPPC_REQUEST (C001_02B3).
+    pub CppcRequest [
+        MAX_PERF OFFSET(0) NUMBITS(8) [],
+        MIN_PERF OFFSET(8) NUMBITS(8) [],
+        DES_PERF OFFSET(16) NUMBITS(8) [],
+        ENERGY_PERF_PREF OFFSET(24) NUMBITS(8) []
+    ],
+    /// C001_1004, the CPUID Fn0000_0001 feature override: EDX in \[31:0\],
+    /// ECX in \[63:32\].
+    pub CpuidFeatures [
+        /// CPUID Fn0000_0001_ECX\[21\].
+        X2APIC OFFSET(53) NUMBITS(1) []
     ],
     /// Core::X86::Msr::DPM_CFG.
     pub DpmCfg [
@@ -93,7 +121,20 @@ pub const CPU_WDT_CFG: Msr<CpuWdtCfg::Register> = Msr::new(0xc001_0074);
 pub const RMP_BASE: Msr = Msr::new(0xc001_0132);
 pub const RMP_END: Msr = Msr::new(0xc001_0133);
 pub const CSTATE_CONFIG: Msr<CstateConfig::Register> = Msr::new(0xc001_0296);
+/// Unnamed. WH's Zen6CStateInit (Dell SilVenicePei `f526e0`, instruction-
+/// checked) writes it right after CSTATE_CONFIG with the same four
+/// CC1DFSID/CC6EN fields, on core primaries.
+pub const C001_0298: Msr<CstateConfig::Register> = Msr::new(0xc001_0298);
+pub const CPPC_CAP1: Msr<CppcCap1::Register> = Msr::new(0xc001_02b0);
+/// Core::X86::Msr::CPPC_ENABLE (C001_02B1).
+pub const CPPC_ENABLE: Msr = Msr::new(0xc001_02b1);
+/// Core::X86::Msr::CPPC_CAPABILITY_2 (C001_02B2).
+pub const CPPC_CAP2: Msr = Msr::new(0xc001_02b2);
+pub const CPPC_REQUEST: Msr<CppcRequest::Register> = Msr::new(0xc001_02b3);
+/// Core::X86::Msr::CPPC_STATUS (C001_02B4).
+pub const CPPC_STATUS: Msr = Msr::new(0xc001_02b4);
 pub const MCODE_CTL: Msr = Msr::new(0xc001_1000);
+pub const CPUID_FEATURES: Msr<CpuidFeatures::Register> = Msr::new(0xc001_1004);
 pub const LS_CFG: Msr = Msr::new(0xc001_1020);
 pub const IC_CFG: Msr = Msr::new(0xc001_1021);
 pub const DC_CFG: Msr = Msr::new(0xc001_1022);
@@ -157,6 +198,95 @@ pub fn memory_limits(cpu: &impl MsrAccess) -> Result<(u64, Option<u64>), MemoryB
     Ok((low, high))
 }
 
+/// The ECAM window of `MMIO_CFG_BASE` (`C001_0058`): its base and its PCI
+/// segments of 256 buses, segment `s` at `base + s * 256 MiB`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EcamWindow {
+    pub base: u64,
+    /// `1..=8`.
+    pub segments: u8,
+}
+
+impl EcamWindow {
+    /// Most segments (`PciSegmentInfoLib`'s cap, BusRange 11).
+    pub const MAX_SEGMENTS: u8 = 8;
+
+    /// A window of `segments` (1, 2, 4 or 8) at `base`, aligned to its size.
+    pub const fn new(base: u64, segments: u8) -> Option<Self> {
+        let window = Self { base, segments };
+        if segments == 0
+            || segments > Self::MAX_SEGMENTS
+            || !segments.is_power_of_two()
+            || base & (window.size() - 1) != 0
+            || base >> 52 != 0
+        {
+            return None;
+        }
+        Some(window)
+    }
+
+    /// Bytes: 256 MiB per segment ([`fstart_pci::ecam::SEGMENT_SIZE`]).
+    pub const fn size(&self) -> u64 {
+        self.segments as u64 * fstart_pci::ecam::SEGMENT_SIZE as u64
+    }
+
+    /// The buses the window decodes (`1 << BusRange`).
+    pub const fn buses(&self) -> u16 {
+        (self.segments as u16) << 8
+    }
+
+    /// The window `MMIO_CFG_BASE` describes, if enabled: `buses = 1 <<
+    /// BusRange`, `segments = ceil(buses / 256)` capped at 8 (Dell
+    /// PlatformDxe `GetPciSegmentInfo` `0x5080`, 2P_COMPLETE §2.1).
+    pub fn decode(value: u64) -> Option<Self> {
+        let reg = tock_registers::LocalRegisterCopy::<u64, MmioCfgBase::Register>::new(value);
+        if !reg.is_set(MmioCfgBase::ENABLE) {
+            return None;
+        }
+        let buses = 1u32 << reg.read(MmioCfgBase::BUS_RANGE);
+        Some(Self {
+            base: reg.read(MmioCfgBase::ADDRESS) << MmioCfgBase::ADDRESS.shift,
+            segments: buses.div_ceil(256).min(u32::from(Self::MAX_SEGMENTS)) as u8,
+        })
+    }
+}
+
+/// The ECAM window the CPU decodes now, `None` if `MMIO_CFG_BASE` is off.
+pub fn ecam_window(cpu: &impl MsrAccess) -> Option<EcamWindow> {
+    EcamWindow::decode(cpu.reg(MMIO_CFG_BASE).get())
+}
+
+/// Program `MMIO_CFG_BASE` for `window` (BusRange 8..=11).
+pub fn enable_ecam_window(cpu: &impl MsrAccess, window: EcamWindow) {
+    cpu.reg(MMIO_CFG_BASE).write(
+        MmioCfgBase::ADDRESS.val(window.base >> MmioCfgBase::ADDRESS.shift)
+            + MmioCfgBase::BUS_RANGE.val(window.buses().trailing_zeros().into())
+            + MmioCfgBase::ENABLE::SET,
+    );
+}
+
+/// The ECAM the way the vendor's x86 PEI sets it (`AmdSocSp7WHPei`
+/// `0xca9d60`, 2P_COMPLETE §2.1): an `MMIO_CFG_BASE` already enabled
+/// (by the ABL, from the APCB's `DfPciMmio*` tokens) is kept, base, bus
+/// range and all; otherwise `fallback`'s base is written with the bus range
+/// already there when it names 1 to 8 segments (BusRange 8..=11), else
+/// `fallback`'s. Returns the window the CPU decodes.
+pub fn adopt_ecam(cpu: &impl MsrAccess, fallback: EcamWindow) -> EcamWindow {
+    let raw = cpu.reg(MMIO_CFG_BASE).get();
+    if let Some(window) = EcamWindow::decode(raw) {
+        return window;
+    }
+    let range = tock_registers::LocalRegisterCopy::<u64, MmioCfgBase::Register>::new(raw)
+        .read(MmioCfgBase::BUS_RANGE);
+    let window = (8..=11)
+        .contains(&range)
+        .then(|| EcamWindow::new(fallback.base, 1 << (range - 8)))
+        .flatten()
+        .unwrap_or(fallback);
+    enable_ecam_window(cpu, window);
+    window
+}
+
 /// AMD MMIO_CONF_BASE (not an Intel PCIEXBAR): `buses` must be a power of two
 /// between 1 and 256 and `base` aligned to the window size.
 pub fn enable_ecam(cpu: &impl MsrAccess, base: u64, buses: u16) {
@@ -167,4 +297,56 @@ pub fn enable_ecam(cpu: &impl MsrAccess, base: u64, buses: u16) {
             + MmioCfgBase::BUS_RANGE.val(buses.trailing_zeros().into())
             + MmioCfgBase::ENABLE::SET,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::cell::Cell;
+
+    struct Msr(Cell<u64>);
+    impl MsrAccess for Msr {
+        fn read(&self, index: u32) -> u64 {
+            assert_eq!(index, MMIO_CFG_BASE.index());
+            self.0.get()
+        }
+        fn write(&self, index: u32, value: u64) {
+            assert_eq!(index, MMIO_CFG_BASE.index());
+            self.0.set(value)
+        }
+    }
+
+    /// The donors' APCB windows: Dell 2 segments at 16 TiB, GIGABYTE one at
+    /// `0x2FFC_8000_0000`.
+    #[test]
+    fn ecam_windows_follow_the_msr_or_the_fallback() {
+        let dell = EcamWindow::new(0x1000_0000_0000, 2).unwrap();
+        let gbt = EcamWindow::new(0x2ffc_8000_0000, 1).unwrap();
+        assert_eq!(EcamWindow::new(0x2ffc_9000_0000, 2), None);
+        assert_eq!(EcamWindow::new(0x1000_0000_0000, 3), None);
+        assert_eq!(dell.size(), 512 << 20);
+        // Enabled by the ABL: kept.
+        let msr = Msr(Cell::new(0));
+        enable_ecam_window(&msr, dell);
+        assert_eq!(msr.0.get(), 0x1000_0000_0000 | 9 << 2 | 1);
+        assert_eq!(ecam_window(&msr), Some(dell));
+        assert_eq!(adopt_ecam(&msr, gbt), dell);
+        assert_eq!(msr.0.get(), 0x1000_0000_0000 | 9 << 2 | 1);
+        // Off with a bus range: the fallback's base, the bus range kept.
+        msr.0.set(10 << 2);
+        let four = adopt_ecam(&msr, EcamWindow::new(0x1000_0000_0000, 1).unwrap());
+        assert_eq!((four.base, four.segments), (0x1000_0000_0000, 4));
+        assert_eq!(ecam_window(&msr), Some(four));
+        // Off without one: the fallback whole.
+        msr.0.set(0);
+        assert_eq!(adopt_ecam(&msr, gbt), gbt);
+        assert_eq!(ecam_window(&msr), Some(gbt));
+        // Fewer than 256 buses is one (short) segment.
+        assert_eq!(
+            EcamWindow::decode(0xe000_0000 | 6 << 2 | 1)
+                .unwrap()
+                .segments,
+            1
+        );
+    }
 }

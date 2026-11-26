@@ -13,7 +13,8 @@ use super::acpimmio::{
 };
 use crate::window::{At, Window, update};
 use tock_registers::{
-    fields::Field,
+    RegisterLongName,
+    fields::{Field, FieldValue},
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
 };
@@ -31,6 +32,12 @@ register_bitfields![u32,
     ],
     pub SciLevel [
         GEVENTS OFFSET(0) NUMBITS(24) []
+    ],
+    /// SMIx00 EventStatus (write-1-to-clear) and SMIx04 EventEnable, and
+    /// SMIx18 SwSciEn and SMIx1C SwSciData: bit per SCI event (GPE)
+    /// ([`event_bit`]).
+    pub SciEvents [
+        EVENTS OFFSET(0) NUMBITS(32) []
     ],
     /// SMIx98 FCH::SMI::SmiTrig0.
     pub Trigger0 [
@@ -63,6 +70,22 @@ register_bitfields![u16,
 pub const SCI_TRIGGER: At<u32, SciTrigger::Register> = smi_bank::at(0x08);
 pub const SCI_LEVEL: At<u32, SciLevel::Register> = smi_bank::at(0x0c);
 pub const SCI_STATUS: At<u32> = smi_bank::at(0x10);
+/// SMIx00 EventStatus and SMIx04 EventEnable: the SCI events latched, and
+/// those that raise the SCI.
+pub const EVENT_STATUS: At<u32, SciEvents::Register> = smi_bank::at(0x00);
+pub const EVENT_ENABLE: At<u32, SciEvents::Register> = smi_bank::at(0x04);
+/// SMIx18 SwSciEn and SMIx1C SwSciData: bit n of the data raises SCI
+/// event n (GPE n) where bit n of the enable is set (Dell's RAS strings:
+/// "SOFTWARESCIEN Bit\[22\] enable SCI generation on eventstatus22").
+pub const SW_SCI_ENABLE: At<u32, SciEvents::Register> = smi_bank::at(0x18);
+pub const SW_SCI_DATA: At<u32, SciEvents::Register> = smi_bank::at(0x1c);
+
+/// The bit of SCI event or GEVENT `event` (< 32) in a register with a bit
+/// per event ([`SciEvents`], [`SciLevel`], [`SciTrigger`], the GEVENT
+/// polarity of [`Trigger0`]), `set` or clear.
+pub fn event_bit<R: RegisterLongName>(event: u8, set: bool) -> FieldValue<u32, R> {
+    Field::<u32, R>::new(1, (event & 31).into()).val(set.into())
+}
 /// SMIx40 + n (FCH::SMI::SciMap): the SCI (GPE) GEVENT/source `n` raises.
 pub const fn sci_map(n: u8) -> At<u8> {
     smi_bank::at(0x40 + n as u32)
@@ -139,12 +162,19 @@ pub mod source {
     pub const PWR_BTN: Source = Source::new(0x84, 19);
     /// SmiStat1\[21\]: the NBIO-side USB SMI (APU hardware assertion).
     pub const USB_NBIO: Source = Source::new(0x84, 21);
+    /// SmiStat1\[21\] as the IOHC's RAS SMI (WH: `RAS_GLOBAL_STATUS`
+    /// raises it, AGESA's `FchSmmApuRasDispatcher` routes it, SMIxAC\[11:10\]
+    /// = 1, and acknowledges it W1C `0x20_0000`; FIRMWARE_FIRST.md §2.1).
+    pub const NBIO_RAS: Source = USB_NBIO;
     /// SmiStat2\[1\] PM1_CNT SLP_TYP write.
     pub const SLP_TYP: Source = Source::new(0x88, 1);
     /// SmiStat2\[11\] SMI command port write.
     pub const SMI_CMD: Source = Source::new(0x88, 11);
     /// SmiStat2\[12\] USB SMI.
     pub const USB: Source = Source::new(0x88, 12);
+    /// SmiStat4\[10\] FakeSts0, raised by SmiTrig0\[25\]: the vendors'
+    /// RAS raises an NMI through it (SmiCtl8\[21:20\] = 2, [`super::nmi`]).
+    pub const FAKE0: Source = Source::new(0x90, 10);
     /// SmiStat4\[13\] CF9 write with bit 2 set.
     pub const CF9_WRITE: Source = Source::new(0x90, 13);
     /// SmiStat4\[14\]/\[15\] short/long timer (periodic SMI).
@@ -282,6 +312,43 @@ pub fn periodic<W: Window>(acpi: &W, ms: Option<u16>) {
     }
 }
 
+/// Arm the software SCI of event `event` (< 32): its data bit
+/// de-asserted, its enable set (the AMD CPM's `AmdPlatformRasWhSmmInit`
+/// for event 20, Dell's `RasSciInit` for 22).
+pub fn software_sci_enable<W: Window>(acpi: &W, event: u8) {
+    acpi.at(SW_SCI_DATA).modify(event_bit(event, false));
+    acpi.at(SW_SCI_ENABLE).modify(event_bit(event, true));
+}
+
+/// Raise the software SCI of event `event`: its data bit asserted, then
+/// de-asserted, which latches the event's status (GIGABYTE
+/// AmdPlatformRasWhSmm `0x5a13` [I], Dell `DellTriggerWheaSci`).
+pub fn software_sci<W: Window>(acpi: &W, event: u8) {
+    let data = acpi.at(SW_SCI_DATA);
+    data.modify(event_bit(event, true));
+    data.modify(event_bit(event, false));
+}
+
+/// Raise an NMI through FakeSts0 as the vendors' RAS does (GIGABYTE
+/// AmdPlatformRasWhSmm `0x599f..0x5a0a` [I], Dell DellApeiLoggingSmm
+/// `0x26910`): FakeSts0 to NMI, SmiTrig0\[25\] 0 then 1, FakeSts0 off again.
+/// The PSP raises its SMI with the same trigger bit, which stays set as the
+/// vendors leave it.
+pub fn nmi<W: Window>(acpi: &W) {
+    set_route(acpi, source::FAKE0, Route::Nmi);
+    let trigger = acpi.at(TRIGGER0);
+    trigger.modify(Trigger0::PSP::CLEAR);
+    trigger.modify(Trigger0::PSP::SET);
+    set_route(acpi, source::FAKE0, Route::Disabled);
+}
+
+/// Route the IOHCs' RAS SMI ([`source::NBIO_RAS`]) to SMI, its status
+/// cleared first.
+pub fn route_nbio_ras<W: Window>(acpi: &W) {
+    clear(acpi, source::NBIO_RAS);
+    set_route(acpi, source::NBIO_RAS, Route::Smi);
+}
+
 /// Raise a software SMI by writing `value` to the SMI command port.
 pub fn software_smi<I: Window>(io: &I, value: u8) {
     io.write8(APM_CNT.into(), value);
@@ -335,6 +402,18 @@ pub fn enable<H: super::FchHw>(fch: &H, config: &Config) {
     let acpi = fch.acpi();
     acpi.at(PM_ACPI_SMI_CMD).set(APM_CNT);
     set_route(acpi, source::SMI_CMD, Route::Smi);
+    route_sleep(acpi);
+    (0..source::GEVENTS)
+        .filter(|gevent| config.gevents & 1 << gevent != 0)
+        .for_each(|gevent| set_route(acpi, source::gevent(gevent), Route::Smi));
+    super::sx::acpi_mode(fch, &config.ports, false);
+    clear_all(acpi);
+    init(acpi);
+}
+
+/// The OS's SLP_TYP write to SMI, the FCH holding the sleep entry for
+/// the SMM handler (`Handler::sleep`), which takes it over.
+pub fn route_sleep<W: Window>(acpi: &W) {
     // SMI on SlpTyp requires sending SMI before completion response of
     // the I/O write; the SMM handler takes over the sleep entry.
     acpi.at(PM_PCI_CONTROL)
@@ -342,12 +421,6 @@ pub fn enable<H: super::FchHw>(fch: &H, config: &Config) {
     acpi.at(PM_RESET_CONTROL1)
         .modify(ResetControl1::SLP_TYPE_EN::CLEAR);
     set_route(acpi, source::SLP_TYP, Route::Smi);
-    (0..source::GEVENTS)
-        .filter(|gevent| config.gevents & 1 << gevent != 0)
-        .for_each(|gevent| set_route(acpi, source::gevent(gevent), Route::Smi));
-    super::sx::acpi_mode(fch, &config.ports, false);
-    clear_all(acpi);
-    init(acpi);
 }
 
 /// The SMI command port and the PSP's SMI ([`route_psp`]) only, for a
@@ -578,6 +651,30 @@ mod model_tests {
         assert_eq!(acpi.get(0x2ac, 4), 0);
         assert_eq!(acpi.get(0x2a8, 4), 0x4);
         assert_eq!(acpi.get(TRIGGER0.offset, 4), 0x1000_0000);
+    }
+
+    /// The vendors' RAS signals: SwSciData\[20\] pulsed with SwSciEn\[20\]
+    /// set (GPE 14h, CPMRAS `_L14`); the NMI through FakeSts0 (SmiCtl8
+    /// \[21:20\] = 2 meanwhile, SmiTrig0\[25\] left set); the IOHC's RAS SMI
+    /// on SMIxAC\[11:10\].
+    #[test]
+    fn ras_sci_nmi_and_smi_as_the_vendors_signal_them() {
+        let acpi = Mem::default();
+        acpi.put(SW_SCI_DATA.offset, 4, 0x0010_0001);
+        software_sci_enable(&acpi, 20);
+        assert_eq!(acpi.get(SW_SCI_DATA.offset, 4), 1);
+        assert_eq!(acpi.get(SW_SCI_ENABLE.offset, 4), 0x0010_0000);
+        software_sci(&acpi, 20);
+        assert_eq!(acpi.get(SW_SCI_DATA.offset, 4), 1);
+        acpi.put(TRIGGER0.offset, 4, 0x1000_0000);
+        nmi(&acpi);
+        assert_eq!(acpi.get(TRIGGER0.offset, 4), 0x1200_0000);
+        let (control, shift) = source::FAKE0.control();
+        assert_eq!((control.offset, shift), (0x2c0, 20));
+        assert_eq!(acpi.get(0x2c0, 4), 0);
+        route_nbio_ras(&acpi);
+        assert_eq!(acpi.get(0x2ac, 4), 0x400);
+        assert_eq!(acpi.get(0x284, 4), 0x20_0000);
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub const MAILBOX: Mailbox = Mailbox {
     response: SmnReg::new(0x03b1_057c),
     arguments: SmnReg::new(0x03b1_09c4),
     wait_before: false,
+    argument_count: crate::smu::ARGUMENT_COUNT,
 };
 
 /// AGESA's V11 service rejects IDs at or above this.
@@ -290,32 +291,7 @@ pub fn nbif2_power_gate<M: SmuMessages + ?Sized>(
 
 /// The SMU's CPPC answer (`CppcGetInfo`, message 0x17; Rome SmuV11Dxe
 /// `0x1cdc`, Milan `0x2170`, sent when the CPPC feature bit is on).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CppcInfo {
-    /// Answer bits 1:0.
-    pub revision: u8,
-    /// Answer bits 31:2: bit `k` = `_CPC` register `k` is implemented.
-    pub supported: u32,
-}
-
-impl CppcInfo {
-    pub const fn from_answer(answer: u32) -> Self {
-        Self {
-            revision: (answer & 3) as u8,
-            supported: answer >> 2,
-        }
-    }
-
-    /// CPPC is on (answer bit 16 = `_CPC` CPPCEnable). AmdAcpiDxe also
-    /// needs revision 2 or later before it builds `_CPC`.
-    pub const fn enabled(&self) -> bool {
-        self.supported & 1 << 14 != 0 && self.revision > 1
-    }
-
-    pub const fn implements(&self, register: u8) -> bool {
-        self.supported & 1 << register != 0
-    }
-}
+pub use super::CppcInfo;
 
 pub fn cppc_info<M: SmuMessages + ?Sized>(smu: &M) -> Result<CppcInfo, SmuError> {
     send1(smu, msg::CPPC_INFO, 0).map(CppcInfo::from_answer)

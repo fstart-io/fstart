@@ -83,6 +83,7 @@ pub fn routed(
         index,
         fabric_id: 0,
         primary: bus.base == 0,
+        segment: pci.segment,
         bus,
         below,
         below_pools: pools(below, non_pci),
@@ -117,6 +118,47 @@ fn pci_span(pools: &Pools) -> PlanWindow {
 /// The non-PCI pools hold the NBIO's own MMIO and are not forwarded, nor is
 /// the ECAM window, which the primary owns.
 pub fn planned(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<Root> {
+    planned_in(rb, pci, 1)
+}
+
+/// The bytes of one PCI segment's ECAM (256 buses).
+const SEGMENT_ECAM_SIZE: u64 = fstart_pci::ecam::SEGMENT_SIZE as u64;
+
+/// Segment `segment` of an ECAM window whose first segment is `first`:
+/// the AMD window (MSR `C001_0058`) is contiguous 256 MiB slices, segment
+/// `s` at `base + s * 256 MiB` with buses 0..=FF (`PciSegmentInfoLib`,
+/// 2P_COMPLETE §2.1). `first` itself for its own segment; `None` for a
+/// segment before `first`, which the window does not hold.
+pub const fn segment(first: &PciRootInfo, segment: u16) -> Option<PciRootInfo> {
+    if segment == first.segment {
+        return Some(*first);
+    }
+    let Some(index) = segment.checked_sub(first.segment) else {
+        return None;
+    };
+    let Some(ecam_base) = first
+        .ecam_base
+        .checked_add(index as u64 * SEGMENT_ECAM_SIZE)
+    else {
+        return None;
+    };
+    Some(PciRootInfo {
+        segment,
+        ecam_base,
+        bus_start: 0,
+        bus_end: 0xff,
+    })
+}
+
+/// [`planned`] in an ECAM window of `segments` segments from `first`
+/// ([`segment`]): the root bridge sits in its own segment, and the
+/// primary owns the whole window.
+pub fn planned_in(rb: &RootBridgePlan, first: &PciRootInfo, segments: u16) -> Option<Root> {
+    if rb.segment < first.segment || rb.segment - first.segment >= segments.max(1) {
+        return None;
+    }
+    let pci = &segment(first, rb.segment)?;
+    let window = first.ecam_size() + u64::from(segments.max(1) - 1) * SEGMENT_ECAM_SIZE;
     // The DF routes all of its 25-bit I/O space; the ports end at 64 Ki.
     let io = |role: PciRole, span: PlanWindow| {
         role.io(
@@ -155,7 +197,7 @@ pub fn planned(rb: &RootBridgePlan, pci: &PciRootInfo) -> Option<Root> {
             .chain(rb.second_below.map(|window| mmio(PciRole::Window, window)))
             .chain(rb.above.map(|route| mmio(Forwarded, route)))
             .chain(rb.above_pools.iter().flat_map(pools))
-            .chain([Own.mmio(pci.ecam_base, primary(pci.ecam_size()))]),
+            .chain([Own.mmio(first.ecam_base, primary(window))]),
     )
     .ok()
 }
@@ -184,6 +226,7 @@ mod tests {
             index: 3,
             fabric_id: 0x23,
             primary: true,
+            segment: 0,
             bus: BusRange {
                 base: 0,
                 limit: 0x3f,
@@ -348,5 +391,25 @@ mod tests {
         // Three are more than a plan holds.
         two.mmio.push((0x6000_0000, 0x1000_0000)).unwrap();
         assert_eq!(routed(&two, 0, &pci, smu), None);
+    }
+
+    #[test]
+    fn segments_follow_the_first_in_256_mib_slices() {
+        let first = PciRootInfo {
+            segment: 2,
+            ecam_base: 0x1000_0000_0000,
+            bus_start: 0,
+            bus_end: 0xff,
+        };
+        assert_eq!(super::segment(&first, 2), Some(first));
+        let next = super::segment(&first, 3).unwrap();
+        assert_eq!((next.ecam_base, next.bus_end), (0x1000_1000_0000, 0xff));
+        // Before the first: not in the window.
+        assert_eq!(super::segment(&first, 1), None);
+        let top = PciRootInfo {
+            ecam_base: u64::MAX - 0xfff_ffff,
+            ..first
+        };
+        assert_eq!(super::segment(&top, 3), None, "past the address space");
     }
 }

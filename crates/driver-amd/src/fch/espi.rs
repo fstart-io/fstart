@@ -1,10 +1,79 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Four-window AMD eSPI controller.
-//! Picasso has none of the newer extended-window/ALERT_ENABLE register bits.
+//! The AMD eSPI controller: its decode registers ([`DecodeEnable`],
+//! [`io_range`], [`mmio_range`]), and its bring-up by the x86 on Picasso,
+//! a four-window controller without the newer extended windows or
+//! ALERT_ENABLE bits.
+//!
+//! [`initialize`] resets the link in band and reconfigures the slave: only
+//! for SoCs whose x86 firmware owns the link. On the server FCHs the ABL
+//! trains it from the APCB, and the x86 only reads and adds decode windows
+//! ([`super::qilian::espi`]).
 use fstart_core::mmio::MmioReadWrite;
 use fstart_core::services::Timer;
 use heapless::Vec;
 use tock_registers::interfaces::{Readable, Writeable};
+use tock_registers::register_bitfields;
+
+register_bitfields![u32,
+    /// eSPIx40 (32-bit): DecodeEnable.
+    pub DecodeEnable [
+        /// Super I/O config ports 2Eh/2Fh.
+        SIO_2E OFFSET(0) NUMBITS(1) [],
+        /// KBC ports 60h/64h.
+        KBC_6064 OFFSET(1) NUMBITS(1) [],
+        /// POST code port 80h.
+        PORT80 OFFSET(2) NUMBITS(1) [],
+        /// I/O ranges 0–3.
+        IO_0 OFFSET(8) NUMBITS(4) [],
+        /// MMIO ranges 0–3.
+        MMIO_0 OFFSET(12) NUMBITS(4) [],
+        /// I/O ranges 4–7.
+        IO_4 OFFSET(16) NUMBITS(4) [],
+        /// I/O ranges 8–11.
+        IO_8 OFFSET(20) NUMBITS(4) [],
+        /// I/O ranges 12–15.
+        IO_12 OFFSET(24) NUMBITS(4) [],
+        /// MMIO range 4.
+        MMIO_4 OFFSET(28) NUMBITS(1) []
+    ]
+];
+
+/// eSPIx40: the decode enables.
+pub const DECODE_ENABLE: u16 = 0x40;
+
+/// The enable bit of I/O range `i` in eSPIx40.
+pub const fn io_enable_bit(i: usize) -> u32 {
+    match i {
+        0..=3 => 8 + i as u32,
+        4..=7 => 16 + (i as u32 - 4),
+        8..=11 => 20 + (i as u32 - 8),
+        _ => 24 + (i as u32 - 12),
+    }
+}
+
+/// Offsets of I/O range `i`'s base (16 bit) and size byte (`size - 1`):
+/// ranges 0–3 at `+0x44`/`+0x4C`, the extended ones 4–7 at `+0x80`/`+0x88`,
+/// 8–11 at `+0x8C`/`+0x94`, 12–15 at `+0xB0`/`+0xB8`.
+pub const fn io_range(i: usize) -> (u16, u16) {
+    let (base, size, k) = match i {
+        0..=3 => (0x44, 0x4c, i),
+        4..=7 => (0x80, 0x88, i - 4),
+        8..=11 => (0x8c, 0x94, i - 8),
+        _ => (0xb0, 0xb8, i - 12),
+    };
+    (base + 2 * k as u16, size + k as u16)
+}
+
+/// The enable bit of MMIO range `i` and the offsets of its base (32 bit)
+/// and size (16 bit, `size - 1`): ranges 0–3 at `+0x50`/`+0x60`, the
+/// extended range 4 at `+0xBC`/`+0xC0` (coreboot's `espi_def.h`).
+pub const fn mmio_range(i: usize) -> (u32, u16, u16) {
+    match i {
+        0..=3 => (12 + i as u32, 0x50 + 4 * i as u16, 0x60 + 2 * i as u16),
+        _ => (28, 0xbc, 0xc0),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum Mode {
@@ -239,14 +308,16 @@ pub fn initialize(
     r.write32(0x34, (23 << 13) | (31 << 8));
     r.write32(0x6c, 0);
     clear_status(r)?;
-    r.write16(0x40, 0);
+    r.write16(DECODE_ENABLE, 0);
     for i in 0..4 {
-        r.write16(0x44 + i * 2, 0);
-        r.write8(0x4c + i, 0);
+        let (base, size) = io_range(i);
+        r.write16(base, 0);
+        r.write8(size, 0);
     }
     for i in 0..4 {
-        r.write32(0x50 + i * 4, 0);
-        r.write16(0x60 + i * 2, 0);
+        let (_, base, size) = mmio_range(i);
+        r.write32(base, 0);
+        r.write16(size, 0);
     }
     let initial = match config.alert {
         Alert::InBand => 0,
@@ -294,13 +365,15 @@ pub fn initialize(
         let old = get(r, timer, address)?;
         channel(r, timer, address, old | 1, bit)?;
     }
-    let standard =
-        u32::from(config.port80) << 2 | u32::from(config.keyboard) << 1 | u32::from(config.superio);
-    update(r, 0x40, 0, standard)?;
+    let standard = DecodeEnable::PORT80.val(config.port80.into())
+        + DecodeEnable::KBC_6064.val(config.keyboard.into())
+        + DecodeEnable::SIO_2E.val(config.superio.into());
+    update(r, DECODE_ENABLE, 0, standard.value)?;
     for (i, range) in ranges.iter().enumerate() {
-        r.write16(0x44 + i as u16 * 2, range.base);
-        r.write8(0x4c + i as u16, (range.size - 1) as u8);
-        update(r, 0x40, 0, 1 << (8 + i))?;
+        let (base, size) = io_range(i);
+        r.write16(base, range.base);
+        r.write8(size, (range.size - 1) as u8);
+        update(r, DECODE_ENABLE, 0, 1 << io_enable_bit(i))?;
     }
     update(
         r,

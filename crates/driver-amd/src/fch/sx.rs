@@ -65,7 +65,7 @@ fn pm1_status<'a, I: Window>(io: &'a I, ports: &AcpiPorts) -> Reg<&'a I, u16, Pm
 fn pm1_enable<'a, I: Window>(io: &'a I, ports: &AcpiPorts) -> Reg<&'a I, u16, Pm1Enable::Register> {
     io.at(At::new(u32::from(ports.event) + 2))
 }
-fn pm1_control<'a, I: Window>(
+pub(super) fn pm1_control<'a, I: Window>(
     io: &'a I,
     ports: &AcpiPorts,
 ) -> Reg<&'a I, u16, Pm1Control::Register> {
@@ -155,8 +155,8 @@ fn mask_ioapic<H: FchHw>(hw: &H) {
 
 /// A sleep state the FCH is armed for ([`arm`]).
 pub struct Armed<'a, H: FchHw> {
-    hw: &'a H,
-    ports: AcpiPorts,
+    pub(super) hw: &'a H,
+    pub(super) ports: AcpiPorts,
     /// How the USB and SMU steps went; the entry goes on either way.
     pub preparation: Result<(), SxError>,
 }
@@ -166,9 +166,15 @@ impl<H: FchHw> Armed<'_, H> {
     /// second later, a full reset, whose power cycle also clears the
     /// half-entered sleep state.
     pub fn enter(self) -> ! {
+        self.enter_or(|_| fstart_arch::x86::boot::full_reset())
+    }
+
+    /// [`Self::enter`] with the FCH's own full reset `reset` as the
+    /// fallback (Qilian's sets PMx10\[1\] first, [`super::qilian::reset`]).
+    pub fn enter_or(self, reset: impl FnOnce(&H) -> !) -> ! {
         pm1_control(self.hw.io(), &self.ports).modify(Pm1Control::SLP_EN::SET);
         fstart_core::services::Timer::delay_us(self.hw.timer(), 1_000_000);
-        fstart_arch::x86::boot::full_reset()
+        reset(self.hw)
     }
 }
 

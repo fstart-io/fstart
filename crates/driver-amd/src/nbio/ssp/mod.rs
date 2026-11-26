@@ -173,6 +173,7 @@ mod tests {
         use crate::smn::model::Model;
         let model = Model::default();
         let rb = RootBridge {
+            segment: 0,
             socket: 0,
             index: 1,
             fabric_id: 0,

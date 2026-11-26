@@ -6,7 +6,7 @@ use crate::fch::acpimmio::{gpio_bank, iomux};
 use crate::fch::smi::{self, Route, SCI_LEVEL, SCI_TRIGGER, TRIGGER0, sci_map};
 use crate::window::{At, Reg, Window};
 use tock_registers::{
-    fields::{Field, FieldValue},
+    fields::FieldValue,
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
 };
@@ -97,11 +97,6 @@ const fn control(pin: u8) -> At<u32, Control::Register> {
     gpio_bank::at(4 * pin as u32)
 }
 const MASTER: At<u32, Master::Register> = gpio_bank::at(0xfc);
-
-/// The bit of GEVENT `event` in a per-GEVENT register.
-fn gevent_bit<R: tock_registers::RegisterLongName>(event: u8, set: bool) -> FieldValue<u32, R> {
-    Field::<u32, R>::new(1, event.into()).val(set.into())
-}
 
 /// Field values combined in const context, where `+` isn't available.
 const fn fields(values: &[FieldValue<u32, Control::Register>]) -> u32 {
@@ -502,16 +497,16 @@ impl<W: Window> Gpio<W> {
                 self.acpi.at(sci_map(event)).set(event);
                 self.acpi
                     .at(SCI_TRIGGER)
-                    .modify(gevent_bit(event, trigger.high()));
+                    .modify(smi::event_bit(event, trigger.high()));
                 self.acpi
                     .at(SCI_LEVEL)
-                    .modify(gevent_bit(event, trigger.level()));
+                    .modify(smi::event_bit(event, trigger.level()));
             }
             Event::Smi(trigger) => {
                 smi::set_route(&self.acpi, smi::source::gevent(event), Route::Smi);
                 self.acpi
                     .at(TRIGGER0)
-                    .modify(gevent_bit(event, trigger.high()));
+                    .modify(smi::event_bit(event, trigger.high()));
             }
         }
     }

@@ -100,10 +100,17 @@ pub fn mask_by_ip<M: MsrAccess + ?Sized>(cpu: &M, masks: &[IpMask]) {
     });
 }
 
-/// Set up the MCA banks of the executing thread.
-pub fn init<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread) {
+/// [`configure`] every MCA_CONFIG of the executing thread (also WH's
+/// McaConfigInit with TEL off, `f4e570`/`f4e6a0`).
+pub fn configure_banks<M: MsrAccess + ?Sized>(cpu: &M) {
     let banks = cpu.reg(MCG_CAP).read(McgCap::COUNT) as u32;
     (0..banks).for_each(|b| modify(cpu, mca_config(b), |v| configure(v, banks)));
+}
+
+/// Set up the MCA banks of the executing thread.
+pub fn init<M: MsrAccess + ?Sized>(cpu: &M, thread: &Thread) {
+    configure_banks(cpu);
+    let banks = cpu.reg(MCG_CAP).read(McgCap::COUNT) as u32;
     let clear_blk_ptr = |v| McaMisc::BLK_PTR.val(0).modify(v);
     // The first thread of a Naples die / Rome CCD owns the L3 masks.
     let l3_owner = thread.in_scope(Scope::Die);

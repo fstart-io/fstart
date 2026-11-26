@@ -14,6 +14,7 @@ use embedded_hal::delay::DelayNs;
 use fstart_core::indexed::Indexed;
 use tock_registers::{
     LocalRegisterCopy,
+    fields::FieldValue,
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields,
 };
@@ -198,9 +199,55 @@ register_bitfields![u8,
         THERMAL_TRIP OFFSET(0) NUMBITS(1) [],
         FOUR_SECOND_PWR_BTN OFFSET(1) NUMBITS(1) [],
         SHUTDOWN OFFSET(2) NUMBITS(1) []
+    ],
+    /// PMx10 (8-bit): reset control. Bit 1 is what the vendor's resets
+    /// set for a cold reset and clear for a warm one (Qilian FchPei
+    /// `FchPeiReset2`, ResetSystemRuntimeDxe; WARM_RESET §2.3).
+    pub ResetControl0 [
+        /// ToggleAllPwrGood: a CF9 reset also toggles the power goods
+        /// (cold); clear, CF9 06h is a warm reset.
+        TOGGLE_ALL_PWR_GOOD OFFSET(1) NUMBITS(1) []
+    ],
+    /// I/O port CF9h, and PMxC5 (8-bit), its shadow the ABL's resets write
+    /// (`02h` then `06h`, `0Ah` then `0Eh`; WARM_RESET §2.3).
+    pub Cf9 [
+        SYS_RST OFFSET(1) NUMBITS(1) [],
+        RST_CPU OFFSET(2) NUMBITS(1) [],
+        FULL_RST OFFSET(3) NUMBITS(1) []
+    ],
+    /// PMx47 (8-bit): the boot timer's enable as the vendor's
+    /// `FchHwAcpiEnableBootTimer` sets it (`(x & 77h) | 88h`). Its
+    /// semantics are not known: fstart does not enable it.
+    pub BootTimer [
+        ENABLE OFFSET(3) NUMBITS(1) [],
+        BIT7 OFFSET(7) NUMBITS(1) []
+    ],
+    /// PMx93 (8-bit): the boot timer's reset type (`PcdBootTimerResetType`
+    /// 1 sets bit 7).
+    pub BootTimerType [
+        TYPE1 OFFSET(7) NUMBITS(1) []
     ]
 ];
+
 register_bitfields![u32,
+    /// PMxC0 FCH::PM::S5ResetStat (32-bit, write-1-to-clear): what reset
+    /// the platform last went through. Bits 19, 20 and 22 from the
+    /// vendor's stress-reset test (SilVeniceDxe
+    /// `FchHwAcpiProgramStressReset`, both donors; WARM_RESET §2.1).
+    /// Bits 7:0 are [`S5ResetStatus`], the byte the FCHs' code writes.
+    pub ResetStatus [
+        /// Left out of the vendor's after-G3 test (meaning unknown).
+        BIT12 OFFSET(12) NUMBITS(1) [],
+        /// A CF9h 06h reset.
+        CF9_RESET OFFSET(19) NUMBITS(1) [],
+        /// A CF9h 0Eh (full) reset.
+        CF9_FULL_RESET OFFSET(20) NUMBITS(1) [],
+        /// A keyboard-controller reset.
+        KBC_RESET OFFSET(22) NUMBITS(1) [],
+        /// A sync flood's reset (Dell AmdPlatformRasWhDxe `0xf780`
+        /// reports it as the previous boot's error; DEVICES.md §2.12).
+        SYNC_FLOOD_RESET OFFSET(27) NUMBITS(1) []
+    ],
     /// PMx00 FCH::PM::PmDecodeEn.
     pub Decode [
         LEGACY OFFSET(0) NUMBITS(1) [],
@@ -216,6 +263,16 @@ register_bitfields![u32,
         ASF_CLK_STRETCH OFFSET(17) NUMBITS(1) [],
         ASF_CLK_SWITCH OFFSET(18) NUMBITS(1) [],
         SMBUS0_SEL OFFSET(19) NUMBITS(2) [],
+        /// PMx03\[1:0\]: the watchdog's count period (Linux `sp5100_tco`,
+        /// `EFCH_PM_DECODEEN_SECOND_RES`).
+        WATCHDOG_FREQ OFFSET(24) NUMBITS(2) [
+            Us32 = 0,
+            Ms10 = 1,
+            Ms100 = 2,
+            S1 = 3
+        ],
+        /// PMx03\[3:2\]: the watchdog off (`EFCH_PM_WATCHDOG_DISABLE`).
+        WATCHDOG_DISABLE OFFSET(26) NUMBITS(2) [],
         HPET64 OFFSET(28) NUMBITS(1) [],
         HPET_MSI OFFSET(29) NUMBITS(1) []
     ],
@@ -254,6 +311,22 @@ register_bitfields![u32,
     /// the public PPRs.
     pub Aoac94 [
         SX OFFSET(14) NUMBITS(2) []
+    ],
+    /// WDTx00 (`FED8_0B00`, 32-bit): the FCH watchdog's control (Linux
+    /// `sp5100_tco` `SP5100_WDT_CONTROL`; the WDAT's actions, `qilian::pm::WDAT`).
+    pub WatchdogControl [
+        /// Counting (`SP5100_WDT_START_STOP_BIT`).
+        RUN OFFSET(0) NUMBITS(1) [],
+        /// It expired and reset the system (`SP5100_WDT_FIRED`,
+        /// write-1-to-clear).
+        FIRED OFFSET(1) NUMBITS(1) [],
+        /// Expiry powers off instead of resetting
+        /// (`SP5100_WDT_ACTION_RESET`).
+        SHUTDOWN OFFSET(2) NUMBITS(1) [],
+        /// Disabled in hardware (`SP5100_WDT_DISABLED`, read-only).
+        DISABLED OFFSET(3) NUMBITS(1) [],
+        /// Reload the count (`SP5100_WDT_TRIGGER_BIT`).
+        TRIGGER OFFSET(7) NUMBITS(1) []
     ]
 ];
 
@@ -264,6 +337,20 @@ pub const PM_0A: At<u8, Pm0a::Register> = pm::at(0x0a);
 pub const PM_0B: At<u8> = pm::at(0x0b);
 pub const PM_SERIAL_IRQ: At<u8, SerialIrq::Register> = pm::at(0x54);
 pub const PM_RTC_SHADOW: At<u8, RtcShadow::Register> = pm::at(0x5b);
+pub const PM_RESET_CONTROL0: At<u8, ResetControl0::Register> = pm::at(0x10);
+pub const PM_BOOT_TIMER: At<u8, BootTimer::Register> = pm::at(0x47);
+pub const PM_BOOT_TIMER_TYPE: At<u8, BootTimerType::Register> = pm::at(0x93);
+/// PMxC0 as a whole ([`PM_S5_RESET_STATUS`] is its low byte).
+pub const PM_RESET_STATUS: At<u32, ResetStatus::Register> = pm::at(0xc0);
+/// PMxC2: PMxC0\[23:16\] as a byte, the vendor's write-1-to-clear width
+/// ([`ResetStatus`]'s bits, shifted: [`reset_status2`]).
+pub const PM_RESET_STATUS2: At<u8> = pm::at(0xc2);
+
+/// The PMxC2 byte of PMxC0 bits `status` (only bits 23:16 count).
+pub const fn reset_status2(status: FieldValue<u32, ResetStatus::Register>) -> u8 {
+    (status.value >> 16) as u8
+}
+pub const PM_CF9_SHADOW: At<u8, Cf9::Register> = pm::at(0xc5);
 pub const PM_RTC_EXT_INDEX: At<u8> = pm::at(0x5e);
 pub const PM_RTC_EXT_DATA: At<u8> = pm::at(0x5f);
 /// The ACPI I/O blocks (PMx60..PMx6E).
@@ -297,6 +384,13 @@ pub const MISC_CLK_CNTL1: At<u32, MiscClkCntl1::Register> = misc::at(0x40);
 /// The PM1 block through the ACPI MMIO.
 pub const ACPI_PM1_STATUS: At<u16, Pm1Status::Register> = acpi::at(0x00);
 pub const ACPI_PM1_ENABLE: At<u16, Pm1Enable::Register> = acpi::at(0x02);
+/// PM1_CNT through the ACPI MMIO (coreboot's `MMIO_ACPI_PM1_CNT_BLK`),
+/// readable whatever PMx62 decodes.
+pub const ACPI_PM1_CONTROL: At<u16, Pm1Control::Register> = acpi::at(0x04);
+/// The CF9h reset port, in the I/O window.
+pub const RESET_PORT: At<u8, Cf9::Register> = At::new(0xcf9);
+/// The FCH watchdog's control (WDTx00).
+pub const WDT_CONTROL: At<u32, WatchdogControl::Register> = At::new(WDT);
 pub const AOAC_94: At<u32, Aoac94::Register> = aoac::at(0x94);
 /// The AOAC D3 control and state of a device.
 pub const fn aoac_control(device: u8) -> At<u8, AoacControl::Register> {

@@ -173,6 +173,7 @@ fn discover_df2<P: ConfigRegionAccess + Clone>(df: &Fabric<P>) -> Result<Topolog
                 device: crate::df::NODE0_DEVICE + node,
             });
             let _ = rbs.push(RootBridge {
+                segment: 0,
                 socket: s,
                 index: d,
                 fabric_id,
@@ -222,6 +223,7 @@ fn discover_df3<P: ConfigRegionAccess + Clone>(
             let base = unsafe { df.inst(s, id, regs::CFG_ADDR_CTL) }
                 .read(regs::CFG_ADDR_CTL::BUS_NUM) as u8;
             let _ = rbs.push(RootBridge {
+                segment: 0,
                 socket: s,
                 index: i as u8,
                 fabric_id,
@@ -380,6 +382,7 @@ pub(crate) mod tests {
             root_bridges: [(0u8, 0x40u8), (1, 0x80), (2, 0xC0), (3, 0)]
                 .iter()
                 .map(|&(i, b)| RootBridge {
+                    segment: 0,
                     socket: 0,
                     index: i,
                     fabric_id: 0x18 + u16::from(i),

@@ -157,10 +157,22 @@ pub fn df_wdt_ns(df_global_ctrl: u32) -> Option<u64> {
 /// when no setting satisfies the rule (DXE ZP `0x1884`, SSP `0x1c0c`, GN
 /// `0x211c`).
 pub fn wdt_setting(generation: Silicon, requested: Wdt, df_global_ctrl: u32) -> Option<Wdt> {
-    let Some(df) = df_wdt_ns(df_global_ctrl) else {
+    wdt_against(
+        requested,
+        df_wdt_ns(df_global_ctrl),
+        generation == Silicon::Zp,
+    )
+}
+
+/// The CPU watchdog setting next to a DF watchdog of `df_ns` (`None`: off,
+/// the request stands): from `requested`, the first setting longer
+/// (`longer`) or shorter than the DF's, walking the donors' order; `None`
+/// when none is. The DF register layout is the caller's (WH:
+/// `df::wh::watchdog_ns`; Zen 6 `CcxEnableWdt` `0xf4d440` steps down).
+pub fn wdt_against(requested: Wdt, df_ns: Option<u64>, longer: bool) -> Option<Wdt> {
+    let Some(df) = df_ns else {
         return Some(requested);
     };
-    let longer = generation == Silicon::Zp;
     let ok = |w: Wdt| {
         w.period_ns()
             .is_some_and(|p| if longer { p >= df } else { p < df })

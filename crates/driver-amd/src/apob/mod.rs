@@ -22,6 +22,7 @@
 //! - [`event`]: 7/6 ABL event log
 
 pub mod ccx;
+pub mod cxl;
 pub mod event;
 pub mod mem;
 pub mod nps;
@@ -30,6 +31,7 @@ pub mod rs;
 #[cfg(feature = "smbios")]
 pub mod smbios;
 pub mod sysmap;
+pub mod v2;
 pub use sysmap::{Hole, MemoryMap};
 
 use zerocopy::little_endian::U32;
@@ -144,6 +146,8 @@ impl<'a> Apob<'a> {
                 return Err(ApobError::Version(version));
             }
             Variant::Zp | Variant::Rv | Variant::Ssp | Variant::Gn => first,
+            // WH's APOB is the V2 format (`super::v2`).
+            Variant::Wh => return Err(ApobError::Version(version)),
         };
         let size_error = ApobError::Size { size, first };
         let data = data.get(..size as usize).ok_or(size_error)?;

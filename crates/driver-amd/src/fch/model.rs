@@ -29,11 +29,18 @@ pub struct State {
 pub struct Mem(pub Rc<RefCell<State>>);
 
 impl Mem {
-    /// I/O ports with the FCH index/data pairs (PM, AB, PCI_INTR, RTC).
+    /// I/O ports with the FCH index/data pairs (PM, AB, PCI_INTR, RTC,
+    /// CMOS bank 1).
     pub fn ports() -> Self {
         let m = Self::default();
-        m.0.borrow_mut().pairs =
-            [(0xcd7, 0xcd6), (0xcdc, 0xcd8), (0xc01, 0xc00), (0x71, 0x70)].into();
+        m.0.borrow_mut().pairs = [
+            (0xcd7, 0xcd6),
+            (0xcdc, 0xcd8),
+            (0xc01, 0xc00),
+            (0x71, 0x70),
+            (0x73, 0x72),
+        ]
+        .into();
         m
     }
     /// The value behind `index` of the pair with data port `data`.

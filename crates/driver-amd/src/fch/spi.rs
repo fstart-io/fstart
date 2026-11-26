@@ -1,18 +1,31 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The SPI ROM controller (FCH::ITF::SPI at [`super::SPI_BASE`]) of every
-//! FCH, the LPC ROM protect ranges, and a reserved flash region through its
-//! command engine ([`flash`]).
+//! FCH, the LPC ROM protect ranges, a reserved flash region through its
+//! command engine ([`flash`]), and the whole flash read through SMN on
+//! Qilian ([`smn`]).
 //!
 //! [`reset`] is PEI task af43, identical on all three SP3 generations at
 //! the donor defaults (FCH_SP3 §3.1); speed and read mode are policy (§8,
 //! Rome PCD 0xDB/0xDC/0xDD).
+//!
+//! The host shares the flash with the PSP (and on some boards a BMC).
+//! The vendors' writers take no lock and ask no other master: they wait
+//! for the command engine to be idle before they program a command
+//! ([`engine_idle`]) and write only what the controller lets the host
+//! write ([`WriteAccess`]). The PSP writes its own NV data through x86 SMM
+//! (P2C 0x83..0x86), and takes the engine over only when x86 asks it to
+//! (ROM Armor's EnterSmmOnlyMode), which fstart never does
+//! (reports/research/SPI_ARBITRATION.md).
 use super::{FchHw, SPI_BASE, lpc};
 use crate::cpu::Silicon;
 use crate::window::{At, Window, update};
 #[cfg(feature = "spi-flash")]
 pub mod flash;
+pub mod smn;
 
-use tock_registers::interfaces::{ReadWriteable, Writeable};
+use fstart_core::services::{Timer, poll_until};
+use tock_registers::LocalRegisterCopy;
+use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::register_bitfields;
 
 register_bitfields![u32,
@@ -21,9 +34,28 @@ register_bitfields![u32,
         BIT16 OFFSET(16) NUMBITS(1) [],
         READ_MODE_LOW OFFSET(18) NUMBITS(1) [],
         BIT19 OFFSET(19) NUMBITS(1) [],
+        ILLEGAL_ACCESS OFFSET(21) NUMBITS(1) [],
+        ACCESS_ROM_EN OFFSET(22) NUMBITS(1) [],
+        HOST_ACCESS_ROM_EN OFFSET(23) NUMBITS(1) [],
         ARB_WAIT_COUNT OFFSET(24) NUMBITS(3) [],
         READ_MODE_HIGH OFFSET(29) NUMBITS(2) [],
         BUSY OFFSET(31) NUMBITS(1) []
+    ],
+    /// SPIx04 FCH::ITF::SPI::SPIRestrictedCmd: opcodes the controller
+    /// refuses (0: unused).
+    pub RestrictedCmd [
+        CMD0 OFFSET(0) NUMBITS(8) [],
+        CMD1 OFFSET(8) NUMBITS(8) [],
+        CMD2 OFFSET(16) NUMBITS(8) [],
+        CMD3 OFFSET(24) NUMBITS(8) []
+    ],
+    /// SPIx08 FCH::ITF::SPI::SPIRestrictedCmd2: one more, and three
+    /// without an address.
+    pub RestrictedCmd2 [
+        CMD4 OFFSET(0) NUMBITS(8) [],
+        WO_ADDR0 OFFSET(8) NUMBITS(8) [],
+        WO_ADDR1 OFFSET(16) NUMBITS(8) [],
+        WO_ADDR2 OFFSET(24) NUMBITS(8) []
     ],
     /// SPIx0C FCH::ITF::SPI::SPICntrl1.
     pub Cntrl1 [
@@ -53,6 +85,10 @@ register_bitfields![u8,
     /// SPIx20: SPI100 enable.
     pub Spi100EnableByte [
         ENABLE OFFSET(0) NUMBITS(1) []
+    ],
+    /// SPIx47 FCH::ITF::SPI::CmdTrig (write-1): the command engine runs.
+    pub CmdTrigger [
+        EXECUTE OFFSET(7) NUMBITS(1) []
     ]
 ];
 register_bitfields![u16,
@@ -75,6 +111,8 @@ register_bitfields![u16,
 ];
 
 pub const CNTRL0: At<u32, Cntrl0::Register> = At::new(SPI_BASE);
+pub const RESTRICTED_CMD: At<u32, RestrictedCmd::Register> = At::new(SPI_BASE + 0x04);
+pub const RESTRICTED_CMD2: At<u32, RestrictedCmd2::Register> = At::new(SPI_BASE + 0x08);
 pub const CNTRL1: At<u32, Cntrl1::Register> = At::new(SPI_BASE + 0x0c);
 pub const ALT_SPI_CS: At<u8, AltSpiCs::Register> = At::new(SPI_BASE + 0x1d);
 pub const SPI100_ENABLE: At<u16, Spi100Enable::Register> = At::new(SPI_BASE + 0x20);
@@ -82,6 +120,7 @@ pub const SPI100_ENABLE: At<u16, Spi100Enable::Register> = At::new(SPI_BASE + 0x
 pub const SPI100_ENABLE_BYTE: At<u8, Spi100EnableByte::Register> = At::new(SPI_BASE + 0x20);
 pub const SPI100_SPEED: At<u16, Spi100Speed::Register> = At::new(SPI_BASE + 0x22);
 pub const SPI100_HOST_PREFETCH: At<u16, Spi100HostPrefetch::Register> = At::new(SPI_BASE + 0x2c);
+pub const CMD_TRIGGER: At<u8, CmdTrigger::Register> = At::new(SPI_BASE + 0x47);
 pub const STATUS: At<u32, Status::Register> = At::new(SPI_BASE + 0x4c);
 /// D14F3x50 + 4n: ROM protect range n.
 const fn rom_protect(index: u8) -> At<u32, RomProtect::Register> {
@@ -226,6 +265,128 @@ pub fn lock<H: FchHw>(hw: &H) {
     hw.mmio().at(ALT_SPI_CS).modify(AltSpiCs::PROTECT_LOCK::SET);
 }
 
+/// How long [`engine_idle`] waits: Dell's SpiFlashCommonLib gives up
+/// after 100 polls 100 µs apart (`WaitSpiBusReady`); GIGABYTE's
+/// FchMmioSpiAccessLib waits without bound (SPI_ARBITRATION §2.1).
+pub const IDLE_TIMEOUT_US: u64 = 10_000;
+
+/// Whether the command engine is free within [`IDLE_TIMEOUT_US`]: no
+/// command triggered (SPIx47\[Execute\]) and the bus idle
+/// (SPIx4C\[SpiBusy\]). Both Venice donors wait for this before they
+/// program a command, GIGABYTE for both bits, Dell for SpiBusy.
+pub fn engine_idle<W: Window>(spi: &W, clock: &dyn Timer) -> bool {
+    poll_until(clock, IDLE_TIMEOUT_US, || {
+        let triggered = spi.at(CMD_TRIGGER).is_set(CmdTrigger::EXECUTE);
+        let busy = spi.at(STATUS).is_set(Status::BUSY);
+        (!triggered && !busy).then_some(())
+    })
+    .is_some()
+}
+
+/// What the controller lets the host's command engine write, read once
+/// before a writer binds the engine. No donor reads it before it writes;
+/// these are the controls PPR 55570 §9.1.7.3.1 lists to block host
+/// writes, and what the PSP or the ABL may have left (SPI_ARBITRATION §4).
+#[derive(Debug, Clone, Copy)]
+pub struct WriteAccess {
+    cntrl0: LocalRegisterCopy<u32, Cntrl0::Register>,
+    /// SPIx04 and SPIx08, byte by byte.
+    restricted: [u8; 8],
+    alt_spi_cs: LocalRegisterCopy<u8, AltSpiCs::Register>,
+    spi_base: LocalRegisterCopy<u32, lpc::SpiBase::Register>,
+    protect: [LocalRegisterCopy<u32, RomProtect::Register>; 4],
+}
+
+/// Why the host may not write the flash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blocked {
+    /// The SPI registers read all-ones, or D14F3xA0 does not put them at
+    /// [`SPI_BASE`].
+    NotDecoded,
+    /// D14F3xA0\[PspSpiMmioSel\]: the window shows the PSP's registers.
+    PspRegisters,
+    /// SPIx04/08 restricts this opcode.
+    Restricted(u8),
+    /// ROM protect range n write-protects and SpiProtectEn0 applies it.
+    RomProtect(u8),
+}
+
+impl WriteAccess {
+    pub fn read<H: FchHw>(hw: &H) -> Self {
+        let spi = hw.mmio();
+        let lpc = hw.lpc();
+        let first = spi.at(RESTRICTED_CMD).get().to_le_bytes();
+        let second = spi.at(RESTRICTED_CMD2).get().to_le_bytes();
+        let mut restricted = [0; 8];
+        restricted[..4].copy_from_slice(&first);
+        restricted[4..].copy_from_slice(&second);
+        Self {
+            cntrl0: spi.at(CNTRL0).extract(),
+            restricted,
+            alt_spi_cs: spi.at(ALT_SPI_CS).extract(),
+            spi_base: lpc.at(lpc::SPI_BASE_ADDRESS).extract(),
+            protect: core::array::from_fn(|i| lpc.at(rom_protect(i as u8)).extract()),
+        }
+    }
+
+    /// Whether SPIx04/08 restricts `opcode` (0 marks an unused slot).
+    pub fn restricts(&self, opcode: u8) -> bool {
+        opcode != 0 && self.restricted.contains(&opcode)
+    }
+
+    /// Why the host may not send `opcodes` to write flash
+    /// `[offset, offset + size)`, if it may not. A write-protected range
+    /// blocks the write when it overlaps the extent read either as flash
+    /// offsets or as the low 24 bits of a ROM2 host address: which one the
+    /// FCH compares is not established for every FCH (SPI_ARBITRATION §4),
+    /// so a range away from the extent under both readings does not stop
+    /// a writer that worked before the check existed.
+    pub fn blocked(&self, opcodes: &[u8], offset: u32, size: u32) -> Option<Blocked> {
+        if self.cntrl0.get() == u32::MAX || self.spi_base.read(lpc::SpiBase::BASE) != SPI_BASE >> 8
+        {
+            return Some(Blocked::NotDecoded);
+        }
+        if self.spi_base.is_set(lpc::SpiBase::PSP_SPI_MMIO_SEL) {
+            return Some(Blocked::PspRegisters);
+        }
+        if let Some(&opcode) = opcodes.iter().find(|&&op| self.restricts(op)) {
+            return Some(Blocked::Restricted(opcode));
+        }
+        if self.alt_spi_cs.is_set(AltSpiCs::PROTECT_EN0) {
+            let start = u64::from(offset);
+            let end = start + u64::from(size);
+            let page = |a: u64| a & 0xff_ffff;
+            let range = self.protect.iter().position(|r| {
+                if !r.is_set(RomProtect::WRITE_PROTECT) {
+                    return false;
+                }
+                let unit: u64 = if r.is_set(RomProtect::UNIT_64K) {
+                    64 << 10
+                } else {
+                    4 << 10
+                };
+                let base = u64::from(r.read(RomProtect::BASE)) << 12;
+                let len = (u64::from(r.read(RomProtect::RANGE)) + 1) * unit;
+                let overlaps = |b: u64| b < end && start < b + len;
+                // Flash offsets, or the ROM2 view: the same offsets
+                // within the 16 MiB page, against any page of the extent.
+                overlaps(base)
+                    || (start >> 24..=(end - 1) >> 24).any(|p| overlaps((p << 24) | page(base)))
+            });
+            if let Some(index) = range {
+                return Some(Blocked::RomProtect(index as u8));
+            }
+        }
+        None
+    }
+
+    /// SPIx00, for the log: SpiAccessRomEn and SpiHostAccessRomEn cleared
+    /// freeze the restricted opcodes.
+    pub fn cntrl0(&self) -> u32 {
+        self.cntrl0.get()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +410,129 @@ mod tests {
         assert_eq!(spi.get(BASE + 0x2c, 2), 0x4000);
         let ba = hw.pci.0.borrow().config[&(0, 0x14, 3, 0xb8)] >> 16;
         assert_eq!(ba & 0x180, 0x180);
+    }
+
+    const WRITE: [u8; 4] = [0x06, 0x05, 0x02, 0x20];
+
+    /// An FCH as the PSP hands it over: SPI BAR at its fixed base,
+    /// SpiAccessRomEn/SpiHostAccessRomEn set, nothing restricted.
+    fn handed_over() -> crate::fch::model::TestFch {
+        let hw = fch();
+        hw.mmio.put(SPI_BASE, 4, 0x00c0_0000);
+        hw.pci
+            .0
+            .borrow_mut()
+            .config
+            .insert((0, 0x14, 3, 0xa0), SPI_BASE | 0x2);
+        hw
+    }
+
+    #[test]
+    fn writes_allowed_as_handed_over() {
+        let access = WriteAccess::read(&handed_over());
+        assert_eq!(access.blocked(&WRITE, 0x00ff_0000, 0x1000), None);
+        assert!(!access.restricts(0));
+    }
+
+    #[test]
+    fn undecoded_or_moved_registers_block_writes() {
+        let hw = handed_over();
+        hw.mmio.put(SPI_BASE, 4, u32::MAX);
+        assert_eq!(
+            WriteAccess::read(&hw).blocked(&WRITE, 0x00ff_0000, 0x1000),
+            Some(Blocked::NotDecoded)
+        );
+        let hw = handed_over();
+        hw.pci
+            .0
+            .borrow_mut()
+            .config
+            .insert((0, 0x14, 3, 0xa0), 0xfed1_0002);
+        assert_eq!(
+            WriteAccess::read(&hw).blocked(&WRITE, 0x00ff_0000, 0x1000),
+            Some(Blocked::NotDecoded)
+        );
+        let hw = handed_over();
+        hw.pci
+            .0
+            .borrow_mut()
+            .config
+            .insert((0, 0x14, 3, 0xa0), SPI_BASE | 0x12);
+        assert_eq!(
+            WriteAccess::read(&hw).blocked(&WRITE, 0x00ff_0000, 0x1000),
+            Some(Blocked::PspRegisters)
+        );
+    }
+
+    #[test]
+    fn restricted_opcodes_block_writes() {
+        // Dell's write lock (FchInitDxeRs 0x11e0): WRSR, SE, BE, PP and
+        // WREN, chip erase.
+        let hw = handed_over();
+        hw.mmio.put(SPI_BASE + 4, 4, 0x02d8_2001);
+        hw.mmio.put(SPI_BASE + 8, 4, 0x0060_c706);
+        let access = WriteAccess::read(&hw);
+        assert_eq!(
+            access.blocked(&WRITE, 0x00ff_0000, 0x1000),
+            Some(Blocked::Restricted(0x06))
+        );
+        assert!(access.restricts(0xc7) && access.restricts(0xd8));
+        assert!(!access.restricts(0x03) && !access.restricts(0x9f));
+        // Reads stay allowed.
+        assert_eq!(access.blocked(&[0x03, 0x9f], 0x00ff_0000, 0x1000), None);
+    }
+
+    #[test]
+    fn write_protected_ranges_block_writes_once_enabled() {
+        let hw = handed_over();
+        hw.pci
+            .0
+            .borrow_mut()
+            .config
+            .insert((0, 0x14, 3, 0x58), 0x00ff_0000 | 1 << 10 | 1 << 8 | 0x0f);
+        // Programmed, not applied.
+        assert_eq!(
+            WriteAccess::read(&hw).blocked(&WRITE, 0x00ff_0000, 0x1000),
+            None
+        );
+        hw.mmio.put(SPI_BASE + 0x1d, 1, 0x08);
+        assert_eq!(
+            WriteAccess::read(&hw).blocked(&WRITE, 0x00ff_0000, 0x1000),
+            Some(Blocked::RomProtect(2))
+        );
+        // Range 2 covers 0x00FF_0000 + 16 x 64 KiB: the same offsets in the
+        // upper page are covered through ROM2's view, the store below is not.
+        let access = WriteAccess::read(&hw);
+        assert_eq!(
+            access.blocked(&WRITE, 0x01ff_8000, 0x1000),
+            Some(Blocked::RomProtect(2))
+        );
+        assert_eq!(access.blocked(&WRITE, 0x00fe_0000, 0x1_0000), None);
+    }
+
+    #[test]
+    fn engine_idle_waits_for_trigger_and_busy_within_bound() {
+        use fstart_core::services::ManualTimer;
+        let hw = fch();
+        // Execute still set twice, then SpiBusy once.
+        hw.mmio
+            .0
+            .borrow_mut()
+            .reads
+            .insert(SPI_BASE + 0x47, std::vec![0x80, 0x80, 0]);
+        hw.mmio
+            .0
+            .borrow_mut()
+            .reads
+            .insert(SPI_BASE + 0x4c, std::vec![0x8000_0000, 0]);
+        let clock = ManualTimer::ticking();
+        assert!(engine_idle(&hw.mmio, &clock));
+        // A bus that stays busy is given up on at the bound, not later.
+        hw.mmio.0.borrow_mut().reads.clear();
+        hw.mmio.put(SPI_BASE + 0x4c, 4, 0x8000_0000);
+        let clock = ManualTimer::ticking();
+        assert!(!engine_idle(&hw.mmio, &clock));
+        let waited = fstart_core::services::Timer::timestamp_us(&clock);
+        assert!((IDLE_TIMEOUT_US..IDLE_TIMEOUT_US + 10).contains(&waited));
     }
 }

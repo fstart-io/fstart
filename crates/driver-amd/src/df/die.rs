@@ -98,6 +98,7 @@ pub fn root_bridges<S: Soc, P: ConfigRegionAccess + Copy>(
     dies.iter()
         .enumerate()
         .map(|(i, die)| RootBridge {
+            segment: 0,
             socket: die.index / 4,
             index: die.index % 4,
             fabric_id: die.ioms_fabric_id().into(),

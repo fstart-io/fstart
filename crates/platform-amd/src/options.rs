@@ -30,13 +30,16 @@ pub(crate) type FlashStorage = fstart_payload::crabefi::settings::FlashStorage<
 >;
 
 /// Bind a reserved flash extent to CrabEFI. The SPI command engine must
-/// read the same FFS bytes as the stage's ROM window before allowing writes.
+/// read the same FFS bytes as the stage's ROM window, and `fch`'s SPI
+/// controller let the host write, before writes are allowed.
 ///
 /// # Safety
-/// SPI100 must be decoded at its fixed base. The payload owns it exclusively
-/// and the caller runs from RAM. The extent is reserved for EFI variables.
+/// `fch` decodes SPI100 at its fixed base. The payload owns it exclusively
+/// on x86 and the caller runs from RAM. The extent is reserved for EFI
+/// variables.
 #[cfg(feature = "payload-uefi")]
 pub(crate) unsafe fn storage(
+    fch: &impl fstart_driver_amd::fch::FchHw,
     clock: fstart_driver_amd::ccx::tsc::Tsc,
     extent: fstart_driver_amd::fch::spi::flash::Extent,
     probe_offset: u32,
@@ -45,7 +48,7 @@ pub(crate) unsafe fn storage(
     use fstart_driver_amd::fch::spi::flash::{ERASE_SIZE, Flash};
 
     // SAFETY: the caller owns the controller and its extent.
-    let Ok(flash) = (unsafe { Flash::new(clock, extent, probe_offset, probe) }) else {
+    let Ok(flash) = (unsafe { Flash::new(fch, clock, extent, probe_offset, probe) }) else {
         fstart_log::error!("options: SPI100 command engine unusable, settings are volatile");
         return None;
     };

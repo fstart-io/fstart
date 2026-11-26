@@ -35,6 +35,7 @@ pub mod rs;
 pub mod rv;
 pub mod ssp;
 pub mod table;
+pub mod wh;
 pub mod zp;
 /// One NBIO: a ZP die (Naples) or an IOD quadrant (Rome, Milan).
 #[derive(Clone)]
@@ -389,6 +390,7 @@ pub(crate) mod nbio_tests {
     pub fn nbio(generation: Silicon, index: u8, bus: u8) -> (Model, Nbio<Model>) {
         let model = Model::default();
         let rb = RootBridge {
+            segment: 0,
             socket: 0,
             index,
             fabric_id: 0,

@@ -32,9 +32,38 @@ register_bitfields![u32,
         COMPLIANCE OFFSET(2) NUMBITS(1) [],
         HOTPLUG OFFSET(4) NUMBITS(4) [],
         MAX_SPEED OFFSET(8) NUMBITS(4) [],
-        TARGET_SPEED OFFSET(12) NUMBITS(4) []
+        TARGET_SPEED OFFSET(12) NUMBITS(4) [],
+        /// WH: master PLL (`InitAskEntryAttributes`, Dell `0xf799b0`).
+        MASTER_PLL OFFSET(26) NUMBITS(1) [],
+        /// WH: invert receive polarity.
+        RX_POLARITY OFFSET(27) NUMBITS(1) [],
+        /// WH: invert transmit polarity.
+        TX_POLARITY OFFSET(28) NUMBITS(1) []
     ],
-    pub Transport [LOGICAL_BRIDGE OFFSET(16) NUMBITS(5) []],
+    /// ASK `+0x10`, WH only (Dell `0xf799b0`).
+    pub Phy [
+        DEEMPHASIS OFFSET(16) NUMBITS(2) [],
+        DEEMPHASIS_OVERRIDE OFFSET(18) NUMBITS(1) [],
+        TX_VETTING OFFSET(19) NUMBITS(1) [],
+        RX_VETTING OFFSET(20) NUMBITS(1) []
+    ],
+    /// ASK `+0x14`; all but the logical bridge WH only (Dell `0xf799b0`).
+    pub Transport [
+        /// UBM host-facing connector index.
+        HFC OFFSET(0) NUMBITS(8) [],
+        /// UBM drive-facing connector index.
+        DFC OFFSET(8) NUMBITS(8) [],
+        LOGICAL_BRIDGE OFFSET(16) NUMBITS(5) [],
+        SWING OFFSET(21) NUMBITS(3) [],
+        SRIS_SKIP_INTERVAL OFFSET(24) NUMBITS(3) [],
+        /// Descriptor `+0x42[7:6]` (Dell; GIGABYTE bit 27 only), unnamed.
+        EXTRA OFFSET(27) NUMBITS(2) []
+    ],
+    /// ASK `+0x18`, WH only.
+    pub Attr [
+        /// Early-trained or chipset link (`CsLink == 2`).
+        EARLY OFFSET(1) NUMBITS(1) []
+    ],
     // NFX's engine lookup compares ASK+0x22 with the native engine's
     // wrapper-local PortId. This is NOT the global devfn-remap slot/LBID.
     pub Status [
@@ -52,6 +81,7 @@ pub enum LinkSpeed {
     Gen3,
     Gen4,
     Gen5,
+    Gen6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +146,44 @@ pub struct Ask {
 const _: () = assert!(size_of::<Ask>() == 0x34);
 
 impl Ask {
+    /// An ASK from its 13 dwords, as the host sends it.
+    pub fn from_dwords(words: [u32; 13]) -> Self {
+        Self {
+            lane: words[0].into(),
+            handle: words[1].into(),
+            device: words[2].into(),
+            link: words[3].into(),
+            phy: words[4].into(),
+            transport: words[5].into(),
+            reserved0: [words[6].into(), words[7].into()],
+            status: words[8].into(),
+            reserved1: [
+                words[9].into(),
+                words[10].into(),
+                words[11].into(),
+                words[12].into(),
+            ],
+        }
+    }
+    /// The 13 dwords.
+    pub fn dwords(&self) -> [u32; 13] {
+        let r = self.reserved1.map(|w| w.get());
+        [
+            self.lane.get(),
+            self.handle.get(),
+            self.device.get(),
+            self.link.get(),
+            self.phy.get(),
+            self.transport.get(),
+            self.reserved0[0].get(),
+            self.reserved0[1].get(),
+            self.status.get(),
+            r[0],
+            r[1],
+            r[2],
+            r[3],
+        ]
+    }
     pub fn bytes(&self) -> &[u8] {
         self.as_bytes()
     }
@@ -222,13 +290,20 @@ pub fn translate(roots: &[u8], start: u8, end: u8) -> Result<Mapping, Error> {
 /// Build one ASK entry. Ancillary indices are explicitly supplied by the
 /// eventual ancillary-buffer owner; no virtual address is cast to firmware.
 pub fn build(roots: &[u8], port: &Port, ancillary_index: u16) -> Result<(Mapping, Ask), Error> {
+    let mapping = translate(roots, port.start, port.end)?;
+    let ask = build_mapped(mapping, port, ancillary_index)?;
+    Ok((mapping, ask))
+}
+
+/// Build one 52-byte ASK entry from an already-validated [`Mapping`] (used by
+/// both RS wrapper translation and WH dual-IOD direct lane mapping).
+pub fn build_mapped(mapping: Mapping, port: &Port, ancillary_index: u16) -> Result<Ask, Error> {
     if port.device > 31 || port.function > 7 {
         return Err(Error::DeviceFunction);
     }
     if port.hotplug > 7 {
         return Err(Error::Hotplug(port.hotplug));
     }
-    let mapping = translate(roots, port.start, port.end)?;
     let width = mapping.end - mapping.start + 1;
     if ![1, 2, 4, 8, 16].contains(&width) {
         return Err(Error::Width(width));
@@ -260,20 +335,17 @@ pub fn build(roots: &[u8], port: &Port, ancillary_index: u16) -> Result<(Mapping
                 port.target_speed as u32
             }),
     );
-    Ok((
-        mapping,
-        Ask {
-            lane: lane.get().into(),
-            handle: handle.get().into(),
-            device: device.get().into(),
-            link: link.get().into(),
-            phy: 0.into(),
-            transport: 0.into(),
-            reserved0: [0.into(); 2],
-            status: 0.into(),
-            reserved1: [0.into(); 4],
-        },
-    ))
+    Ok(Ask {
+        lane: lane.get().into(),
+        handle: handle.get().into(),
+        device: device.get().into(),
+        link: link.get().into(),
+        phy: 0.into(),
+        transport: 0.into(),
+        reserved0: [0.into(); 2],
+        status: 0.into(),
+        reserved1: [0.into(); 4],
+    })
 }
 
 #[cfg(test)]

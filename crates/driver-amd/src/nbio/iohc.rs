@@ -45,7 +45,10 @@ register_bitfields![u32,
     ],
     pub NbBusNumCntl [
         BUS OFFSET(0) NUMBITS(8) [],
-        LAT_MODE OFFSET(8) NUMBITS(1) []
+        LAT_MODE OFFSET(8) NUMBITS(1) [],
+        /// WH: the root bus's PCI segment (`InitVdmNodeBusRangesWh`'s
+        /// `(seg << 16) | bus | 0x100`, FABRIC_2P §2.8).
+        SEGMENT OFFSET(16) NUMBITS(8) []
     ],
     pub LowerTopOfDram2 [
         ENABLE OFFSET(0) NUMBITS(1) [],
@@ -76,9 +79,14 @@ register_bitfields![u32,
         ENABLE OFFSET(31) NUMBITS(1) []
     ],
     pub NbProgDeviceRemap [DEVFN OFFSET(0) NUMBITS(8) []],
+    /// IOHC_BRIDGE_CNTL (`0x13B3_1004 + bridge * 0x400`, 32-bit).
     pub IohcBridgeCntl [
         BRIDGE_DIS OFFSET(0) NUMBITS(1) [],
         CFG_DIS OFFSET(2) NUMBITS(1) [],
+        /// WH: the MPIO port descriptor's byte `0x7B` bit 0
+        /// (`MpioControlPortsWh` `0xf66b80`); meaning unknown, reserved on
+        /// the older IOHCs, which leave it.
+        PORT_7B OFFSET(5) NUMBITS(1) [],
         CRS_ENABLE OFFSET(18) NUMBITS(1) []
     ],
     pub IohcRbBusRoute [
@@ -582,6 +590,7 @@ mod nbio_tests {
     fn bus_routes() {
         // Bench order: IOMS 0..3 own buses c0, 80, 40, 00.
         let rbs: [RootBridge; 4] = core::array::from_fn(|i| RootBridge {
+            segment: 0,
             socket: 0,
             index: i as u8,
             fabric_id: 0x18 + i as u16,

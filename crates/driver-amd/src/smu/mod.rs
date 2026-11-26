@@ -19,6 +19,7 @@ pub mod threads;
 pub mod v10;
 pub mod v11;
 pub mod v13;
+pub mod v14;
 pub mod v9;
 register_bitfields![u32,
     pub ThreadConfig [
@@ -57,6 +58,8 @@ pub mod response {
     pub const PREREQ: u32 = 0xfd;
     pub const UNKNOWN_CMD: u32 = 0xfe;
     pub const FAILED: u32 = 0xff;
+    /// Fatal firmware rejection (SMU v14): skip argument readback.
+    pub const FATAL: u32 = 0xffff_fffc;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +87,8 @@ pub struct Mailbox {
     /// Wait for the previous message's response before sending (V9, V10).
     /// The V11 response reads zero until the first message completes.
     pub wait_before: bool,
+    /// Number of consecutive argument registers (`6` on V9..V13, `4` on V14).
+    pub argument_count: usize,
 }
 impl Mailbox {
     pub const fn argument(&self, i: usize) -> SmnReg {
@@ -149,9 +154,21 @@ impl Mailbox {
         if took_ms > SLOW_MS {
             fstart_log::info!("smu: message {:#x} took {} ms", message, took_ms);
         }
+        let count = self.argument_count.min(ARGUMENT_COUNT);
+        let arguments = if response == response::FATAL {
+            [0; ARGUMENT_COUNT]
+        } else {
+            core::array::from_fn(|i| {
+                if i < count {
+                    smn.reg(self.argument(i)).get()
+                } else {
+                    0
+                }
+            })
+        };
         Ok(Reply {
             status: response,
-            arguments: core::array::from_fn(|i| smn.reg(self.argument(i)).get()),
+            arguments,
         })
     }
 
@@ -162,10 +179,15 @@ impl Mailbox {
     #[inline(always)]
     pub fn post(&self, smn: &impl SmnAccess, message: u32, arguments: [u32; ARGUMENT_COUNT]) {
         // The registers by value, not through `self`.
-        let (response, first, command) = (self.response, self.arguments, self.message);
+        let (response, first, command, count) = (
+            self.response,
+            self.arguments,
+            self.message,
+            self.argument_count.min(ARGUMENT_COUNT),
+        );
         smn.reg(response).set(0);
-        for (i, value) in (0..).zip(arguments) {
-            smn.reg(first.offset(4 * i)).set(value);
+        for (i, &value) in arguments[..count].iter().enumerate() {
+            smn.reg(first.offset(4 * i as u32)).set(value);
         }
         smn.reg(command).set(message);
     }
@@ -188,6 +210,35 @@ impl Mailbox {
     pub fn test(&self, smn: &impl SmnAccess, delay: &mut impl DelayNs) -> Result<(), Error> {
         self.request(smn, TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], delay)
             .map(drop)
+    }
+}
+
+/// The SMU's CPPC answer (`CppcGetInfo`: v11 message 0x17, v14 0x39,
+/// the same encoding; [`v11::cppc_info`], [`v14::msg::cppc_info`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CppcInfo {
+    /// Answer bits 1:0.
+    pub revision: u8,
+    /// Answer bits 31:2: bit `k` = `_CPC` register `k` is implemented.
+    pub supported: u32,
+}
+
+impl CppcInfo {
+    pub const fn from_answer(answer: u32) -> Self {
+        Self {
+            revision: (answer & 3) as u8,
+            supported: answer >> 2,
+        }
+    }
+
+    /// CPPC is on (answer bit 16 = `_CPC` CPPCEnable). AmdAcpiDxe also
+    /// needs revision 2 or later before it builds `_CPC`.
+    pub const fn enabled(&self) -> bool {
+        self.supported & 1 << 14 != 0 && self.revision > 1
+    }
+
+    pub const fn implements(&self, register: u8) -> bool {
+        self.supported & 1 << register != 0
     }
 }
 
@@ -393,6 +444,7 @@ mod tests {
         response: SmnReg::new(0x03b1_057c),
         arguments: SmnReg::new(0x03b1_09c4),
         wait_before: false,
+        argument_count: ARGUMENT_COUNT,
     };
 
     #[test]

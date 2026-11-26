@@ -12,6 +12,15 @@
 //! address bytes. [`Flash::new`] reads a range the caller has from the ROM
 //! window with 3- and with 4-byte addresses and uses whichever returns the
 //! same bytes; if neither does, the region stays read-only.
+//!
+//! The engine is the one both Venice vendors write with, directly, from
+//! DXE and SMM (reports/research/SPI_ARBITRATION.md): no lock or PSP
+//! request comes first. As they do, every command waits for the engine to
+//! be idle ([`super::engine_idle`]), and the region is writable only if
+//! the controller lets the host send the write opcodes
+//! ([`super::WriteAccess`]). What remains unknown (whether the PSP reads
+//! the part while x86 erases it, what LockFCHReg locks) only hardware
+//! shows.
 
 use core::cell::Cell;
 
@@ -19,15 +28,18 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
-use fstart_core::services::{FlashRegion, ServiceError};
+use fstart_core::services::{FlashRegion, ServiceError, Timer};
+use rflasher_core::chip::FlashChip;
+use rflasher_core::programmer::{FlashAccess, SpiFeatures, SpiMaster};
 use rflasher_core::protocol::{self as spi25, CommandAddressing};
 use rflasher_core::spi::{SpiCommand, opcodes};
-use rflasher_internal::controller::Controller;
 use rflasher_internal::{
     HostAccess, InternalError, MmioAccess, PciAddress, PciConfigAccess, Spi100Controller,
 };
 
-use crate::fch::SPI_BASE;
+use super::{Blocked, WriteAccess};
+use crate::fch::{FchHw, SPI_BASE};
+use crate::window::Mmio;
 use embedded_hal::delay::DelayNs;
 
 /// Highest address a 3-byte command reaches.
@@ -147,37 +159,104 @@ impl<D: DelayNs + Copy> HostAccess for Host<D> {
     }
 }
 
-/// One flash region through the SPI100 command engine.
-pub struct Flash<D: DelayNs + Copy> {
+/// The opcodes a write sends ([`FlashRegion::program`],
+/// [`FlashRegion::erase`]) and the read it is verified with.
+const WRITE_OPCODES: [u8; 5] = [
+    opcodes::WREN,
+    opcodes::RDSR,
+    opcodes::PP,
+    opcodes::SE_20,
+    opcodes::READ,
+];
+
+/// rflasher's SPI100 driver under the vendors' discipline: a restricted
+/// opcode is refused without touching the engine, and every command waits
+/// for the engine to be idle ([`super::engine_idle`]) before rflasher
+/// programs it.
+struct Engine<D: DelayNs + Timer + Copy> {
     controller: Spi100Controller<Host<D>>,
+    clock: D,
+    access: WriteAccess,
+}
+
+impl<D: DelayNs + Timer + Copy> SpiMaster for Engine<D> {
+    fn features(&self) -> SpiFeatures {
+        SpiMaster::features(&self.controller)
+    }
+    fn max_read_len(&self) -> usize {
+        SpiMaster::max_read_len(&self.controller)
+    }
+    fn max_write_len(&self) -> usize {
+        SpiMaster::max_write_len(&self.controller)
+    }
+    async fn execute(&mut self, cmd: &mut SpiCommand<'_>) -> rflasher_core::Result<()> {
+        if self.access.restricts(cmd.opcode) {
+            return Err(rflasher_core::Error::OpcodeNotSupported);
+        }
+        // SAFETY: `Flash::new`'s contract: the FCH decodes the SPI100
+        // registers at `SPI_BASE`, the window's only offsets.
+        let spi = unsafe { Mmio::new(0) };
+        if !super::engine_idle(&spi, &self.clock) {
+            return Err(rflasher_core::Error::SpiTimeout);
+        }
+        SpiMaster::execute(&mut self.controller, cmd).await
+    }
+    fn probe_opcode(&self, opcode: u8) -> bool {
+        !self.access.restricts(opcode)
+    }
+    fn chip_identified(&mut self, chip: &FlashChip) {
+        SpiMaster::chip_identified(&mut self.controller, chip)
+    }
+    async fn delay_us(&mut self, us: u32) {
+        SpiMaster::delay_us(&mut self.controller, us).await
+    }
+    fn check_access(&self, access: FlashAccess, addr: u32, len: u32) -> rflasher_core::Result<()> {
+        SpiMaster::check_access(&self.controller, access, addr, len)
+    }
+}
+
+/// One flash region through the SPI100 command engine.
+pub struct Flash<D: DelayNs + Timer + Copy> {
+    engine: Engine<D>,
     extent: Extent,
     /// How the part takes addresses; `None`: unknown, read-only.
     addressing: Option<CommandAddressing>,
 }
 
-impl<D: DelayNs + Copy> Flash<D> {
-    /// Bind `extent`. Writes are allowed only if it is 4 KiB aligned and the
-    /// command engine reads `expected` at flash offset `probe` (bytes the
-    /// caller read through the ROM window) in the part's address mode.
+impl<D: DelayNs + Timer + Copy> Flash<D> {
+    /// Bind `extent`. Writes are allowed only if it is 4 KiB aligned, the
+    /// controller lets the host write ([`WriteAccess::blocked`], read from
+    /// `fch`) and the command engine reads `expected` at flash offset
+    /// `probe` (bytes the caller read through the ROM window) in the part's
+    /// address mode.
     ///
     /// # Safety
-    /// The FCH decodes the SPI100 registers at [`SPI_BASE`] and nothing else
-    /// uses the command engine while this exists. The caller runs from RAM.
-    pub unsafe fn new(
-        delay: D,
+    /// `fch` is the FCH that decodes the SPI100 registers at [`SPI_BASE`],
+    /// and nothing else on x86 uses the command engine while this exists.
+    /// The caller runs from RAM. Other SPI masters (the PSP, a board's BMC)
+    /// are waited for per command, not excluded.
+    pub unsafe fn new<H: FchHw>(
+        fch: &H,
+        clock: D,
         extent: Extent,
         probe: u32,
         expected: &[u8],
     ) -> Result<Self, ServiceError> {
+        let access = WriteAccess::read(fch);
+        let blocked = access.blocked(&WRITE_OPCODES, extent.offset, extent.size);
         let host = Host {
-            delay: Cell::new(delay),
+            delay: Cell::new(clock),
         };
-        let mut controller = Spi100Controller::new_with_host(host, u64::from(SPI_BASE), None, 0)
+        let controller = Spi100Controller::new_with_host(host, u64::from(SPI_BASE), None, 0)
             .map_err(|_| ServiceError::HardwareError)?;
+        let mut engine = Engine {
+            controller,
+            clock,
+            access,
+        };
         let mut id = [0u8; 3];
-        let identified = controller
-            .execute(&mut SpiCommand::read_reg(opcodes::RDID, &mut id))
-            .is_ok();
+        let identified =
+            now(engine.execute(&mut SpiCommand::read_reg(opcodes::RDID, &mut id))).is_ok();
         let aligned = extent.offset.checked_add(extent.size).is_some()
             && extent.offset.is_multiple_of(ERASE_SIZE)
             && extent.size.is_multiple_of(ERASE_SIZE);
@@ -188,7 +267,7 @@ impl<D: DelayNs + Copy> Flash<D> {
         let readback = &mut readback[..expected.len()];
         let mut reads_as = |addressing| {
             now(spi25::read_with_addressing(
-                &mut controller,
+                &mut engine,
                 opcodes::READ,
                 probe,
                 readback,
@@ -197,7 +276,7 @@ impl<D: DelayNs + Copy> Flash<D> {
             .is_ok()
                 && *readback == *expected
         };
-        let addressing = if !meaningful {
+        let addressing = if !meaningful || blocked.is_some() {
             None
         } else if probe < LIMIT_3BYTE
             && extent.offset + extent.size <= LIMIT_3BYTE
@@ -210,21 +289,35 @@ impl<D: DelayNs + Copy> Flash<D> {
             None
         };
         fstart_log::info!(
-            "spi: JEDEC {:#x}:{:#x}:{:#x}, region {:#x}+{:#x} {}",
+            "spi: JEDEC {:#x}:{:#x}:{:#x}, SPIx00 {:#x}, region {:#x}+{:#x} {}",
             id[0],
             id[1],
             id[2],
+            access.cntrl0(),
             extent.offset,
             extent.size,
-            match addressing {
-                Some(CommandAddressing::ThreeByte) => "writable, 3-byte addresses",
-                Some(_) => "writable, 4-byte addresses",
-                None if !meaningful => "read-only (no probe)",
-                None => "read-only (reads do not match the ROM window)",
+            match (addressing, blocked) {
+                (Some(CommandAddressing::ThreeByte), _) => "writable, 3-byte addresses",
+                (Some(_), _) => "writable, 4-byte addresses",
+                (None, Some(Blocked::NotDecoded)) => "read-only (SPI registers not decoded)",
+                (None, Some(Blocked::PspRegisters)) => "read-only (window shows the PSP's SPI)",
+                (None, Some(Blocked::Restricted(_))) => "read-only (write opcode restricted)",
+                (None, Some(Blocked::RomProtect(_))) => "read-only (ROM protect range applied)",
+                (None, None) if !meaningful => "read-only (no probe)",
+                (None, None) => "read-only (reads do not match the ROM window)",
             }
         );
+        match blocked {
+            Some(Blocked::Restricted(opcode)) => {
+                fstart_log::info!("spi: opcode {:#x} restricted", opcode)
+            }
+            Some(Blocked::RomProtect(range)) => {
+                fstart_log::info!("spi: D14F3x{:x} write-protects", 0x50 + 4 * range)
+            }
+            _ => {}
+        }
         Ok(Self {
-            controller,
+            engine,
             extent,
             addressing,
         })
@@ -244,12 +337,12 @@ impl<D: DelayNs + Copy> Flash<D> {
     }
 }
 
-impl<D: DelayNs + Copy> FlashRegion for Flash<D> {
+impl<D: DelayNs + Timer + Copy> FlashRegion for Flash<D> {
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), ServiceError> {
         let address = self.extent.address(offset, bytes.len())?;
         let addressing = self.addressing()?;
         now(spi25::read_with_addressing(
-            &mut self.controller,
+            &mut self.engine,
             opcodes::READ,
             address,
             bytes,
@@ -267,7 +360,7 @@ impl<D: DelayNs + Copy> FlashRegion for Flash<D> {
                 .min(PROGRAM_CHUNK)
                 .min(PAGE - at as usize % PAGE);
             now(spi25::program_page_with_addressing(
-                &mut self.controller,
+                &mut self.engine,
                 opcodes::PP,
                 at,
                 &bytes[done..done + len],
@@ -286,7 +379,7 @@ impl<D: DelayNs + Copy> FlashRegion for Flash<D> {
         }
         for sector in (address..address + length).step_by(ERASE_SIZE as usize) {
             now(spi25::erase_block(
-                &mut self.controller,
+                &mut self.engine,
                 opcodes::SE_20,
                 sector,
                 addressing,

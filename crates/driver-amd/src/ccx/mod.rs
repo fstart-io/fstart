@@ -13,9 +13,12 @@
 //!
 //! The MSRs, the DRAM-first cache plan, the microcode loader and the TSC
 //! are [`msr`], [`cache`], [`microcode`] and [`tsc`]; the name string is
-//! [`brand`], what the OS gets of the P- and C-states [`power`].
+//! [`brand`], what the OS gets of the P- and C-states [`power`], and of
+//! CPPC in MSRs `cppc` (`_CPC`).
 pub mod brand;
 pub mod cache;
+#[cfg(feature = "acpi")]
+pub mod cppc;
 pub mod downcore;
 pub mod errata;
 pub mod init;
@@ -35,6 +38,7 @@ pub mod table;
 pub mod tables;
 pub mod topology;
 pub mod tsc;
+pub mod wh;
 pub mod x2apic;
 pub mod zp;
 use self::{

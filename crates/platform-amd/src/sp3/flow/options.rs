@@ -21,5 +21,5 @@ pub(crate) fn storage(ctx: &Ctx<'_>) -> Option<crate::options::FlashStorage> {
     // SAFETY: the FCH decodes SPI100 at its fixed base (FCH reset tasks);
     // the payload launcher is the only user of the command engine, and the
     // stage runs from DRAM.
-    unsafe { crate::options::storage(ctx.soc.timer, extent, ctx.ffs_offset, probe) }
+    unsafe { crate::options::storage(&ctx.soc.fch, ctx.soc.timer, extent, ctx.ffs_offset, probe) }
 }

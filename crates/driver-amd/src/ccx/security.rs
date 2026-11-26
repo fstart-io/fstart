@@ -28,6 +28,19 @@ pub fn set_smee<M: MsrAccess + ?Sized>(cpu: &M, enable: bool) {
     cpu.reg(SYSCFG).modify(v);
 }
 
+/// SYSCFG.HMKEE, host multi-key memory encryption (SME-MK), as
+/// `CcxSmeeInit` (Dell `0xf4d2f0` [D]) sets it on every thread when
+/// `PcdAmdHmkee` is on, SMEE off and the part has it (CPUID `8000_0023h`
+/// EAX\[0\], [`hmkee_supported`]).
+pub fn set_hmkee<M: MsrAccess + ?Sized>(cpu: &M) {
+    cpu.reg(SYSCFG).modify(Syscfg::HMKEE::SET);
+}
+
+/// CPUID `8000_0023h` EAX\[0\]: the part has SME-MK.
+pub const fn hmkee_supported(cpuid_8000_0023_eax: u32) -> bool {
+    cpuid_8000_0023_eax & 1 != 0
+}
+
 /// Memory the RMP covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RmpCoverage {

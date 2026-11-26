@@ -30,6 +30,8 @@ register_bitfields![u32,
         SERIAL5 OFFSET(11) NUMBITS(1) [],
         SERIAL6 OFFSET(12) NUMBITS(1) [],
         SERIAL7 OFFSET(13) NUMBITS(1) [],
+        /// The four audio ports (coreboot `DECODE_ENABLE_AUDIO_PORT0..3`).
+        AUDIO OFFSET(14) NUMBITS(4) [],
         KBC OFFSET(29) NUMBITS(1) []
     ],
     /// D14F3x48 FCH::ITF::LPC::IOMemPortDecodeEn.
@@ -89,6 +91,18 @@ register_bitfields![u8,
         VW_ROM_SHARING_EN OFFSET(3) NUMBITS(1) [],
         EXT_ROM_SHARING_EN OFFSET(4) NUMBITS(1) []
     ],
+    /// D14F3x7C FCH::ITF::LPC::TpmReg, its low byte: the TPM decode of
+    /// `FED4_xxxx` (and the legacy TPM ports).
+    pub TpmControl [
+        /// Tpm12En.
+        TPM12_EN OFFSET(0) NUMBITS(1) [],
+        /// Set by the GIGABYTE MD25-CG0's `ConfigureTpmDecoder`; unnamed.
+        BIT1 OFFSET(1) NUMBITS(1) [],
+        /// TpmLegacyEn.
+        TPM_LEGACY_EN OFFSET(2) NUMBITS(1) [],
+        /// Set by both Venice donors; unnamed.
+        BIT7 OFFSET(7) NUMBITS(1) []
+    ],
     /// The vendor's bits of single bytes: D14F3x78, 0x7C, 0xBA, 0xBB, 0xD1.
     pub Bits [
         B0 OFFSET(0) NUMBITS(1) [],
@@ -111,6 +125,8 @@ pub const R6C: At<u8> = At::new(0x6c);
 pub const ALT_WIDEIO: At<u32, AltWideIo::Register> = At::new(0x74);
 pub const MISC_CONTROL: At<u8, Bits::Register> = At::new(0x78);
 pub const R7C: At<u8, Bits::Register> = At::new(0x7c);
+/// D14F3x7C as the TPM decode register.
+pub const TPM_CONTROL: At<u8, TpmControl::Register> = At::new(0x7c);
 pub const WIDEIO2_GENERIC_PORT: At<u32, WideIoBase::Register> = At::new(0x90);
 pub const SPI_BASE_ADDRESS: At<u32, SpiBase::Register> = At::new(0xa0);
 pub const RA4: At<u32, LpcA4::Register> = At::new(0xa4);
@@ -202,6 +218,24 @@ pub fn enable_io_decode(
     fch.lpc().at(IO_PORT_DECODE).modify(field);
 }
 
+/// Decode the TPM's `FED4_xxxx` window (D14F3x7C, byte, `|= decode`).
+pub fn decode_tpm(
+    fch: &impl FchHw,
+    decode: tock_registers::fields::FieldValue<u8, TpmControl::Register>,
+) {
+    fch.lpc().at(TPM_CONTROL).modify(decode);
+}
+
+/// Send the TPM's cycles to the SPI controller's TPM chip select instead of
+/// LPC/eSPI (D14F3xA0\[RouteTpm2Spi\], as coreboot's `lpc_tpm_decode_spi`).
+/// `false` if the bit does not read back (the register is locked).
+pub fn route_tpm_to_spi(fch: &impl FchHw) -> bool {
+    let lpc = fch.lpc();
+    let reg = lpc.at(SPI_BASE_ADDRESS);
+    reg.modify(SpiBase::ROUTE_TPM_2_SPI::SET);
+    reg.is_set(SpiBase::ROUTE_TPM_2_SPI)
+}
+
 /// PEI reset task af42.
 pub fn reset<H: FchHw>(fch: &H, generation: Silicon) {
     let lpc = fch.lpc();
@@ -287,6 +321,20 @@ mod model_tests {
         assert_eq!(cfg(&hw.pci, 0x44), RESET_PORT_DECODE);
         assert_eq!(cfg(&hw.pci, 0x7c), 0, "TPM register is ZP only");
         assert_eq!(cfg(&hw.pci, 0xd0) >> 8 & 0xff, 0x60);
+    }
+
+    #[test]
+    fn tpm_on_spi_keeps_the_spi_bar() {
+        let hw = fch();
+        hw.pci
+            .0
+            .borrow_mut()
+            .config
+            .insert((0, 0x14, 3, 0xa0), 0xfec1_0006);
+        decode_tpm(&hw, TpmControl::TPM12_EN::SET + TpmControl::BIT7::SET);
+        assert!(route_tpm_to_spi(&hw));
+        assert_eq!(cfg(&hw.pci, 0xa0), 0xfec1_000e);
+        assert_eq!(cfg(&hw.pci, 0x7c), 0x81);
     }
 
     #[test]

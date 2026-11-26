@@ -30,22 +30,78 @@ pub const GPIO_BASE: u32 = ACPI_MMIO + 0x1500;
 /// Path of the GPIO controller, [`gpio`].
 pub const GPIO_PATH: &str = "\\_SB.GPIO";
 
+/// The GPIO controller's MMIO: `length` bytes of GPIO banks from
+/// [`GPIO_BASE`] and, on some FCHs, a second range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpioBanks {
+    pub length: u32,
+    /// A second `(base, length)` the controller owns.
+    pub extra: Option<(u32, u32)>,
+}
+
+impl GpioBanks {
+    /// Zeppelin and the SP3 FCHs: 0x300 bytes.
+    pub const SP3: Self = Self {
+        length: 0x300,
+        extra: None,
+    };
+    /// Qilian (GIGABYTE MD25-CG0 DSDT `\_SB.GPIO`): 0x400 bytes and the
+    /// remote GPIO block's `FED8_1200h`, 0x2C bytes.
+    pub const QILIAN: Self = Self {
+        length: 0x400,
+        extra: Some((ACPI_MMIO + 0x1200, 0x2c)),
+    };
+}
+
+impl Default for GpioBanks {
+    fn default() -> Self {
+        Self::SP3
+    }
+}
+
 /// The GPIO controller `\_SB.GPIO` (`AMDI0030`): `length` bytes of GPIO
 /// banks from [`GPIO_BASE`] (0x300 on Zeppelin and SP3, 0x400 on Picasso),
 /// interrupting on the level-low, shared FCH IRQ `irq`.
 pub fn gpio(irq: u8, length: u32) -> Result<Vec<u8>, AmlError> {
-    let (irq, length) = (u64::from(irq), u64::from(length));
+    gpio_banks(
+        irq,
+        &GpioBanks {
+            length,
+            extra: None,
+        },
+    )
+}
+
+/// [`gpio`] with the banks of [`GpioBanks`].
+pub fn gpio_banks(irq: u8, banks: &GpioBanks) -> Result<Vec<u8>, AmlError> {
+    let (irq, length) = (u64::from(irq), u64::from(banks.length));
     let mut body = Vec::new();
-    acpi_dsl! {
-        Name("_HID", "AMDI0030");
-        Name("_CID", "AMDI0030");
-        Name("_UID", 0u8);
-        Name("_CRS", ResourceTemplate {
-            Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq});
-            Memory32Fixed(ReadWrite, #{const dword GPIO_BASE}, #{dword length});
-        });
+    match banks.extra {
+        None => acpi_dsl! {
+            Name("_HID", "AMDI0030");
+            Name("_CID", "AMDI0030");
+            Name("_UID", 0u8);
+            Name("_CRS", ResourceTemplate {
+                Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq});
+                Memory32Fixed(ReadWrite, #{const dword GPIO_BASE}, #{dword length});
+            });
+        }
+        .emit(&mut body)?,
+        Some((base, size)) => {
+            let (base, size) = (u64::from(base), u64::from(size));
+            acpi_dsl! {
+                Name("_HID", "AMDI0030");
+                Name("_CID", "AMDI0030");
+                Name("_UID", 0u8);
+                Name("_CRS", ResourceTemplate {
+                    Interrupt(ResourceConsumer, Level, ActiveLow, Shared, #{dword irq});
+                    Memory32Fixed(ReadWrite, #{const dword GPIO_BASE}, #{dword length});
+                    Memory32Fixed(ReadWrite, #{dword base}, #{dword size});
+                });
+            }
+            .emit(&mut body)?
+        }
     }
-    .emit(&mut body)?;
     device_vec("GPIO", &body)
 }
 
@@ -226,8 +282,6 @@ const I2C_MMIO: [u32; 6] = [
     0xFEDC_6000,
     0xFEDC_B000,
 ];
-/// The GPIO banks' extent from `fch::aml::GPIO_BASE`.
-const GPIO_LENGTH: u32 = 0x300;
 
 /// The legacy ranges of [`uart::LEGACY_DECODE`]: bit `k` enables range `k`,
 /// bits `8 + 2k` select the UART behind it (donor `CKST`/`COMn`).
@@ -265,6 +319,8 @@ pub struct FchAcpi {
     /// GPIO controller interrupt (route of index 0xE2); `None` without a
     /// route.
     pub gpio_irq: Option<u8>,
+    /// The GPIO controller's MMIO ([`GpioBanks::SP3`] unless the SoC says).
+    pub gpio: GpioBanks,
 }
 
 /// Serialise a bound fragment, reporting a bad operand instead of panicking.
@@ -316,6 +372,7 @@ impl FchAcpi {
                 })
                 .collect(),
             gpio_irq: route(io, GPIO_INTR),
+            gpio: GpioBanks::SP3,
         }
     }
 
@@ -346,7 +403,7 @@ impl FchAcpi {
             )?);
         }
         if let Some(irq) = self.gpio_irq {
-            out.extend(gpio(irq, GPIO_LENGTH)?);
+            out.extend(gpio_banks(irq, &self.gpio)?);
         }
         Ok(out)
     }
@@ -468,6 +525,20 @@ mod fch_acpi_tests {
         );
         let aml = f.sb_aml().unwrap();
         assert!(aml.windows(4).any(|w| w == b"COM1"));
+    }
+
+    #[test]
+    fn qilian_gpio_has_its_second_range() {
+        let (mmio, io) = hw(0, &[], &[]);
+        let f = FchAcpi {
+            gpio: GpioBanks::QILIAN,
+            ..FchAcpi::read(&mmio, &io)
+        };
+        let aml = f.sb_aml().unwrap();
+        let banks = [0x86, 9, 0, 1, 0x00, 0x15, 0xd8, 0xfe, 0x00, 0x04, 0, 0];
+        let remote = [0x86, 9, 0, 1, 0x00, 0x12, 0xd8, 0xfe, 0x2c, 0, 0, 0];
+        assert!(aml.windows(12).any(|w| w == banks));
+        assert!(aml.windows(12).any(|w| w == remote));
     }
 
     #[test]

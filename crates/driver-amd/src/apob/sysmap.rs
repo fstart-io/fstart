@@ -99,21 +99,11 @@ impl SystemMemoryMap<'_> {
 
     /// The holes sorted by base, none wrapping, below a nonzero top.
     pub fn sorted(&self) -> Result<MemoryMap, MapError> {
-        if self.top == 0 {
-            return Err(MapError::NoDram);
-        }
         let mut holes: Vec<Hole, MAX_HOLES> = Vec::new();
         for hole in self.holes() {
-            if hole.base.checked_add(hole.size).is_none() {
-                return Err(MapError::Wraps(hole));
-            }
             holes.push(hole).map_err(|_| MapError::TooManyHoles)?;
         }
-        holes.sort_unstable_by_key(|hole| hole.base);
-        Ok(MemoryMap {
-            top: self.top,
-            holes,
-        })
+        MemoryMap::from_parts(self.top, holes)
     }
 }
 
@@ -126,6 +116,20 @@ pub struct MemoryMap {
 }
 
 impl MemoryMap {
+    /// Construct a validated, sorted [`MemoryMap`] (rejects zero top or wrapping holes).
+    pub fn from_parts(top: u64, mut holes: Vec<Hole, MAX_HOLES>) -> Result<Self, MapError> {
+        if top == 0 {
+            return Err(MapError::NoDram);
+        }
+        for &hole in &holes {
+            if hole.base.checked_add(hole.size).is_none() {
+                return Err(MapError::Wraps(hole));
+            }
+        }
+        holes.sort_unstable_by_key(|h| h.base);
+        Ok(Self { top, holes })
+    }
+
     pub fn holes(&self) -> &[Hole] {
         &self.holes
     }
@@ -177,7 +181,8 @@ fn parse(entry: Entry<'_>) -> Result<SystemMemoryMap<'_>, ApobError> {
 }
 
 /// How AGESA treats a hole type (the per-generation dispatch,
-/// `ffde8b3e` Rome, `ffd4ceed` Milan).
+/// `ffde8b3e` Rome, `ffd4ceed` Milan; WH: `AmdMemoryHobInfoPeim` of the
+/// Dell PR9XJ 1.0.8 image, `0xef49d8..0xef4d8c`, instruction-checked).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoleClass {
     /// 0.
@@ -185,7 +190,10 @@ pub enum HoleClass {
     /// 1.
     Mmio,
     /// Reserved DRAM: 2 on all; Rome 4/5, Milan 6/7 (openSIL's Genoa
-    /// numbering names 6 DRTM and 7 CVIP; Rome's 4/5 are unnamed).
+    /// numbering names 6 DRTM and 7 CVIP; Rome's 4/5 are unnamed); on WH
+    /// every type but 0, 1 and 3 (the vendor's HOB makes them reserved, or
+    /// other non-RAM kinds: `0x1B` and `0x23`; `0x0C` is RAM only under a
+    /// PCD whose value is not known, and stays reserved here).
     Reserved,
     /// 3: MMIO up to `0xFD_0000_0000`, then the 1 TiB remap region.
     Remap1T,
@@ -194,12 +202,22 @@ pub enum HoleClass {
     Unknown,
 }
 
+/// WH hole type `0x13`: the BDAT (its base is `PcdBdatAddress`,
+/// `AmdMemoryHobInfoPeim` both donors [D]; not the EINJ buffer, which the
+/// PSP names through `MP0_C2PMSG_31`). Reserved.
+pub const WH_HOLE_BDAT: u32 = 0x13;
+/// WH hole type `0x23`: a HOB type of Dell's build only (its type
+/// `0x10`), absent from GIGABYTE's. Reserved.
+pub const WH_HOLE_23: u32 = 0x23;
+
 pub const fn classify(variant: Variant, kind: u32) -> HoleClass {
     match (variant, kind) {
         (_, 0) => HoleClass::Uma,
         (_, 1) => HoleClass::Mmio,
-        (_, 2) | (Variant::Ssp, 4 | 5) | (Variant::Gn, 6 | 7) => HoleClass::Reserved,
-        (Variant::Ssp | Variant::Gn, 3) => HoleClass::Remap1T,
+        (Variant::Ssp | Variant::Gn | Variant::Wh, 3) => HoleClass::Remap1T,
+        (_, 2) | (Variant::Ssp, 4 | 5) | (Variant::Gn, 6 | 7) | (Variant::Wh, _) => {
+            HoleClass::Reserved
+        }
         _ => HoleClass::Unknown,
     }
 }
@@ -485,6 +503,16 @@ mod tests {
             [
                 Reserved, Remap1T, Unknown, Unknown, Reserved, Reserved, Unknown
             ]
+        );
+        assert_eq!(
+            classes(Variant::Wh),
+            [
+                Reserved, Remap1T, Reserved, Reserved, Reserved, Reserved, Reserved
+            ]
+        );
+        assert_eq!(
+            [0, 1, 0x0c, 0x13, 0x1b, 0x23].map(|t| classify(Variant::Wh, t)),
+            [Uma, Mmio, Reserved, Reserved, Reserved, Reserved]
         );
         // An unknown type is never RAM.
         let map = memory_map(Variant::Gn, 8 * GIB, [hole(4 * GIB, GIB, 4)]).unwrap();

@@ -1353,6 +1353,7 @@ mod tests {
         };
         for (index, bus_base) in [(0, 0xc0), (1, 0x80)] {
             let _ = topology.root_bridges.push(RootBridge {
+                segment: 0,
                 socket: 0,
                 index,
                 fabric_id: 0,

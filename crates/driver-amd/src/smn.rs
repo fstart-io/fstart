@@ -69,15 +69,10 @@ pub type SmnAddr = u32;
 /// An SMN register of a die as a tock register.
 pub type SmnRegister<'a, P, R> = Indexed<ConfigRegister<&'a P>, ConfigRegister<&'a P>, R>;
 
-/// 00.0 of `bus`, without `PciAddress::new`: its device/function range
-/// asserts are a panic path, which an SMM image reaching SMN may not link,
-/// and 00.0 has nothing to check.
-fn host_bridge(bus: u8) -> PciAddress {
-    const { assert!(size_of::<PciAddress>() == size_of::<u32>()) };
-    // SAFETY: `PciAddress` is one `u32` packed segment:bus:device:function
-    // = 16:8:5:3 (pci_types docs; same size checked above, the test below
-    // pins the packing), and every `u32` is a valid address.
-    unsafe { core::mem::transmute::<u32, PciAddress>(u32::from(bus) << 8) }
+/// 00.0 of `bus` ([`fstart_pci::address`]: no panic path, which an SMM
+/// image reaching SMN may not link).
+const fn host_bridge(segment: u16, bus: u8) -> PciAddress {
+    fstart_pci::address(segment, bus, 0)
 }
 
 /// The SMN space of one die (Naples, Zeppelin, Picasso) or IOD (Rome,
@@ -104,12 +99,32 @@ impl<P: ConfigRegionAccess> Smn<P> {
     pub unsafe fn on_bus(pci: P, bus: u8) -> Self {
         Self {
             pci,
-            root: host_bridge(bus),
+            root: host_bridge(0, bus),
+        }
+    }
+    /// SMN of the IOD whose root bridge has its root bus at `root` (segment
+    /// and bus; device and function are ignored): on a fabric with several
+    /// PCI segments the vendor reaches an IOD through `(seg << 28) | (bus <<
+    /// 20)` of its root bridge (2P_COMPLETE §2.7).
+    /// # Safety
+    /// As [`Self::new`], for that root bus.
+    pub unsafe fn on_root(pci: P, root: PciAddress) -> Self {
+        Self {
+            pci,
+            root: host_bridge(root.segment(), root.bus()),
         }
     }
     /// The root bus whose host bridge carries the accesses.
     pub fn bus(&self) -> u8 {
         self.root.bus()
+    }
+    /// The PCI segment of [`Self::bus`].
+    pub fn segment(&self) -> u16 {
+        self.root.segment()
+    }
+    /// The host bridge (`segment:bus:00.0`) that carries the accesses.
+    pub fn root(&self) -> PciAddress {
+        self.root
     }
     pub fn reg<R: RegisterLongName>(&self, reg: SmnReg<R>) -> SmnRegister<'_, P, R> {
         // SAFETY: the constructor's contract covers the index/data pair.
@@ -140,6 +155,18 @@ impl<P: ConfigRegionAccess> Smn<P> {
     /// Clear `clear`, then set `set`.
     pub fn modify32(&self, address: SmnAddr, clear: u32, set: u32) {
         self.write32(address, (self.read32(address) & !clear) | set)
+    }
+    /// [`Self::modify32`] with `address` written to the index register as
+    /// is, unaligned too, as vendor code does for a few registers (the
+    /// hardware's decode of the low bits is theirs to know).
+    pub fn modify_unaligned(&self, address: SmnAddr, clear: u32, set: u32) {
+        // SAFETY: the constructor's contract covers the index/data pair.
+        unsafe {
+            self.pci.write(self.root, SMN_INDEX, address);
+            let value = (self.pci.read(self.root, SMN_DATA) & !clear) | set;
+            self.pci.write(self.root, SMN_INDEX, address);
+            self.pci.write(self.root, SMN_DATA, value);
+        }
     }
     /// Run `access` and restore the index register: SMM may interrupt the
     /// OS between its index and data accesses. Each socket has its own
@@ -300,10 +327,13 @@ pub(crate) mod model {
 
     use super::{SMN_DATA, SMN_INDEX};
 
-    /// Shared state: config dwords and SMN dwords per bus.
+    /// Shared state: config dwords and SMN dwords per bus. Segment 0's
+    /// config space is `config`, the other segments' `segments`; the SMN
+    /// is per bus whatever the segment.
     #[derive(Default)]
     pub struct State {
         pub config: BTreeMap<(u8, u8, u8, u16), u32>,
+        pub segments: BTreeMap<(u16, u8, u8, u8, u16), u32>,
         pub smn: BTreeMap<(u8, u32), u32>,
         pub index: BTreeMap<u8, u32>,
         pub log: std::vec::Vec<(u8, u32, u32)>,
@@ -324,7 +354,12 @@ pub(crate) mod model {
                 return s.smn.get(&(a.bus(), index)).copied().unwrap_or(0);
             }
             let key = (a.bus(), a.device(), a.function(), offset);
-            s.config.get(&key).copied().unwrap_or(0xffff_ffff)
+            match a.segment() {
+                0 => s.config.get(&key),
+                n => s.segments.get(&(n, key.0, key.1, key.2, key.3)),
+            }
+            .copied()
+            .unwrap_or(0xffff_ffff)
         }
 
         unsafe fn write(&self, a: PciAddress, offset: u16, value: u32) {
@@ -337,6 +372,12 @@ pub(crate) mod model {
                     let index = s.index.get(&a.bus()).copied().unwrap_or(0);
                     s.smn.insert((a.bus(), index), value);
                     s.log.push((a.bus(), index, value));
+                }
+                _ if a.segment() != 0 => {
+                    s.segments.insert(
+                        (a.segment(), a.bus(), a.device(), a.function(), offset),
+                        value,
+                    );
                 }
                 _ => {
                     s.config
@@ -354,7 +395,8 @@ mod tests {
 
     #[test]
     fn host_bridge_is_device_0_function_0_of_the_bus() {
-        assert!((0..=u8::MAX).all(|bus| host_bridge(bus) == PciAddress::new(0, bus, 0, 0)));
+        assert!((0..=u8::MAX).all(|bus| host_bridge(0, bus) == PciAddress::new(0, bus, 0, 0)));
+        assert_eq!(host_bridge(7, 0x42), PciAddress::new(7, 0x42, 0, 0));
     }
 
     #[test]

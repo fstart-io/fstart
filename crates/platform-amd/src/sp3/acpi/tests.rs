@@ -97,6 +97,7 @@ fn system(generation: Generation, sockets: u8, threads: u32) -> System {
     let bridges: Vec<RootBridge> = (0..sockets)
         .flat_map(|s| {
             (0..4u8).map(move |i| RootBridge {
+                segment: 0,
                 socket: s,
                 index: i,
                 fabric_id: 0,

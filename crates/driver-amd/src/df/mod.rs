@@ -54,6 +54,7 @@ pub mod topology;
 pub mod v2;
 pub mod v3;
 pub mod v4;
+pub mod wh;
 pub mod zp;
 pub use die::{Die, die_count, dies, root_bridges};
 pub use fabric::{Fabric, or_bits};
@@ -67,6 +68,9 @@ pub const MAX_ROOT_BRIDGES: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootBridge {
     pub socket: u8,
+    /// PCI segment of its buses (0 but on a fabric whose bus maps use more
+    /// than one, DFv4.5's CfgAddressMap segment field).
+    pub segment: u16,
     /// Die (Naples) or NBIO quadrant / IOMS index (Rome, Milan) within the
     /// socket.
     pub index: u8,

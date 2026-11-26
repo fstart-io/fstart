@@ -122,10 +122,11 @@ header_only!(
     /// `closure-runtime/lifecycle`, `PspOnSmmReadyToLock` `26C8`/`2894`)
     /// sends it from its DxeSmmReadyToLock notification, after LockDFReg
     /// and before ReadyToBoot, header only. Milan's AmdPspDxeV2Ssp does not
-    /// have it.
+    /// have it. WH: AmdPspDxeV2Wh's DxeSmmReadyToLock (`0x3670`, MD25
+    /// `0x349d` instruction-checked).
     SmmLock = 0x6c,
     "SmmLock",
-    |g| g == Variant::Gn
+    |g| matches!(g, Variant::Gn | Variant::Wh)
 );
 header_only!(
     /// Naples only, from the SMM capsule hook (PSP_APOB §3.3).
@@ -137,10 +138,11 @@ header_only!(
     /// Milan FCH lock, sent from the SW SMI 0xD2 handler with the SMM flag
     /// set (FCH_SP3 §SMM; FchHuashanSmmInit, decompiler-only). The handler
     /// sends 0x30 and [`LockFchReg3a`] under separate gates, both logged as
-    /// "LockFCHReg".
+    /// "LockFCHReg". WH: FchSmmInit's SmmReadyToBoot (`0x9550`), same
+    /// flag.
     LockFchReg = 0x30,
     "LockFCHReg",
-    |g| g == Variant::Gn
+    |g| matches!(g, Variant::Gn | Variant::Wh)
 );
 header_only!(
     /// The second "LockFCHReg" command of the Milan D2 handler (see
@@ -150,11 +152,20 @@ header_only!(
     |g| g == Variant::Gn
 );
 header_only!(
+    /// WH's command 3Ah, named "LockGpio" (`psp_c2p.json`): FchSmmInit's
+    /// SmmReadyToBoot sends it after [`LockFchReg`] under its own gate,
+    /// from SMM with the SMM flag set (Dell `0x9550`). Milan's 3Ah is
+    /// [`LockFchReg3a`].
+    LockGpio = 0x3a,
+    "LockGpio",
+    |g| g == Variant::Wh
+);
+header_only!(
     /// Milan ReadyToBoot when DRTM is off: sent only if a TPM answers at
     /// `0xfed40000` (dword != 0xffffffff) (PSP_APOB §3.3).
     ResetTpmEstablishment = 0x61,
     "ResetTpmEstablishment",
-    |g| g == Variant::Gn
+    |g| matches!(g, Variant::Gn | Variant::Wh)
 );
 
 /// A register the PSP touches to raise or check its SMI (SmmInfo).
@@ -312,7 +323,7 @@ impl Command for PspCapsQuery {
     const NAME: &'static str = "PspCapsQuery";
 
     fn supported(generation: Variant) -> bool {
-        generation == Variant::Gn
+        matches!(generation, Variant::Gn | Variant::Wh)
     }
 }
 
@@ -348,7 +359,7 @@ impl Command for BiosDisablePsb {
     const NAME: &'static str = "BiosDisablePsb";
 
     fn supported(generation: Variant) -> bool {
-        matches!(generation, Variant::Ssp | Variant::Gn)
+        matches!(generation, Variant::Ssp | Variant::Gn | Variant::Wh)
     }
 }
 
@@ -377,7 +388,169 @@ impl Command for DisableDrtm {
     const NAME: &'static str = "DisableDrtmCapability";
 
     fn supported(generation: Variant) -> bool {
-        generation == Variant::Gn
+        matches!(generation, Variant::Gn | Variant::Wh)
+    }
+}
+
+/// SignValidateHmacData (34h, AmdPspDxeV2Wh/AmdApcbDxeV4
+/// `PspMboxBiosCmdSignValidateHmacDataPreSmm` `0x21DE0`): the PSP signs
+/// (`op` 0) or validates (`op` 1) the HMAC of `data_len` bytes at
+/// `address`, kept at `hmac_offset` (`hmac_len` 0x100) in the
+/// `total`-byte buffer (`ApcbCalcCheckSumExtended`: the APCB, its HMAC
+/// after it). The vendor's pre-SMM buffer says size 0x1028; the SMM one
+/// (35h) 0x28, as here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct SignValidateHmac {
+    pub address_lo: u32,
+    pub address_hi: u32,
+    pub total: u32,
+    pub reserved: u32,
+    pub data_len: u32,
+    pub hmac_offset: u32,
+    pub hmac_len: u32,
+    pub op: u32,
+}
+
+impl SignValidateHmac {
+    /// Bytes of the HMAC.
+    pub const HMAC_LEN: u32 = 0x100;
+    pub const SIGN: u32 = 0;
+    pub const VALIDATE: u32 = 1;
+
+    /// Sign (or validate) the `len` bytes at `address`, the HMAC after
+    /// them.
+    pub const fn new(address: u64, len: u32, op: u32) -> Self {
+        Self {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            total: len + Self::HMAC_LEN,
+            reserved: 0,
+            data_len: len,
+            hmac_offset: len,
+            hmac_len: Self::HMAC_LEN,
+            op,
+        }
+    }
+}
+
+impl Command for SignValidateHmac {
+    const ID: u8 = 0x34;
+    const NAME: &'static str = "SignValidateHmacData";
+    fn supported(generation: Variant) -> bool {
+        matches!(generation, Variant::Wh)
+    }
+}
+
+/// SendIvrsAcpiTable (3Fh): where the IVRS is and its length, which the
+/// WH PSP takes after the table is built (AmdNbioDxe `0x14720`, buffer
+/// size 14h: `{lo, hi, length}`; its caller `0x16c40` sends it when PCDs
+/// 223h and 376h are set and installs the table it describes). What the
+/// PSP does with it is not known (RUNTIME §1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct SendIvrsAcpiTable {
+    pub address_lo: u32,
+    pub address_hi: u32,
+    pub length: u32,
+}
+
+impl SendIvrsAcpiTable {
+    /// The IVRS at `address`, `length` bytes.
+    pub const fn new(address: u64, length: u32) -> Self {
+        Self {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            length,
+        }
+    }
+}
+
+impl Command for SendIvrsAcpiTable {
+    const ID: u8 = 0x3f;
+    const NAME: &'static str = "SendIvrsAcpiTable";
+
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Wh
+    }
+}
+
+/// GetActiveBootPartitionId (36h): the PSP's active boot partition in the
+/// buffer's third dword, sent as `FFFF_FFFFh` (SilVenicePei `0xf14810`,
+/// GIGABYTE `0x7092da33`; WARM_RESET §2.5). Whether 0/1 are ISH slots A/B
+/// is not known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct GetActiveBootPartitionId {
+    pub id: u32,
+}
+
+impl GetActiveBootPartitionId {
+    pub const fn new() -> Self {
+        Self { id: u32::MAX }
+    }
+}
+
+impl Default for GetActiveBootPartitionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Command for GetActiveBootPartitionId {
+    const ID: u8 = 0x36;
+    const NAME: &'static str = "GetActiveBootPartitionId";
+
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Wh
+    }
+}
+
+/// SetBootPartitionId (26h): the partition the PSP boots from after the
+/// next (warm) reset; the vendor sends the active one plus 1 after a
+/// microcode `ValidateBinary` failure (same witnesses).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct SetBootPartitionId {
+    pub id: u32,
+}
+
+impl Command for SetBootPartitionId {
+    const ID: u8 = 0x26;
+    const NAME: &'static str = "SetBootPartitionId";
+
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Wh
+    }
+}
+
+/// ValidateBinary (38h): the PSP checks the signed binary at `address`,
+/// `size` bytes (the vendor's microcode patches, SilVenicePei
+/// `0xf14810`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[repr(C)]
+pub struct ValidateBinary {
+    pub address_lo: u32,
+    pub address_hi: u32,
+    pub size: u32,
+}
+
+impl ValidateBinary {
+    pub const fn new(address: u64, size: u32) -> Self {
+        Self {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            size,
+        }
+    }
+}
+
+impl Command for ValidateBinary {
+    const ID: u8 = 0x38;
+    const NAME: &'static str = "ValidateBinary";
+
+    fn supported(generation: Variant) -> bool {
+        generation == Variant::Wh
     }
 }
 
@@ -396,6 +569,13 @@ mod tests {
         assert_eq!(C2pBuffer::new(QueryCaps::default()).header.size, 0xc);
         assert_eq!(C2pBuffer::new(DisableDrtm::new()).header.size, 0xc);
         assert_eq!(C2pBuffer::new(BiosDisablePsb::new()).header.size, 0x10);
+        // AmdNbioDxe `0x14720`.
+        let ivrs = C2pBuffer::new(SendIvrsAcpiTable::new(0x1_2345_6000, 0x3c0));
+        assert_eq!(ivrs.header.size, 0x14);
+        assert_eq!(
+            ivrs.request.as_bytes()[..12],
+            [0, 0x60, 0x45, 0x23, 1, 0, 0, 0, 0xc0, 3, 0, 0]
+        );
         let smm = C2pBuffer::new(SmmInfo::new(0, 0, 0, 0));
         assert_eq!(smm.header.size, 0x110);
     }
@@ -419,6 +599,44 @@ mod tests {
             &[1, 0, 0, 0, 2, 0, 0, 0, 0xff, 0xff, 0xff, 0xfd, 0, 0, 0, 2]
         );
         assert_eq!(&b[0x78..0x80], &[0xc, 0, 0, 0, 4, 0, 0, 0]);
+    }
+
+    #[test]
+    fn wh_takes_the_venice_commands_and_3ah_is_its_gpio_lock() {
+        for supported in [
+            SmmLock::supported,
+            LockFchReg::supported,
+            ResetTpmEstablishment::supported,
+            DisableDrtm::supported,
+            LockGpio::supported,
+            SendIvrsAcpiTable::supported,
+        ] {
+            assert!(supported(Variant::Wh));
+        }
+        assert_eq!((LockGpio::ID, LockFchReg3a::ID), (0x3a, 0x3a));
+        assert!(!LockFchReg3a::supported(Variant::Wh));
+        assert!(!LockGpio::supported(Variant::Gn));
+        assert!(!ClearSmmLock::supported(Variant::Wh));
+    }
+
+    #[test]
+    fn partition_commands_match_the_vendor_buffers() {
+        let get = C2pBuffer::new(GetActiveBootPartitionId::new());
+        assert_eq!((get.header.size, get.request.id), (0xc, u32::MAX));
+        assert_eq!(C2pBuffer::new(SetBootPartitionId { id: 1 }).header.size, 0xc);
+        let validate = C2pBuffer::new(ValidateBinary::new(0x1_0000_2000, 0x3800));
+        assert_eq!(validate.header.size, 0x14);
+        assert_eq!(
+            validate.request.as_bytes(),
+            [0, 0x20, 0, 0, 1, 0, 0, 0, 0, 0x38, 0, 0]
+        );
+        for supported in [
+            GetActiveBootPartitionId::supported,
+            SetBootPartitionId::supported,
+            ValidateBinary::supported,
+        ] {
+            assert!(supported(Variant::Wh) && !supported(Variant::Gn));
+        }
     }
 
     #[test]
