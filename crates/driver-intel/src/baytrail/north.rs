@@ -248,6 +248,21 @@ impl crate::IntelNorthbridgeDriver for BaytrailNorth {
         Ok(())
     }
 
+    fn detect_warm_reset(&self) -> bool {
+        let pmsts = self.iosf().reg(raminit::dunit::PMSTS_REG).extract();
+        let ps = super::pmc::PowerState::read();
+        let mem_sr = ps.gen_pmcon1 & super::pmc::GEN_PMCON1::MEM_SR::SET.value != 0;
+        let warm =
+            !ps.power_failed() && (pmsts.is_set(raminit::dunit::PMSTS::SELF_REFRESH) || mem_sr);
+        fstart_log::info!(
+            "baytrail: warm-reset check PMSTS={:#010x} GEN_PMCON1={:#010x} -> {}",
+            pmsts.get(),
+            ps.gen_pmcon1,
+            warm
+        );
+        warm
+    }
+
     fn set_boot_path(&mut self, boot_path: BootPath) {
         self.boot_path = boot_path;
     }
@@ -368,6 +383,24 @@ impl fstart_core::services::MemoryInit for BaytrailNorth {
             txe::dram_init_done(trained.map.txe_base_mb, trained.map.txe_mb)?;
             self.memory_info = Some(trained.memory_info);
             return Ok(None);
+        }
+        if self.boot_path == BootPath::WarmReset
+            && let Some(cached) = input.cached
+        {
+            match raminit::sdram_resume(&iosf, spd, Self::igd_stolen(), txe_mb, cached) {
+                Ok(trained) => {
+                    gfx::set_stolen_bases(&trained.map);
+                    txe::dram_init_done(trained.map.txe_base_mb, trained.map.txe_mb)?;
+                    self.memory_info = Some(trained.memory_info);
+                    return Ok(None);
+                }
+                Err(error) => {
+                    fstart_log::warn!(
+                        "baytrail: warm-reset self-refresh resume failed ({:?}), falling back to cold training",
+                        error
+                    );
+                }
+            }
         }
         let trained = raminit::sdram_initialize(&iosf, spd, Self::igd_stolen(), txe_mb)?;
         gfx::set_stolen_bases(&trained.map);

@@ -477,6 +477,15 @@ fn resolve_for<P: IntelPlatform>(
             })
             .expect("MRC prefix fits the region transport");
     }
+    if facts.variable_storage {
+        mutable_regions
+            .push(fstart_core::board::MutableFlashRegion {
+                name: fstart_core::hstr("varstore"),
+                size: crate::facts::VARSTORE_SIZE,
+                alignment: 0x10000,
+            })
+            .expect("varstore prefix fits the region transport");
+    }
     if debug.flash_console {
         mutable_regions
             .push(fstart_core::board::MutableFlashRegion {
@@ -651,6 +660,36 @@ mod tests {
         assert_eq!(config.build.mutable_regions[1].size, regions[1].size);
         plan.mutable_regions[0].alignment = 3;
         assert!(plan.validate().is_err());
+    }
+
+    #[test]
+    fn varstore_mutable_region_follows_mrc_cache_and_precedes_console() {
+        let facts = FACTS.with_memory_cache().with_variable_storage();
+        assert_eq!(
+            facts.varstore_offset(),
+            Some(crate::memory_cache::EXTENT_SIZE)
+        );
+        assert_eq!(
+            facts.mutable_prefix(true),
+            crate::memory_cache::EXTENT_SIZE
+                + crate::facts::VARSTORE_SIZE
+                + crate::facts::FLASH_CONSOLE_SIZE
+        );
+        let plan = resolve(
+            facts,
+            BuildSelection {
+                debug: vec!["flash-console".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let names: Vec<&str> = plan
+            .mutable_regions
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names, ["mrc-cache", "varstore", "console"]);
+        assert_eq!(plan.mutable_regions[1].size, crate::facts::VARSTORE_SIZE);
     }
 
     #[test]

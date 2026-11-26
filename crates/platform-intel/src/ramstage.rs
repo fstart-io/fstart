@@ -425,7 +425,11 @@ impl<B: IntelBoard> Ramstage<B, Console> {
         // allocation reads the map: on resume the OS may not own the bytes the
         // next boot reloads postcar and the ramstage into.
         self.phase(fstart_timestamp::id::RESERVE_FIRMWARE_MEMORY, |rs| {
-            crate::boot::reserve_firmware_memory(rs.ctx.e820_state_mut(), rs.geometry)
+            crate::boot::reserve_firmware_memory(
+                rs.ctx.e820_state_mut(),
+                rs.geometry,
+                B::FACTS.variable_storage,
+            )
         });
         self.phase(
             fstart_timestamp::id::LOAD_MEMORY_POLICY,
@@ -1129,9 +1133,83 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
                 cfr: fstart_options::cfr::encode(&self.options),
                 cmos: Some(crate::options::store()),
             });
+            if let Some(relative_offset) = B::FACTS.varstore_offset() {
+                if let Some(storage) = open_variable_storage::<B>(relative_offset) {
+                    static mut STORAGE: Option<
+                        fstart_payload::crabefi::settings::FlashStorage<
+                            fstart_driver_intel::southbridge::spi::CacheSpi,
+                        >,
+                    > = None;
+                    // SAFETY: BSP only, single handoff from RAM; CrabEFI takes
+                    // exclusive ownership of the bounded variable store extent.
+                    let slot = unsafe { &mut *core::ptr::addr_of_mut!(STORAGE) };
+                    *slot = Some(storage);
+                    handoff.variable_storage = slot
+                        .as_mut()
+                        .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+                    if let Ok(deferred) = crate::boot::deferred_buffer_region(self.geometry)
+                        && let Some(end) = deferred.end()
+                    {
+                        let reserved = self.e820().iter().any(|entry| {
+                            entry.kind
+                                == fstart_core::services::memory_detect::E820Kind::Reserved as u32
+                                && entry.addr <= deferred.base
+                                && entry.addr.saturating_add(entry.size) >= end
+                        });
+                        if reserved {
+                            handoff.deferred_buffer =
+                                Some(Range::new(deferred.base, deferred.size));
+                        }
+                    }
+                }
+            }
         }
         fstart_payload::boot(handoff, ())
     }
+}
+
+#[cfg(feature = "payload-uefi-basic")]
+fn open_variable_storage<B: IntelBoard>(
+    relative_offset: u32,
+) -> Option<
+    fstart_payload::crabefi::settings::FlashStorage<
+        fstart_driver_intel::southbridge::spi::CacheSpi,
+    >,
+> {
+    use fstart_driver_intel::southbridge::spi::{CacheSpi, FlashExtent};
+    let size = crate::facts::VARSTORE_SIZE;
+    if !fstart_stage::directory::matches_raw_reservation("varstore", relative_offset, size, 0xff) {
+        fstart_log::warn!("varstore: directory reservation mismatch, variables are volatile");
+        return None;
+    }
+    let bios_offset = match B::FACTS.flash {
+        fstart_core::FlashLayout::IntelIfd(layout) => layout.bios_region()?.offset,
+        fstart_core::FlashLayout::X86Legacy(_) => 0,
+    };
+    let extent = FlashExtent {
+        offset: bios_offset.checked_add(relative_offset)?,
+        size,
+        chip_size: B::FACTS.flash_size,
+    };
+    // SAFETY: ramstage executes from RAM and `varstore` was verified against
+    // the authenticated directory reservation above.
+    let flash = match unsafe { CacheSpi::new(extent) } {
+        Ok(flash) => flash,
+        Err(error) => {
+            fstart_log::warn!(
+                "varstore: SPI controller unavailable ({:?}), variables are volatile",
+                error
+            );
+            return None;
+        }
+    };
+    let writable = flash.writable();
+    Some(fstart_payload::crabefi::settings::FlashStorage::new(
+        flash,
+        size,
+        CacheSpi::ERASE_SIZE,
+        writable,
+    ))
 }
 
 fn init_mp<P: IntelEarlyPlatform>(

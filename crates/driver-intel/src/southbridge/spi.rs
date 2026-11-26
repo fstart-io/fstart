@@ -356,9 +356,29 @@ impl CacheSpi {
         Ok(())
     }
 
-    /// Whether the chip was identified as a part this controller programs.
+    /// Software-sequenced sector erase granularity (`SE_20`, 4 KiB).
+    pub const ERASE_SIZE: u32 = 0x1000;
+
+    /// Whether the chip was identified as a part this controller programs and
+    /// BIOS control currently permits direct writes outside SMM.
     pub fn writable(&self) -> bool {
-        self.writable.is_some()
+        if self.writable.is_none() {
+            return false;
+        }
+        let bios_cntl = match self.silvermont_sbase {
+            Some(sbase) => {
+                // SAFETY: construction established the live SBASE mapping.
+                unsafe { &*(sbase as *const crate::baytrail::lpc::SpiRegs) }
+                    .bcr
+                    .get()
+            }
+            // SAFETY: construction established the live ECAM mapping for
+            // the LPC or separate SPI function, both with BIOS control at 0xdc.
+            None => unsafe {
+                u32::from(self.bios.register::<u8, BIOS_CONTROL::Register>(0xdc).get())
+            },
+        };
+        bios_cntl_allows_write(bios_cntl)
     }
 
     fn read_status(&mut self) -> Result<u8, ServiceError> {
@@ -435,7 +455,7 @@ impl CacheSpi {
             // SAFETY: construction established the live SBASE mapping; operations run from RAM.
             let bcr = &unsafe { &*(sbase as *const SpiRegs) }.bcr;
             let before = bcr.extract();
-            if before.is_set(BCR::LE) || before.is_set(BCR::EISS) {
+            if !bios_cntl_allows_write(before.get()) {
                 return Err(ServiceError::HardwareError);
             }
             let result = self
@@ -443,19 +463,20 @@ impl CacheSpi {
                 .enable_bios_write()
                 .map_err(|_| ServiceError::HardwareError)
                 .and_then(|()| self.unprotected(operation));
-            // Restore only WPD; preserve unrelated and newly latched policy bits.
-            bcr.modify(BCR::WPD.val(before.read(BCR::WPD)));
-            if bcr.read(BCR::WPD) != before.read(BCR::WPD) {
-                return Err(ServiceError::HardwareError);
+            // Only restore WPD when we enabled it; leave pre-enabled WPD untouched
+            // so we never write BCR after lock_spi() has latched LE.
+            if !before.is_set(BCR::WPD) {
+                bcr.modify(BCR::WPD::CLEAR);
+                if bcr.is_set(BCR::WPD) {
+                    return Err(ServiceError::HardwareError);
+                }
             }
             return result;
         }
         // SAFETY: construction established the live function; code runs from RAM.
         let control = unsafe { self.bios.register::<u8, BIOS_CONTROL::Register>(0xdc) };
         let before = control.extract();
-        if before.is_set(BIOS_CONTROL::LOCK_ENABLE)
-            || before.is_set(BIOS_CONTROL::SMM_WRITE_PROTECT)
-        {
+        if !bios_cntl_allows_write(u32::from(before.get())) {
             return Err(ServiceError::HardwareError);
         }
         let result = self
@@ -463,10 +484,12 @@ impl CacheSpi {
             .enable_bios_write()
             .map_err(|_| ServiceError::HardwareError)
             .and_then(|()| self.unprotected(operation));
-        // Restore only BIOSWE; preserve unrelated and newly latched policy bits.
-        control.modify(BIOS_CONTROL::WRITE_ENABLE.val(before.read(BIOS_CONTROL::WRITE_ENABLE)));
-        if control.read(BIOS_CONTROL::WRITE_ENABLE) != before.read(BIOS_CONTROL::WRITE_ENABLE) {
-            return Err(ServiceError::HardwareError);
+        // Only restore BIOSWE when we enabled it; preserve pre-enabled and policy bits.
+        if !before.is_set(BIOS_CONTROL::WRITE_ENABLE) {
+            control.modify(BIOS_CONTROL::WRITE_ENABLE::CLEAR);
+            if control.is_set(BIOS_CONTROL::WRITE_ENABLE) {
+                return Err(ServiceError::HardwareError);
+            }
         }
         result
     }
@@ -498,13 +521,11 @@ impl FlashRegion for CacheSpi {
         })
     }
 
-    /// Erase complete 64-KiB units only, as the verified chip's 4-KiB sectors:
-    /// rflasher erases and polls, with the geometry `new` verified. Neither
-    /// can cross the extent.
+    /// Erase complete 4-KiB sectors (`SE_20`), bounded to the linked extent.
+    /// rflasher erases and polls, with the geometry `new` verified.
     fn erase(&mut self, offset: u32, length: u32) -> Result<(), ServiceError> {
-        const SECTOR: u32 = 0x1000;
         let address = self.extent.address(offset, length as usize)?;
-        if address % 0x10000 != 0 || !length.is_multiple_of(0x10000) {
+        if !address.is_multiple_of(Self::ERASE_SIZE) || !length.is_multiple_of(Self::ERASE_SIZE) {
             return Err(ServiceError::InvalidParam);
         }
         self.with_write(|this| {
@@ -515,7 +536,7 @@ impl FlashRegion for CacheSpi {
                     .map_err(|_| ServiceError::HardwareError);
             }
             this.controller
-                .swseq_erase_blocks(opcodes::SE_20, SECTOR, address, length)
+                .swseq_erase_blocks(opcodes::SE_20, Self::ERASE_SIZE, address, length)
                 .map_err(|_| ServiceError::HardwareError)
         })
     }
@@ -576,6 +597,16 @@ fn supported_geometry(id: [u8; 3], chip_size: u32) -> Option<Protection> {
         _ => false,
     };
     supported.then_some(Protection::None)
+}
+
+/// Whether ICH `BIOS_CNTL` or Silvermont `BCR` permits direct flash writes
+/// outside SMM: `EISS`/`SMM_BWP` must be clear and either `WPD`/`BIOSWE` is
+/// already set or `LE`/`BLE` is clear so write-enable can be toggled safely.
+const fn bios_cntl_allows_write(bios_cntl: u32) -> bool {
+    const WPD: u32 = 1 << 0;
+    const LE: u32 = 1 << 1;
+    const EISS: u32 = 1 << 5;
+    (bios_cntl & EISS) == 0 && ((bios_cntl & WPD) != 0 || (bios_cntl & LE) == 0)
 }
 
 #[cfg(test)]
@@ -645,5 +676,20 @@ mod tests {
             supported_geometry([0xef, 0x40, 0x17], 0x80_0000),
             Some(Protection::None)
         );
+    }
+
+    #[test]
+    fn bios_cntl_write_policy_permits_pre_enabled_wpd_under_le() {
+        // Unlocked, WPD=0 or WPD=1.
+        assert!(bios_cntl_allows_write(0x00));
+        assert!(bios_cntl_allows_write(0x01));
+        // Post-lock_spi Bay Trail state: SRC=2, LE=1, WPD=1, EISS=0.
+        assert!(bios_cntl_allows_write(0x0b));
+        // Locked read-only: LE=1, WPD=0.
+        assert!(!bios_cntl_allows_write(0x02));
+        // SMM-only write protect (EISS=1), regardless of WPD/LE.
+        assert!(!bios_cntl_allows_write(0x20));
+        assert!(!bios_cntl_allows_write(0x21));
+        assert!(!bios_cntl_allows_write(0x2b));
     }
 }

@@ -169,7 +169,11 @@ register_bitfields![u32,
         COLD_WAKE OFFSET(16) NUMBITS(1) []
     ],
     /// D-unit 0x0c (32 bits) on each channel's port.
-    pub PMSTS [ SELF_REFRESH OFFSET(0) NUMBITS(1) [] ],
+    pub PMSTS [
+        SELF_REFRESH OFFSET(0) NUMBITS(1) [],
+        /// Warm reset occurred.
+        WRO OFFSET(8) NUMBITS(1) []
+    ],
     /// D-unit 0x0f (32 bits) on each channel's port.
     /// Configuration and lock bits.
     pub DCO [
