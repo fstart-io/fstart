@@ -31,7 +31,7 @@ stage = [
 armv5te = ["fstart-arch/armv5te", "fstart-stage?/armv5te", "fstart-payload?/armv5te"]
 ast2500 = ["dep:aspeed-pac", "aspeed-pac?/ast2500-arm", "dep:aspeed-hal", "aspeed-hal?/ast2500"]
 bundle-ast2500-bootblock = ["stage", "ast2500", "armv5te"]
-bundle-ast2500-main = ["stage", "ast2500", "armv5te"]
+bundle-ast2500-main = ["stage", "ast2500", "armv5te", "dep:fstart-mctp", "dep:fstart-pldm", "dep:fstart-spdm"]
 # Bare ELF payloads, entered at e_entry.
 payload-elf = ["fstart-payload?/elf"]
 
@@ -43,8 +43,11 @@ fstart-driver-uart = { workspace = true, optional = true }
 fstart-ffs = { workspace = true, optional = true }
 fstart-image-build = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }
+fstart-mctp = { workspace = true, optional = true }
 fstart-memtest = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }
+fstart-pldm = { workspace = true, optional = true }
+fstart-spdm = { workspace = true, optional = true }
 fstart-stage = { workspace = true, optional = true }
 fstart-timestamp = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }

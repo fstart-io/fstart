@@ -32,6 +32,7 @@ aarch64-el2-relocate-entry = ["fstart-stage?/aarch64-el2-relocate-entry"]
 bundle-q35 = [
   "stage", "x86_64", "fstart-arch/x86-identity-paging",
   "fstart-stage/ed25519", "fstart-stage/sha2-digest", "smm", "tpm",
+  "dep:fstart-mctp", "dep:fstart-pldm", "dep:fstart-spdm",
 ]
 # TIS TPM 1.2/2.0 (swtpm) and TCG measured boot into QEMU's TPM log area.
 tpm = ["dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-stage?/tcg", "fstart-payload?/tcg"]
@@ -63,6 +64,9 @@ fstart-smm = { workspace = true, optional = true }
 fstart-driver-intel = { workspace = true, optional = true }
 fstart-driver-uart = { workspace = true, optional = true }
 fstart-driver-tpm = { workspace = true, optional = true }
+fstart-mctp = { workspace = true, optional = true }
+fstart-pldm = { workspace = true, optional = true }
+fstart-spdm = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }

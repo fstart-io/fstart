@@ -493,8 +493,10 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
 
         if signed {
             // SPDM 1.2 includes VCA in L1/L2 measurement transcript!
+            // Strip any 1..3 trailing PCIe DOE DW-alignment pad bytes from req (37B).
+            let req_exact = req.len().min(37);
             let mut t = self.vca.clone();
-            t.update(req);
+            t.update(&req[..req_exact]);
             t.update(&resp[..pos]);
             let l1_hash = t.finalize_clone();
             let sign_digest =
@@ -559,9 +561,11 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         resp[106..before_sig].copy_from_slice(opaque);
 
         // Transcript up to signature: VCA || cert_chain_hash || KEY_EXCHANGE || KEY_EXCHANGE_RSP[..before_sig]
+        // Strip any 1..3 trailing PCIe DOE DW-alignment pad bytes from req.
+        let req_exact = 106 + req_opaque_len;
         let mut t = self.vca.clone();
         t.update(&self.cert_chain_hash);
-        t.update(req);
+        t.update(&req[..req_exact]);
         t.update(&resp[..before_sig]);
         let th1_pre_sig = t.finalize_clone();
         let sign_digest = spdm12_signing_digest(

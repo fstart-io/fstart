@@ -223,6 +223,8 @@ pub fn main_stage(
 
     let memory = [E820Entry::new(DRAM, dram_size, E820Kind::Ram)];
     let description = Description::new(&memory, Range::new(FLASH_ALIAS, image_size as u64));
+    #[cfg(feature = "bundle-ast2500-main")]
+    crate::mctp_bmc::serve_if_present();
     fstart_timestamp::add(id::LOAD_PAYLOAD);
     fstart_payload::boot(Handoff::new(description, Placement::default()), ())
 }

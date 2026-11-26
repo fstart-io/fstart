@@ -1138,6 +1138,10 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             "sha2_backend=\"soft\"".into(),
             "--cfg".into(),
             "sha2_backend_soft=\"compact\"".into(),
+            "--cfg".into(),
+            "aes_force_soft".into(),
+            "--cfg".into(),
+            "polyval_force_soft".into(),
         ]
     } else {
         vec![

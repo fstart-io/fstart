@@ -82,8 +82,9 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if !found_12 {
             return Err(Error::VersionMismatch);
         }
+        let exact_len = 6 + count * 2;
         self.version = SPDM_VERSION_1_2;
-        self.vca.update(resp);
+        self.vca.update(&resp[..exact_len]);
         Ok(self.version)
     }
 
@@ -113,7 +114,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             return Err(Error::InvalidMessage);
         }
         let flags = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
-        self.vca.update(resp);
+        self.vca.update(&resp[..20]);
         Ok(flags)
     }
 
@@ -166,7 +167,11 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if asym != BASE_ASYM_ECDSA_ECC_NIST_P256 || hash != BASE_HASH_SHA_256 {
             return Err(Error::UnsupportedAlgorithm);
         }
-        self.vca.update(resp);
+        let alg_len = u16::from_le_bytes([resp[4], resp[5]]) as usize;
+        if alg_len < 36 || resp.len() < alg_len {
+            return Err(Error::InvalidMessage);
+        }
+        self.vca.update(&resp[..alg_len]);
         self.m_transcript = self.vca.clone();
         Ok(())
     }
@@ -186,7 +191,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             return Err(Error::InvalidMessage);
         }
         self.peer_cert_hash.copy_from_slice(&body[..HASH_LEN]);
-        self.m_transcript.update(resp);
+        self.m_transcript.update(&resp[..4 + HASH_LEN]);
         Ok(self.peer_cert_hash)
     }
 
@@ -221,7 +226,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         self.peer_cert_chain[self.peer_cert_len..self.peer_cert_len + portion]
             .copy_from_slice(&body[4..4 + portion]);
         self.peer_cert_len += portion;
-        self.m_transcript.update(resp);
+        self.m_transcript.update(&resp[..8 + portion]);
         if remainder == 0 {
             let calc = sha256(&self.peer_cert_chain[..self.peer_cert_len]);
             if self.peer_cert_hash != [0; HASH_LEN] && !ct_eq(&calc, &self.peer_cert_hash) {
@@ -243,11 +248,14 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
 
     pub fn verify_challenge_auth(&self, req: &[u8], resp: &[u8]) -> Result<(), Error> {
         let (hdr, _) = SpdmHeader::parse(resp)?;
-        if hdr.code != SpdmCode::ChallengeAuth as u8 || resp.len() < 4 + HASH_LEN + 32 + 2 + SIG_LEN
-        {
+        if hdr.code != SpdmCode::ChallengeAuth as u8 || resp.len() < 70 + SIG_LEN {
             return Err(Error::InvalidMessage);
         }
-        let sig_off = resp.len() - SIG_LEN;
+        let opaque_len = u16::from_le_bytes([resp[68], resp[69]]) as usize;
+        let sig_off = 70 + opaque_len;
+        if resp.len() < sig_off + SIG_LEN {
+            return Err(Error::ShortBuffer);
+        }
         let mut t = self.m_transcript.clone();
         t.update(req);
         t.update(&resp[..sig_off]);
@@ -255,7 +263,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let digest =
             spdm12_signing_digest(self.version, b"responder-challenge_auth signing", &m1_hash);
         let mut sig = [0u8; SIG_LEN];
-        sig.copy_from_slice(&resp[sig_off..]);
+        sig.copy_from_slice(&resp[sig_off..sig_off + SIG_LEN]);
         verify_p256_prehash(&self.peer_pub_xy, &digest, &sig)
     }
 
@@ -279,7 +287,16 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if hdr.code != SpdmCode::Measurements as u8 || resp.len() < 8 + 32 + 2 + SIG_LEN {
             return Err(Error::InvalidMessage);
         }
-        let sig_off = resp.len() - SIG_LEN;
+        let record_len = u32::from_le_bytes([resp[5], resp[6], resp[7], 0]) as usize;
+        let opaque_off = 8 + record_len + 32;
+        if resp.len() < opaque_off + 2 {
+            return Err(Error::ShortBuffer);
+        }
+        let opaque_len = u16::from_le_bytes([resp[opaque_off], resp[opaque_off + 1]]) as usize;
+        let sig_off = opaque_off + 2 + opaque_len;
+        if resp.len() < sig_off + SIG_LEN {
+            return Err(Error::ShortBuffer);
+        }
         let mut t = self.vca.clone();
         t.update(req);
         t.update(&resp[..sig_off]);
@@ -287,7 +304,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let digest =
             spdm12_signing_digest(self.version, b"responder-measurements signing", &l1_hash);
         let mut sig = [0u8; SIG_LEN];
-        sig.copy_from_slice(&resp[sig_off..]);
+        sig.copy_from_slice(&resp[sig_off..sig_off + SIG_LEN]);
         verify_p256_prehash(&self.peer_pub_xy, &digest, &sig)?;
         Ok(resp[4]) // number of measurement blocks
     }
