@@ -161,6 +161,11 @@ impl SerialDecoder {
                 Ok(None)
             }
             State::BodyEscape => {
+                if byte == FRAME_FLAG {
+                    // Resynchronize on the opening flag of the next frame.
+                    self.state = State::WaitRev;
+                    return Err(Error::InvalidFrame);
+                }
                 let unescaped = byte ^ 0x20;
                 if unescaped != FRAME_FLAG && unescaped != FRAME_ESCAPE {
                     self.reset();

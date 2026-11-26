@@ -108,6 +108,9 @@ impl BaseResponder {
                 if data[0] == 0x00 || data[0] == 0xFF {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
                 }
+                if resp.len() < 4 {
+                    return Err(Error::BufferTooSmall);
+                }
                 self.tid = data[0];
                 write_completion(hdr, CompletionCode::Success as u8, resp)
             }
@@ -137,13 +140,22 @@ impl BaseResponder {
                 if data.len() != 6 {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
+                let handle = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                let op_flag = data[4];
+                if op_flag != 0x01 || handle != 0 {
+                    return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
+                }
                 let pldm_type = data[5];
                 if (pldm_type as usize) >= 64
                     || (self.supported_types_bitmap[pldm_type as usize / 8]
                         & (1 << (pldm_type as usize % 8)))
                         == 0
                 {
-                    return write_completion(hdr, CompletionCode::InvalidPldmType as u8, resp);
+                    return write_completion(
+                        hdr,
+                        CompletionCode::InvalidPldmTypeInRequestData as u8,
+                        resp,
+                    );
                 }
                 if resp.len() < 17 {
                     return Err(Error::BufferTooSmall);
@@ -162,21 +174,36 @@ impl BaseResponder {
                 if data.len() != 5 {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
+                let pldm_type = data[0];
+                if (pldm_type as usize) >= 64
+                    || (self.supported_types_bitmap[pldm_type as usize / 8]
+                        & (1 << (pldm_type as usize % 8)))
+                        == 0
+                {
+                    return write_completion(
+                        hdr,
+                        CompletionCode::InvalidPldmTypeInRequestData as u8,
+                        resp,
+                    );
+                }
+                // Only v1.0.0 ([0x00, 0xF0, 0xF0, 0xF1]) is supported.
+                if data[1..5] != [0x00, 0xF0, 0xF0, 0xF1] {
+                    return write_completion(hdr, 0x84, resp); // INVALID_PLDM_VERSION_IN_REQUEST_DATA
+                }
                 if resp.len() < 36 {
                     return Err(Error::BufferTooSmall);
                 }
                 let mut cmds = [0u8; 32];
-                match data[0] {
+                match pldm_type {
                     0 => {
                         // SetTID(1), GetTID(2), GetPLDMVersion(3), GetPLDMTypes(4), GetPLDMCommands(5)
                         cmds[0] = 0b0011_1110;
                     }
                     2 => {
-                        // GetSensorReading(0x11), SetStateEffecterStates(0x39), GetPDRRepoInfo(0x50), GetPDR(0x51)
+                        // GetSensorReading(0x11), SetStateEffecterStates(0x39), GetPDRRepoInfo(0x50)
                         cmds[0x11 / 8] |= 1 << (0x11 % 8);
                         cmds[0x39 / 8] |= 1 << (0x39 % 8);
                         cmds[0x50 / 8] |= 1 << (0x50 % 8);
-                        cmds[0x51 / 8] |= 1 << (0x51 % 8);
                     }
                     5 => {
                         for c in [0x01usize, 0x02, 0x10, 0x13, 0x14, 0x1A, 0x1B, 0x1D] {
@@ -184,7 +211,11 @@ impl BaseResponder {
                         }
                     }
                     _ => {
-                        return write_completion(hdr, CompletionCode::InvalidPldmType as u8, resp);
+                        return write_completion(
+                            hdr,
+                            CompletionCode::InvalidPldmTypeInRequestData as u8,
+                            resp,
+                        );
                     }
                 }
                 write_completion(hdr, CompletionCode::Success as u8, resp)?;

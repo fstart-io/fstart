@@ -59,9 +59,8 @@ pub fn crc8_smbus_update(mut crc: u8, data: &[u8]) -> u8 {
     crc
 }
 
-/// DSP0253 / PPP-style FCS-16 (CRC-16/CCITT-FALSE reflected, poly `0x8408`,
-/// init `0xFFFF`, no final inversion), matching Linux `mctp-serial` and
-/// `mctp-estack`.
+/// DSP0253 / PPP-style FCS-16 (reflected CRC-16, poly `0x8408`, init `0xFFFF`,
+/// no final inversion), matching Linux `mctp-serial` and `mctp-estack`.
 pub fn fcs16_serial(data: &[u8]) -> u16 {
     fcs16_serial_update(0xFFFF, data)
 }

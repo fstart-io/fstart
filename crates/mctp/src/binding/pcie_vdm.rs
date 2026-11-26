@@ -67,6 +67,11 @@ pub fn encode(
         return Err(Error::InvalidFrame);
     }
     let pad_len = (dws * 4) - payload.len();
+    let eom = (mctp_packet[3] & 0x40) != 0;
+    // DSP0238 §6.1: non-final packets (EOM=0) must be DW-aligned (pad_len == 0).
+    if !eom && pad_len != 0 {
+        return Err(Error::InvalidFrame);
+    }
     let total = VDM_HEADER_LEN + dws * 4;
     if out.len() < total {
         return Err(Error::BufferTooSmall);
@@ -124,9 +129,10 @@ pub fn decode(tlp: &[u8]) -> Result<(PcieVdmMeta, &[u8]), Error> {
         return Err(Error::InvalidFrame);
     }
     let routing = PcieRouting::from_u8(tlp_type).ok_or(Error::InvalidFrame)?;
+    let has_digest = (tlp[2] & 0x80) != 0;
     let raw_len = u16::from_be_bytes([tlp[2] & 0x03, tlp[3]]) as usize;
     let dws = if raw_len == 0 { 1024 } else { raw_len };
-    let expected_total = VDM_HEADER_LEN + dws * 4;
+    let expected_total = VDM_HEADER_LEN + dws * 4 + if has_digest { 4 } else { 0 };
     if tlp.len() != expected_total {
         return Err(Error::InvalidFrame);
     }
@@ -136,6 +142,11 @@ pub fn decode(tlp: &[u8]) -> Result<(PcieVdmMeta, &[u8]), Error> {
     let msg_code = tlp[7];
     let vendor_id = u16::from_be_bytes([tlp[10], tlp[11]]);
     if vdm_code != 0 || msg_code != VDM_TYPE1_MSG_CODE || vendor_id != DMTF_VENDOR_ID {
+        return Err(Error::InvalidFrame);
+    }
+
+    let eom = (tlp[15] & 0x40) != 0;
+    if !eom && pad_len != 0 {
         return Err(Error::InvalidFrame);
     }
 

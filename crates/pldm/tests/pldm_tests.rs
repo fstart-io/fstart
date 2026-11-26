@@ -58,9 +58,13 @@ impl PacketTransport for PipeEndpoint {
             TransportKind::Smbus => smbus::encode(0x30, 0x10, pkt, &mut wire)?,
             TransportKind::I3c => i3c::encode(0x45, false, pkt, &mut wire)?,
             TransportKind::Kcs => kcs::encode(pkt, &mut wire)?,
-            TransportKind::PcieVdm => {
-                pcie_vdm::encode(pcie_vdm::PcieRouting::RouteById, 0x0010, 0x0020, pkt, &mut wire)?
-            }
+            TransportKind::PcieVdm => pcie_vdm::encode(
+                pcie_vdm::PcieRouting::RouteById,
+                0x0010,
+                0x0020,
+                pkt,
+                &mut wire,
+            )?,
         };
         self.tx.borrow_mut().push_back(wire[..n].to_vec());
         Ok(())
@@ -81,7 +85,7 @@ impl PacketTransport for PipeEndpoint {
                 Ok(pkt.len())
             }
             TransportKind::Kcs => {
-                let pkt = kcs::decode(&wire)?;
+                let pkt = kcs::decode(&wire)?.ok_or(MctpError::InvalidFrame)?;
                 out[..pkt.len()].copy_from_slice(pkt);
                 Ok(pkt.len())
             }
@@ -104,7 +108,12 @@ fn serve_one<T: PacketTransport>(
     assert_eq!(msg.msg_type, MessageType::Pldm as u8);
     let rlen = pldm.handle_request(msg.payload, &mut resp_buf).unwrap();
     server_ep
-        .send_message(msg.src_eid, MessageType::Pldm as u8, Some(msg.msg_tag), &resp_buf[..rlen])
+        .send_message(
+            msg.src_eid,
+            MessageType::Pldm as u8,
+            Some(msg.msg_tag),
+            &resp_buf[..rlen],
+        )
         .unwrap();
 }
 
@@ -199,7 +208,10 @@ fn pldm_base_and_platform_over_all_five_transports() {
             .unwrap();
         serve_one(&mut host, &mut pldm);
         let msg = bmc.recv_message(&mut rx).unwrap();
-        assert_eq!(u32::from_le_bytes(msg.payload[31..35].try_into().unwrap()), 2);
+        assert_eq!(
+            u32::from_le_bytes(msg.payload[31..35].try_into().unwrap()),
+            2
+        );
     }
 }
 
@@ -222,23 +234,47 @@ fn pldm_firmware_update_full_state_machine() {
     assert_eq!(pldm.fw_update.state(), FdState::ReadyXfer);
 
     // UpdateComponent -> Download
-    let n = encode_update_component_req(3, 0x000A, 0x0001, 1, image.len() as u32, b"1.0.1", &mut req)
-        .unwrap();
+    let n =
+        encode_update_component_req(3, 0x000A, 0x0001, 1, image.len() as u32, b"1.0.1", &mut req)
+            .unwrap();
     pldm.handle_request(&req[..n], &mut resp).unwrap();
     assert_eq!(pldm.fw_update.state(), FdState::Download);
 
-    // Pull firmware chunks via RequestFirmwareData
+    // Pull firmware chunks via RequestFirmwareData (zero-padding past image end per DSP0267 §11.6)
     let mut inst = 1u8;
-    while let Some((rlen, req_bytes)) = pldm.fw_update.next_fw_data_request(inst, &mut req).unwrap() {
+    while let Some((rlen, req_bytes)) = pldm.fw_update.next_fw_data_request(inst, &mut req).unwrap()
+    {
         assert_eq!(rlen, 11);
         let offset = u32::from_le_bytes(req[3..7].try_into().unwrap()) as usize;
-        let end = (offset + req_bytes).min(image.len());
-        let done = pldm.fw_update.push_fw_data_chunk(&image[offset..end]).unwrap();
+        let mut chunk = vec![0u8; req_bytes];
+        if offset < image.len() {
+            let copy_len = req_bytes.min(image.len() - offset);
+            chunk[..copy_len].copy_from_slice(&image[offset..offset + copy_len]);
+        }
+        let done = pldm.fw_update.push_fw_data_chunk(&chunk).unwrap();
         inst = inst.wrapping_add(1) & 0x1F;
         if done {
             break;
         }
     }
+    assert_eq!(
+        pldm.fw_update
+            .build_transfer_complete(10, &mut req)
+            .unwrap(),
+        4
+    );
+    assert_eq!(pldm.fw_update.state(), FdState::Verify);
+    assert_eq!(
+        pldm.fw_update
+            .build_verify_complete(11, 0, &mut req)
+            .unwrap(),
+        4
+    );
+    assert_eq!(pldm.fw_update.state(), FdState::Apply);
+    assert_eq!(
+        pldm.fw_update.build_apply_complete(12, &mut req).unwrap(),
+        6
+    );
     assert_eq!(pldm.fw_update.state(), FdState::ReadyXfer);
     assert_eq!(pldm.fw_update.downloaded_image(), &image[..]);
 

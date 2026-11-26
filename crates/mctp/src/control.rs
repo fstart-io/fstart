@@ -110,6 +110,12 @@ impl ControlHeader {
     }
 }
 
+/// Returns `true` if `eid` is an assignable unicast EID (DSP0236 §8.2:
+/// `0x00..=0x07` and `0xFF` are reserved/special).
+pub const fn is_assignable_eid(eid: u8) -> bool {
+    eid >= 0x08 && eid != EID_BROADCAST
+}
+
 /// Encode a `Set Endpoint ID` request into `out`.
 pub fn encode_set_eid_req(
     instance_id: u8,
@@ -200,8 +206,9 @@ pub fn encode_get_msg_types_req(instance_id: u8, out: &mut [u8]) -> Result<usize
 /// Stateful MCTP Control Protocol responder for an endpoint or bus owner.
 pub struct ControlResponder {
     eid: u8,
-    static_eid: bool,
+    static_eid: Option<u8>,
     is_bus_owner: bool,
+    supports_discovery: bool,
     discovered: bool,
     uuid: [u8; 16],
     msg_types: [u8; 8],
@@ -209,17 +216,18 @@ pub struct ControlResponder {
 }
 
 impl ControlResponder {
-    /// Create a new control responder with `initial_eid`, 16-byte `uuid`, and
-    /// list of supported non-control message types (Control `0x00` is always
-    /// implicit in DSP0236, though callers may pass e.g. `[Pldm, Spdm, SecuredMsg]`).
+    /// Create a new control responder with `initial_eid` (`0x00` for dynamic,
+    /// non-zero for static), 16-byte `uuid`, and list of supported non-control
+    /// message types.
     pub fn new(initial_eid: u8, uuid: [u8; 16], supported_types: &[u8]) -> Self {
         let mut msg_types = [0u8; 8];
         let count = supported_types.len().min(msg_types.len());
         msg_types[..count].copy_from_slice(&supported_types[..count]);
         Self {
             eid: initial_eid,
-            static_eid: initial_eid != EID_NULL,
+            static_eid: (initial_eid != EID_NULL).then_some(initial_eid),
             is_bus_owner: false,
+            supports_discovery: false,
             discovered: false,
             uuid,
             msg_types,
@@ -232,6 +240,14 @@ impl ControlResponder {
         self
     }
 
+    /// Enable `PrepareForEndpointDiscovery` and `EndpointDiscovery` (e.g. on
+    /// PCIe VDM; disabled by default for bindings like SMBus where DSP0237
+    /// requires returning `UnsupportedCmd`).
+    pub const fn with_discovery(mut self, enabled: bool) -> Self {
+        self.supports_discovery = enabled;
+        self
+    }
+
     pub const fn eid(&self) -> u8 {
         self.eid
     }
@@ -241,11 +257,18 @@ impl ControlResponder {
     }
 
     /// Process an incoming MCTP Control request payload and write the response
-    /// payload into `resp`. Returns the response length.
+    /// payload into `resp`.
+    ///
+    /// Returns `Ok(0)` when no reply should be transmitted (e.g. `D=1`
+    /// datagram or `EndpointDiscovery` when already discovered).
     pub fn handle_request(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Error> {
         let (hdr, data) = ControlHeader::parse(req)?;
         if !hdr.rq {
             return Err(Error::InvalidControl);
+        }
+        // DSP0236 §11.5: datagrams (D=1) never generate a control response.
+        if hdr.datagram {
+            return Ok(0);
         }
         if resp.len() < 3 {
             return Err(Error::BufferTooSmall);
@@ -270,6 +293,10 @@ impl ControlResponder {
             ControlCommand::GetMctpVersionSupport => self.handle_get_version(data, resp),
             ControlCommand::GetMessageTypeSupport => self.handle_get_msg_types(data, resp),
             ControlCommand::PrepareForEndpointDiscovery => {
+                if !self.supports_discovery {
+                    resp[2] = ControlCompletion::UnsupportedCmd as u8;
+                    return Ok(3);
+                }
                 if !data.is_empty() {
                     resp[2] = ControlCompletion::InvalidLength as u8;
                     return Ok(3);
@@ -279,9 +306,17 @@ impl ControlResponder {
                 Ok(3)
             }
             ControlCommand::EndpointDiscovery => {
+                if !self.supports_discovery {
+                    resp[2] = ControlCompletion::UnsupportedCmd as u8;
+                    return Ok(3);
+                }
                 if !data.is_empty() {
                     resp[2] = ControlCompletion::InvalidLength as u8;
                     return Ok(3);
+                }
+                if self.discovered {
+                    // Already discovered: silently ignore discovery probes.
+                    return Ok(0);
                 }
                 resp[2] = ControlCompletion::Success as u8;
                 Ok(3)
@@ -303,33 +338,28 @@ impl ControlResponder {
         }
         let op = SetEidOperation::from_u8(data[0]).ok_or(Error::InvalidControl)?;
         let requested_eid = data[1];
-        // DSP0236 §12.3: 0x00 and 0xFF are illegal for Set/Force EID.
+        // DSP0236 §8.2 & §12.3: 0x00..=0x07 and 0xFF are illegal for Set/Force EID.
         if matches!(op, SetEidOperation::SetEid | SetEidOperation::ForceEid)
-            && (requested_eid == EID_NULL || requested_eid == EID_BROADCAST)
+            && !is_assignable_eid(requested_eid)
         {
             resp[2] = ControlCompletion::InvalidData as u8;
             return Ok(3);
         }
 
-        let mut status: u8 = 0x00; // EID assignment accepted, no pool required
         match op {
-            SetEidOperation::SetEid => {
-                if self.discovered && self.eid != EID_NULL {
-                    // Reject if already discovered; return current EID.
-                    status = 0x10;
-                } else {
-                    self.eid = requested_eid;
-                    self.discovered = true;
-                }
-            }
-            SetEidOperation::ForceEid => {
+            SetEidOperation::SetEid | SetEidOperation::ForceEid => {
+                // Single-bus endpoint accepts SetEid and ForceEid per DSP0236 §12.3.
                 self.eid = requested_eid;
                 self.discovered = true;
             }
             SetEidOperation::ResetEid => {
-                if !self.static_eid {
-                    self.eid = EID_NULL;
-                }
+                // DSP0236 §12.3: Reset EID is only valid for static-EID endpoints;
+                // dynamic-only endpoints return ERROR_INVALID_DATA.
+                let Some(orig) = self.static_eid else {
+                    resp[2] = ControlCompletion::InvalidData as u8;
+                    return Ok(3);
+                };
+                self.eid = orig;
                 self.discovered = false;
             }
             SetEidOperation::SetDiscoveredFlag => {
@@ -338,7 +368,7 @@ impl ControlResponder {
         }
 
         resp[2] = ControlCompletion::Success as u8;
-        resp[3] = status;
+        resp[3] = 0x00; // EID assignment accepted, no pool required
         resp[4] = self.eid;
         resp[5] = 0x00; // EID pool size
         Ok(6)
@@ -352,7 +382,12 @@ impl ControlResponder {
         if resp.len() < 6 {
             return Err(Error::BufferTooSmall);
         }
-        let ep_type = ((self.is_bus_owner as u8) << 4) | if self.static_eid { 0x01 } else { 0x00 };
+        let ep_type = ((self.is_bus_owner as u8) << 4)
+            | if self.static_eid.is_some() {
+                0x01
+            } else {
+                0x00
+            };
         resp[2] = ControlCompletion::Success as u8;
         resp[3] = self.eid;
         resp[4] = ep_type;
@@ -378,29 +413,41 @@ impl ControlResponder {
             resp[2] = ControlCompletion::InvalidLength as u8;
             return Ok(3);
         }
+        let msg_type = data[0];
+        if msg_type == 0xFF || msg_type == 0x00 {
+            // DSP0236 §§12.6.2-12.6.3: mandatory compatibility entries for v1.3.1.
+            const BASE_VERSIONS: [[u8; 4]; 4] = [
+                [0xF1, 0xF0, 0xFF, 0x00],
+                [0xF1, 0xF1, 0xFF, 0x00],
+                [0xF1, 0xF2, 0xFF, 0x00],
+                [0xF1, 0xF3, 0xF1, 0x00],
+            ];
+            let needed = 4 + BASE_VERSIONS.len() * 4;
+            if resp.len() < needed {
+                return Err(Error::BufferTooSmall);
+            }
+            resp[2] = ControlCompletion::Success as u8;
+            resp[3] = BASE_VERSIONS.len() as u8;
+            for (i, v) in BASE_VERSIONS.iter().enumerate() {
+                resp[4 + i * 4..8 + i * 4].copy_from_slice(v);
+            }
+            return Ok(needed);
+        }
+        if !self.supports_msg_type(msg_type) {
+            resp[2] = ControlCompletion::MessageTypeNotSupported as u8;
+            return Ok(3);
+        }
         if resp.len() < 8 {
             return Err(Error::BufferTooSmall);
         }
-        let msg_type = data[0];
-        // Version encoding (DSP0236 Table 17): [major, minor, update, alpha]
-        // 0xF1 0xF3 0xF1 0x00 = v1.3.1 (DSP0236), 0xF1 0xF0 0xF0 0x00 = v1.0.0.
-        let version: Option<[u8; 4]> = match msg_type {
-            0xFF | 0x00 => Some([0xF1, 0xF3, 0xF1, 0x00]),
-            t if self.supports_msg_type(t) => match MessageType::from_u8(t) {
-                Some(MessageType::Pldm) => Some([0xF1, 0xF0, 0xF0, 0x00]),
-                Some(MessageType::Spdm) | Some(MessageType::SecuredMsg) => {
-                    Some([0xF1, 0xF0, 0xF0, 0x00])
-                }
-                _ => Some([0xF1, 0xF0, 0xF0, 0x00]),
-            },
-            _ => None,
-        };
-        let Some(ver) = version else {
-            resp[2] = ControlCompletion::MessageTypeNotSupported as u8;
-            return Ok(3);
+        let ver: [u8; 4] = match MessageType::from_u8(msg_type) {
+            Some(MessageType::Pldm) | Some(MessageType::Spdm) | Some(MessageType::SecuredMsg) => {
+                [0xF1, 0xF0, 0xF0, 0x00]
+            }
+            _ => [0xF1, 0xF0, 0xF0, 0x00],
         };
         resp[2] = ControlCompletion::Success as u8;
-        resp[3] = 1; // 1 version entry
+        resp[3] = 1;
         resp[4..8].copy_from_slice(&ver);
         Ok(8)
     }

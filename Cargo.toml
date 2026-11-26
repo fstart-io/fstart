@@ -37,8 +37,11 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 sha2 = { version = "0.11", default-features = false }
 sha3 = { version = "0.10", default-features = false }
 sha1 = { version = "0.11", default-features = false }
+hmac = { version = "0.12", default-features = false }
+hkdf = { version = "0.12", default-features = false }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 ed25519-dalek = { version = "2", default-features = false }
-p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "ecdh"] }
 
 # Embedded / no_std utilities
 embedded-hal = { version = "1", default-features = false }
@@ -137,6 +140,7 @@ fstart-platform-sifive = { path = "crates/platform-sifive" }
 fstart-platform-sunxi = { path = "crates/platform-sunxi" }
 fstart-resume = { path = "crates/resume" }
 fstart-smm = { path = "crates/smm" }
+fstart-spdm = { path = "crates/spdm" }
 fstart-stage = { path = "crates/stage" }
 fstart-store = { path = "crates/store" }
 fstart-tcg = { path = "crates/tcg" }
@@ -164,6 +168,16 @@ opt-level = 2
 [profile.dev.package.sha1]
 opt-level = 2
 [profile.dev.package.p256]
+opt-level = 2
+[profile.dev.package.aes-gcm]
+opt-level = 2
+[profile.dev.package.aes]
+opt-level = 2
+[profile.dev.package.ghash]
+opt-level = 2
+[profile.dev.package.hmac]
+opt-level = 2
+[profile.dev.package.hkdf]
 opt-level = 2
 
 [profile.release]

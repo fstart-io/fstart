@@ -166,13 +166,17 @@ impl<const SENSORS: usize, const EFFECTERS: usize> PlatformResponder<SENSORS, EF
                 Ok(14)
             }
             x if x == PlatformCommand::SetStateEffecterStates as u8 => {
-                if data.len() < 5 {
+                if data.len() != 5 {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
                 let effecter_id = u16::from_le_bytes([data[0], data[1]]);
                 let count = data[2];
-                if count != 1 || data.len() != 5 {
+                let set_req = data[3];
+                if count != 1 || (set_req != 0 && set_req != 1) {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
+                }
+                if resp.len() < 4 {
+                    return Err(Error::BufferTooSmall);
                 }
                 let Some(eff) = self
                     .effecters
@@ -182,7 +186,7 @@ impl<const SENSORS: usize, const EFFECTERS: usize> PlatformResponder<SENSORS, EF
                 else {
                     return write_completion(hdr, 0x80, resp); // INVALID_EFFECTER_ID
                 };
-                if data[3] == 1 {
+                if set_req == 1 {
                     eff.state = data[4];
                 }
                 write_completion(hdr, CompletionCode::Success as u8, resp)
@@ -191,17 +195,20 @@ impl<const SENSORS: usize, const EFFECTERS: usize> PlatformResponder<SENSORS, EF
                 if !data.is_empty() {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
-                // DSP0248 §26.1: 41 bytes of body after CC (45 total).
-                if resp.len() < 45 {
+                // DSP0248 §26.1: 40 bytes after CC (44 total).
+                if resp.len() < 44 {
                     return Err(Error::BufferTooSmall);
                 }
                 let record_count = self.sensors.iter().flatten().count() as u32
                     + self.effecters.iter().flatten().count() as u32;
+                // Valid DSP0248 timestamp104: 2026-01-01 00:00:00 UTC.
+                const TS_2026: [u8; 13] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0xEA, 0x07, 0];
                 write_completion(hdr, CompletionCode::Success as u8, resp)?;
                 resp[4] = 0x00; // repositoryState = available
-                resp[5..31].fill(0); // updateTime(13) + oemUpdateTime(13)
+                resp[5..18].copy_from_slice(&TS_2026);
+                resp[18..31].copy_from_slice(&TS_2026);
                 resp[31..35].copy_from_slice(&record_count.to_le_bytes());
-                resp[35..39].copy_from_slice(&(record_count * 16).to_le_bytes()); // repo size
+                resp[35..39].copy_from_slice(&record_count.saturating_mul(16).to_le_bytes());
                 resp[39..43].copy_from_slice(&16u32.to_le_bytes()); // largest record size
                 resp[43] = 0x00; // dataTransferHandleTimeout
                 Ok(44)

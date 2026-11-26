@@ -57,8 +57,12 @@ pub enum CompletionCode {
     NotInUpdateMode = 0x80,
     /// Firmware Update: Already in update mode (DSP0267).
     AlreadyInUpdateMode = 0x81,
-    /// Firmware Update: Invalid state for command (DSP0267).
-    InvalidStateForCommand = 0x85,
+    /// Base: Invalid PLDM type in request data (DSP0240).
+    InvalidPldmTypeInRequestData = 0x83,
+    /// Base / FW Update: Invalid PLDM version (DSP0240) / Invalid state for command (DSP0267).
+    InvalidStateForCommand = 0x84,
+    /// Firmware Update: Incomplete update on ActivateFirmware (DSP0267).
+    IncompleteUpdate = 0x87,
 }
 
 /// Errors returned by PLDM encoding, decoding, or transport exchange.
@@ -146,11 +150,7 @@ impl PldmHeader {
 }
 
 /// Write a minimal PLDM error/completion response (header + completion code).
-pub fn write_completion(
-    req_hdr: PldmHeader,
-    cc: u8,
-    resp: &mut [u8],
-) -> Result<usize, Error> {
+pub fn write_completion(req_hdr: PldmHeader, cc: u8, resp: &mut [u8]) -> Result<usize, Error> {
     if resp.len() < 4 {
         return Err(Error::BufferTooSmall);
     }
@@ -172,13 +172,18 @@ pub fn exchange<'a, C: MctpChannel>(
     rx_buf: &'a mut [u8],
 ) -> Result<(u8, &'a [u8]), Error> {
     let (req_hdr, _) = PldmHeader::parse(req)?;
-    let _tag = channel.send_message(dst_eid, MessageType::Pldm as u8, None, req)?;
+    let tag = channel.send_message(dst_eid, MessageType::Pldm as u8, None, req)?;
     let msg = channel.recv_message(rx_buf)?;
-    if msg.msg_type != MessageType::Pldm as u8 || msg.tag_owner {
+    if msg.src_eid != dst_eid
+        || msg.msg_type != MessageType::Pldm as u8
+        || msg.tag_owner
+        || msg.msg_tag != tag
+    {
         return Err(Error::UnexpectedResponse);
     }
     let (resp_hdr, rest) = PldmHeader::parse(msg.payload)?;
     if resp_hdr.rq
+        || resp_hdr.datagram
         || resp_hdr.instance_id != req_hdr.instance_id
         || resp_hdr.pldm_type != req_hdr.pldm_type
         || resp_hdr.command_code != req_hdr.command_code
@@ -208,11 +213,7 @@ impl<const SENSORS: usize, const EFFECTERS: usize, const MAX_IMAGE: usize>
         Self {
             base: base::BaseResponder::new(
                 tid,
-                &[
-                    PldmType::Base,
-                    PldmType::Platform,
-                    PldmType::FirmwareUpdate,
-                ],
+                &[PldmType::Base, PldmType::Platform, PldmType::FirmwareUpdate],
             ),
             platform: platform::PlatformResponder::new(),
             fw_update: fw_update::FirmwareDevice::new(vendor_iana),
@@ -225,6 +226,10 @@ impl<const SENSORS: usize, const EFFECTERS: usize, const MAX_IMAGE: usize>
         let (hdr, data) = PldmHeader::parse(req)?;
         if !hdr.rq {
             return Err(Error::InvalidHeader);
+        }
+        // Unacknowledged datagrams (Rq=1, D=1) do not generate a response.
+        if hdr.datagram {
+            return Ok(0);
         }
         match PldmType::from_u8(hdr.pldm_type) {
             Some(PldmType::Base) => self.base.handle_request(hdr, data, resp),

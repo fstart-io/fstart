@@ -27,9 +27,9 @@ impl MctpHeader {
     }
 
     /// Parse from 4 wire bytes, validating header version (`0x01`) and
-    /// reserved upper nibble (`0x0`).
+    /// ignoring reserved upper nibble bits per DSP0236 §5.2.
     pub const fn from_bytes(bytes: [u8; HEADER_LEN]) -> Result<Self, Error> {
-        if bytes[0] != HEADER_VERSION {
+        if (bytes[0] & 0x0F) != HEADER_VERSION {
             return Err(Error::InvalidHeader);
         }
         let flags = bytes[3];
@@ -203,7 +203,8 @@ pub struct Reassembler<const MAX_MSG: usize, const SLOTS: usize> {
 }
 
 impl<const MAX_MSG: usize, const SLOTS: usize> Reassembler<MAX_MSG, SLOTS> {
-    /// Default DSP0236 `MT2` message reassembly timeout (6 seconds).
+    /// Default reassembly expiry timeout (6 seconds) when the transport
+    /// supplies a monotonic millisecond clock.
     pub const DEFAULT_TIMEOUT_MS: u64 = 6_000;
 
     /// Create a new empty reassembler with the default 6-second timeout.
@@ -246,6 +247,9 @@ impl<const MAX_MSG: usize, const SLOTS: usize> Reassembler<MAX_MSG, SLOTS> {
         // Fast path: single-packet message (SOM=1, EOM=1).
         if hdr.som && hdr.eom {
             let (&type_byte, payload) = body.split_first().ok_or(Error::ShortBuffer)?;
+            if payload.len() > MAX_MSG {
+                return Err(Error::MessageTooLarge);
+            }
             if out.len() < payload.len() {
                 return Err(Error::BufferTooSmall);
             }
@@ -268,6 +272,9 @@ impl<const MAX_MSG: usize, const SLOTS: usize> Reassembler<MAX_MSG, SLOTS> {
         // Start of multi-packet message (SOM=1, EOM=0).
         if hdr.som {
             let (&type_byte, payload) = body.split_first().ok_or(Error::ShortBuffer)?;
+            if payload.is_empty() {
+                return Err(Error::InvalidFrame);
+            }
             if payload.len() > MAX_MSG {
                 return Err(Error::MessageTooLarge);
             }
@@ -294,6 +301,9 @@ impl<const MAX_MSG: usize, const SLOTS: usize> Reassembler<MAX_MSG, SLOTS> {
         }
 
         // Continuation or final packet (SOM=0).
+        if !hdr.eom && body.is_empty() {
+            return Err(Error::InvalidFrame);
+        }
         let Some(idx) = self.find_slot(hdr.src_eid, hdr.tag_owner, hdr.msg_tag) else {
             return Err(Error::BadSequence);
         };
@@ -303,7 +313,10 @@ impl<const MAX_MSG: usize, const SLOTS: usize> Reassembler<MAX_MSG, SLOTS> {
             slot.active = false;
             return Err(Error::BadSequence);
         }
-        let new_len = slot.len.checked_add(body.len()).ok_or(Error::MessageTooLarge)?;
+        let new_len = slot
+            .len
+            .checked_add(body.len())
+            .ok_or(Error::MessageTooLarge)?;
         if new_len > MAX_MSG {
             slot.active = false;
             return Err(Error::MessageTooLarge);

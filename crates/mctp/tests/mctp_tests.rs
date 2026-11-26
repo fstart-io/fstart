@@ -28,10 +28,8 @@ fn header_roundtrip_and_validation() {
         MctpHeader::from_bytes([0x02, 0x0A, 0x08, 0xC0]),
         Err(Error::InvalidHeader)
     );
-    assert_eq!(
-        MctpHeader::from_bytes([0x11, 0x0A, 0x08, 0xC0]),
-        Err(Error::InvalidHeader)
-    );
+    // Reserved upper nibble in byte 0 must be ignored on receipt (DSP0236 §5.2).
+    assert!(MctpHeader::from_bytes([0x11, 0x0A, 0x08, 0xC0]).is_ok());
 }
 
 #[test]
@@ -198,23 +196,23 @@ fn i3c_binding_write_and_read_pec() {
 }
 
 #[test]
-fn kcs_binding_roundtrip_and_control_cmd() {
+fn kcs_binding_roundtrip_and_empty_response() {
     let pkt = [0x01, 0x0A, 0x08, 0xC8, 0x01, 0x80, 0x00, 0x02];
     let mut frame = [0u8; 64];
     let flen = kcs::encode(&pkt, &mut frame).unwrap();
     assert_eq!(frame[0], kcs::BINDING_ID);
     assert_eq!(frame[1], kcs::REVISION);
     assert_eq!(frame[2], pkt.len() as u8);
-    assert_eq!(kcs::decode(&frame[..flen]), Ok(&pkt[..]));
+    assert_eq!(kcs::decode(&frame[..flen]), Ok(Some(&pkt[..])));
 
     frame[flen - 1] ^= 0x01;
     assert_eq!(kcs::decode(&frame[..flen]), Err(Error::BadChecksum));
 
-    let mut cmd_buf = [0u8; 8];
-    let clen = kcs::encode_binding_cmd(kcs::KcsBindingCommand::GetMctpPacket, None, &mut cmd_buf)
-        .unwrap();
-    assert_eq!(clen, 4);
-    assert_eq!(&cmd_buf[..3], &[0xB0, 0x01, 0xF1]);
+    // DSP0254 §8 no-packet read response: [0xB0, 0x01, 0x00, 0xFF]
+    let mut empty = [0u8; 8];
+    let elen = kcs::encode_empty_response(&mut empty).unwrap();
+    assert_eq!(&empty[..elen], &[0xB0, 0x01, 0x00, 0xFF]);
+    assert_eq!(kcs::decode(&empty[..elen]), Ok(None));
 }
 
 #[test]
@@ -291,11 +289,12 @@ fn control_protocol_full_discovery_flow() {
     assert_eq!(r, 19);
     assert_eq!(&resp[3..19], &uuid);
 
-    // Get Version Support (base + SPDM)
+    // Get Version Support (base returns all 4 mandatory DSP0236 1.3.1 entries)
     let n = encode_get_version_req(5, 0xFF, &mut req).unwrap();
     let r = responder.handle_request(&req[..n], &mut resp).unwrap();
-    assert_eq!(r, 8);
+    assert_eq!(r, 20);
     assert_eq!(resp[2], ControlCompletion::Success as u8);
+    assert_eq!(resp[3], 4);
 
     // Get Message Type Support
     let n = encode_get_msg_types_req(6, &mut req).unwrap();
@@ -324,9 +323,13 @@ impl PacketTransport for BoundLoopback {
             fstart_mctp::TransportKind::Smbus => smbus::encode(0x30, 0x10, pkt, &mut wire)?,
             fstart_mctp::TransportKind::I3c => i3c::encode(0x45, false, pkt, &mut wire)?,
             fstart_mctp::TransportKind::Kcs => kcs::encode(pkt, &mut wire)?,
-            fstart_mctp::TransportKind::PcieVdm => {
-                pcie_vdm::encode(pcie_vdm::PcieRouting::RouteById, 0x0010, 0x0020, pkt, &mut wire)?
-            }
+            fstart_mctp::TransportKind::PcieVdm => pcie_vdm::encode(
+                pcie_vdm::PcieRouting::RouteById,
+                0x0010,
+                0x0020,
+                pkt,
+                &mut wire,
+            )?,
         };
         self.queue.push_back(wire[..n].to_vec());
         Ok(())
@@ -347,7 +350,7 @@ impl PacketTransport for BoundLoopback {
                 Ok(pkt.len())
             }
             fstart_mctp::TransportKind::Kcs => {
-                let pkt = kcs::decode(&wire)?;
+                let pkt = kcs::decode(&wire)?.ok_or(Error::InvalidFrame)?;
                 out[..pkt.len()].copy_from_slice(pkt);
                 Ok(pkt.len())
             }
@@ -377,12 +380,12 @@ fn endpoint_multi_packet_roundtrip_over_all_five_bindings() {
         let ctrl = ControlResponder::new(0x0A, [0x11; 16], &[MessageType::Pldm as u8]);
         let mut ep = Endpoint::<_, 512, 2>::new(transport, ctrl);
         let tag = ep
-            .send_message(0x0B, MessageType::Pldm as u8, None, &payload)
+            .send_message(0x0A, MessageType::Pldm as u8, None, &payload)
             .unwrap();
         let mut rx_buf = [0u8; 512];
         let msg = ep.recv_message(&mut rx_buf).unwrap();
         assert_eq!(msg.src_eid, 0x0A, "{kind:?}");
-        assert_eq!(msg.dst_eid, 0x0B, "{kind:?}");
+        assert_eq!(msg.dst_eid, 0x0A, "{kind:?}");
         assert_eq!(msg.msg_type, MessageType::Pldm as u8, "{kind:?}");
         assert_eq!(msg.msg_tag, tag, "{kind:?}");
         assert!(msg.tag_owner);
