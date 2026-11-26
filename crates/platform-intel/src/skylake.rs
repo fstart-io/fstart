@@ -165,6 +165,10 @@ mod stage {
             unsafe { fstart_driver_intel::southbridge::spi::CacheSpi::new_pch(extent) }
         }
 
+        fn reset_failed_postcar_resume() -> ! {
+            sb::IntelSunrisePoint::reset_failed_resume()
+        }
+
         /// The PCH's devices need their assigned BARs, and its HDA the
         /// system agent's display engine for the display codec.
         fn init_devices(
@@ -173,6 +177,9 @@ mod stage {
             pci: &fstart_pci::PciEcam,
         ) -> Result<(), ServiceError> {
             use fstart_driver_intel::IntelNorthbridgeDriver;
+            if southbridge.is_resume() {
+                northbridge.set_boot_path(fstart_driver_intel::BootPath::S3Resume);
+            }
             northbridge.post_dram_init()?;
             northbridge.bind_scanout(pci);
             southbridge.post_pci_init(pci)?;

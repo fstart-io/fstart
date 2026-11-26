@@ -286,8 +286,11 @@ fn commit_table(
     count: usize,
     total: u64,
     action: DramAction,
+    mode: crate::sunrise_point::pmc::MemoryBootMode,
 ) -> Result<bool, Error> {
-    if action != DramAction::ContinuePost {
+    let continue_post = action == DramAction::ContinuePost
+        || (mode == crate::sunrise_point::pmc::MemoryBootMode::S3 && !reset_required(action));
+    if !continue_post {
         table.set_detected(0, 0).map_err(|e| Error::AfterDid {
             action,
             source: ValidationError::Table(e),
@@ -389,6 +392,7 @@ pub unsafe fn train_and_handoff_cold<'a, H, M, W, R>(
     sa: &'a EcamDevice,
     map: &'a ProgrammedMap,
     cpu: &impl MsrAccess,
+    mode: crate::sunrise_point::pmc::MemoryBootMode,
     training_policy: &ColdPolicy<'_>,
     policy: cold_controller::Policy,
     state: &mut CalibrationState,
@@ -430,6 +434,7 @@ where
             sa,
             map,
             cpu,
+            mode,
             training_policy,
             policy,
             state,
@@ -455,7 +460,7 @@ where
         smram,
         action,
     };
-    if commit_table(table, count, total, action)? {
+    if commit_table(table, count, total, action, mode)? {
         Ok(Outcome::Complete(report))
     } else if reset_required(action) {
         Ok(Outcome::ResetRequired(report))

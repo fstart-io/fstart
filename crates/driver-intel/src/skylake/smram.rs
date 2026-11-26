@@ -44,7 +44,7 @@ impl<'a> Smram<'a> {
         map: &'a ProgrammedMap,
         mode: MemoryBootMode,
     ) -> Result<Self, Error> {
-        if mode != MemoryBootMode::Cold {
+        if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
             return Err(Error::RetainedMemory);
         }
         let owner = Self { sa, map };

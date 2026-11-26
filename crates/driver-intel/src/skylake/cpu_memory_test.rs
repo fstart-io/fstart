@@ -48,6 +48,37 @@ pub unsafe fn basic_test(
     mode: MemoryBootMode,
 ) -> Result<(), Error> {
     validate_bounds(mapped_base, mapped_length, mode)?;
+    if mode == MemoryBootMode::S3 {
+        // Non-destructive S3 memory test (romstage_native.c:native_basic_memory_test_s3):
+        // save each byte, write a pattern, verify, restore original byte, verify.
+        for offset in 0..BLOCK_SIZE {
+            let ptr = (mapped_base + offset) as *mut u8;
+            let expected = offset as u8;
+            // SAFETY: validated address arithmetic and caller's exclusive mapping.
+            let backup = unsafe { read8(ptr as *const u8) };
+            unsafe { write8(ptr, expected) };
+            let actual = unsafe { read8(ptr as *const u8) };
+            unsafe { write8(ptr, backup) };
+            if actual != expected {
+                return Err(Error::Mismatch {
+                    pass: 0,
+                    offset: offset as u16,
+                    expected,
+                    actual,
+                });
+            }
+            let restored = unsafe { read8(ptr as *const u8) };
+            if restored != backup {
+                return Err(Error::Mismatch {
+                    pass: 1,
+                    offset: offset as u16,
+                    expected: backup,
+                    actual: restored,
+                });
+            }
+        }
+        return Ok(());
+    }
     for offset in 0..BLOCK_SIZE {
         // SAFETY: validated address arithmetic and caller's exclusive mapping.
         unsafe { write8((mapped_base + offset) as *mut u8, offset as u8) };
@@ -59,14 +90,14 @@ pub unsafe fn basic_test(
     Ok(())
 }
 
-/// Pure numeric preflight shared with the composing cold owner. This is not
+/// Pure numeric preflight shared with the composing owner. This is not
 /// evidence of a mapping, exclusivity, effective caching or physical DRAM.
 pub(crate) fn validate_bounds(
     mapped_base: usize,
     mapped_length: usize,
     mode: MemoryBootMode,
 ) -> Result<(), Error> {
-    if mode != MemoryBootMode::Cold {
+    if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::RetainedMemoryUnsupported);
     }
     if mapped_length < BLOCK_SIZE {

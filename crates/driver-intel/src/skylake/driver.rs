@@ -195,6 +195,7 @@ enum SaPhase {
 
 pub struct IntelSkylake {
     config: &'static Config,
+    boot_path: crate::BootPath,
     sa: Option<EcamDevice>,
     sa_phase: SaPhase,
     resources: Option<ColdResources>,
@@ -217,6 +218,7 @@ impl IntelSkylake {
         Self::validate_config(config)?;
         Ok(Self {
             config,
+            boot_path: crate::BootPath::Normal,
             sa: None,
             sa_phase: SaPhase::Fresh,
             resources: None,
@@ -356,7 +358,9 @@ impl IntelSkylake {
         let context = self.pre_memory.ok_or(Error::Policy)?;
         let mode = context.power().mode();
         let config = self.config;
-        if mode != MemoryBootMode::Cold || config.dmi.pch != context.hsio().kind() {
+        if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3)
+            || config.dmi.pch != context.hsio().kind()
+        {
             return Err(Error::Policy);
         }
         context
@@ -385,20 +389,23 @@ impl IntelSkylake {
             Hex(reset.gen_pmcon_a.into()),
             Hex(reset.gen_pmcon_b.into())
         );
-        if MemoryBootMode::from_power_state(reset.gen_pmcon_a, false) != MemoryBootMode::Cold {
+        if mode == MemoryBootMode::Cold
+            && MemoryBootMode::from_power_state(reset.gen_pmcon_a, false) != MemoryBootMode::Cold
+        {
             return Err(Error::Policy);
         }
-        // DRAM still in self-refresh means a warm reset the PCH turned into a
-        // cold boot: tell the CSE its memory was not kept (native
-        // romstage_native.c DID_INIT_STAT_MEM_NOT_PRESERVED).
-        let did_status =
-            if LocalRegisterCopy::<u32, pmc::GenPmconA::Register>::new(reset.gen_pmcon_a)
+        // On cold boot, DRAM still in self-refresh means a warm reset the PCH
+        // turned into a cold boot: tell the CSE its memory was not kept (native
+        // romstage_native.c DID_INIT_STAT_MEM_NOT_PRESERVED). On S3 resume DRAM
+        // is preserved, so report Success.
+        let did_status = if mode == MemoryBootMode::Cold
+            && LocalRegisterCopy::<u32, pmc::GenPmconA::Register>::new(reset.gen_pmcon_a)
                 .is_set(pmc::GenPmconA::MEM_SR)
-            {
-                DramInitStatus::MemoryNotPreserved
-            } else {
-                DramInitStatus::Success
-            };
+        {
+            DramInitStatus::MemoryNotPreserved
+        } else {
+            DramInitStatus::Success
+        };
         fstart_log::debug!("DRAM: check TXT/PTT state and unlock memory");
         unsafe { crate::txt::unlock_inactive_memory(&mut delay) }.map_err(Error::Txt)?;
         fstart_log::debug!("DRAM: enable system agent, PAM/TSEG and VT-d decodes");
@@ -449,7 +456,15 @@ impl IntelSkylake {
             }
         } else {
             cse.initialize(&mut delay).map_err(Error::Cse)?;
-            cse::wait_cpu_replacement(&heci, 50, &mut delay).map_err(Error::Cse)?
+            if mode == MemoryBootMode::S3 {
+                // Native romstage_native.c only polls HFS2.CPU_VALID on cold boot.
+                cse::CpuReplacement {
+                    replaced: false,
+                    dynamic_fusing_warm_reset: false,
+                }
+            } else {
+                cse::wait_cpu_replacement(&heci, 50, &mut delay).map_err(Error::Cse)?
+            }
         };
         if replacement.dynamic_fusing_warm_reset {
             return Err(Error::WarmResetRequired);
@@ -570,6 +585,10 @@ impl IntelSkylake {
             .cached
             .filter(|_| !replacement.replaced)
             .and_then(|bytes| super::training_cache::Record::parse(bytes, &identity));
+        if mode == MemoryBootMode::S3 && record.is_none() {
+            fstart_log::error!("DRAM: S3 resume without matching training cache");
+            return Err(Error::Policy);
+        }
         match (input.cached.is_some(), record.is_some()) {
             (_, true) => fstart_log::info!("DRAM: cached training matches this CPU and DIMMs"),
             (true, false) => fstart_log::info!("DRAM: cached training is stale; full training"),
@@ -609,12 +628,19 @@ impl IntelSkylake {
             )
         }
         .map_err(Error::Map)?;
-        pmc::clear_dram_initialized(&EcamDevice::new(0, 0x1f, 2)).map_err(Error::Pmc)?;
+        if mode == MemoryBootMode::Cold {
+            pmc::clear_dram_initialized(&EcamDevice::new(0, 0x1f, 2)).map_err(Error::Pmc)?;
+        }
         fstart_log::debug!(
-            "DRAM: TOM={} TOLUD={} TOUUD={}; begin cold training",
+            "DRAM: TOM={} TOLUD={} TOUUD={}; begin {}",
             Hex(map.plan().tom),
             Hex(map.plan().tolud),
-            Hex(map.plan().touud)
+            Hex(map.plan().touud),
+            if mode == MemoryBootMode::S3 {
+                "S3 resume"
+            } else {
+                "cold training"
+            }
         );
         let outcome = unsafe {
             cold_handoff::train_and_handoff_cold(
@@ -623,6 +649,7 @@ impl IntelSkylake {
                 &sa,
                 &map,
                 &msrs,
+                mode,
                 &policy,
                 config.controller,
                 &mut cold.calibration,

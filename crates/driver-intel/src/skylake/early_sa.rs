@@ -188,7 +188,7 @@ pub(crate) fn validate_host(sa: &EcamDevice) -> Result<(), Error> {
 }
 
 fn cold(mode: MemoryBootMode) -> Result<(), Error> {
-    if mode != MemoryBootMode::Cold {
+    if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::RetainedMemory);
     }
     Ok(())

@@ -106,11 +106,12 @@ fn sample_keys(ranks: [u8; 2]) -> [u16; 2] {
 }
 
 fn preflight(
+    mode: MemoryBootMode,
     policy: Policy,
     mapped_base: usize,
     mapped_length: usize,
 ) -> Result<(), ControllerError> {
-    cpu_memory_test::validate_bounds(mapped_base, mapped_length, MemoryBootMode::Cold)
+    cpu_memory_test::validate_bounds(mapped_base, mapped_length, mode)
         .map_err(ControllerError::CpuBounds)?;
     if policy.txt_active {
         return Err(ControllerError::Preflight(Error::InvalidPolicy));
@@ -118,27 +119,28 @@ fn preflight(
     Ok(())
 }
 
-/// Execute the actual bounded training owner, then every supported native tail
-/// step in order, then CPU first-physical4KiB test and compatible SMRAM enable.
+/// Execute the actual bounded training owner (or cached restore on fast/S3),
+/// then every supported native tail step in order, then CPU first-4KiB test
+/// (non-destructive on S3) and compatible SMRAM enable.
 /// Never invokes a reset, publishes a cache, or sets final_* training fields.
 ///
 /// # Safety
 /// All train_cold, activation, MC-done, CPU basic_test and Smram::enable_cold
-/// obligations apply. Caller owns the actual cold/unlocked SA/MCHBAR/PMC/MSRs,
+/// obligations apply. Caller owns the actual unlocked SA/MCHBAR/PMC/MSRs,
 /// PCODE, DRAM and caller-reserved workspaces exclusively (UC register mappings,
 /// no AP/DMA/interrupt/config competitors). Early-SA/reset decisions are already
 /// resolved. Retain the actual system ProgrammedMap and CSE UMA identity OUTSIDE
 /// retries; this function never allocates, reprograms or relocks them per attempt.
 /// `training_policy` must describe that same real inventory, CPU and map.
-/// Only DDR4/eight lanes/SA-GV-off/ECC-off/TXT-inactive cold boot is supported.
+/// Only DDR4/eight lanes/SA-GV-off/ECC-off/TXT-inactive cold or S3 boot is supported.
 /// Scrambler seeds follow the reference's per-channel TSC sampling; no claim
 /// of cryptographic entropy is made.
 ///
-/// mapped_base/length are NOT mapping evidence: the first4096 bytes must truly
-/// map physical0..4096 to initialized DRAM, exclusively and destructively owned,
-/// with no Rust references even at0. Caller establishes effective cache behavior
-/// (volatile tests alone do not prove DRAM rather than cache). Keep code, stack,
-/// CAR and both workspaces outside this page and all destructive REUT ranges.
+/// mapped_base/length are NOT mapping evidence: the first 4096 bytes must truly
+/// map physical 0..4096 to initialized DRAM, exclusively owned, with no Rust
+/// references even at 0. Caller establishes effective cache behavior (volatile
+/// tests alone do not prove DRAM rather than cache). Keep code, stack, CAR and
+/// both workspaces outside this page and (on cold boot) destructive REUT ranges.
 ///
 /// ANY error after training starts is fatal potentially partial hardware. Stop;
 /// do not replay, roll back, retrain or perform a success handoff. Training Required
@@ -147,12 +149,14 @@ fn preflight(
 /// WB/save-state readiness (generic SMM's optional legacy SMRR policy is not it).
 /// CSE DID/reset actions, E820/reservations, CPU/SMM install and CAR/stages/image
 /// remain separate outer contracts. No MemoryInit/ReadyMemory certificate.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn train_and_finalize_cold<'a>(
     registers: &MchRegisters,
     pmc: &PmcRegisters,
     sa: &'a EcamDevice,
     map: &'a ProgrammedMap,
     cpu: &impl MsrAccess,
+    mode: MemoryBootMode,
     training_policy: &ColdPolicy<'_>,
     policy: Policy,
     state: &mut CalibrationState,
@@ -163,7 +167,7 @@ pub unsafe fn train_and_finalize_cold<'a>(
     cache: Cache<'_>,
     delay: &mut impl DelayNs,
 ) -> Result<(ControllerReport, Smram<'a>), ControllerError> {
-    preflight(policy, mapped_base, mapped_length)?;
+    preflight(mode, policy, mapped_base, mapped_length)?;
     let engine = Engine {
         registers,
         dimms: &training_policy.memory().dimms,
@@ -171,31 +175,37 @@ pub unsafe fn train_and_finalize_cold<'a>(
     if let Some(record) = cache.record {
         fstart_log::debug!("DRAM handoff: replay cached DDR4 training");
         unsafe {
-            cold_training::restore_fast(registers, pmc, training_policy, state, record, delay)
+            cold_training::restore_fast(registers, pmc, training_policy, mode, state, record, delay)
         }
         .map_err(ControllerError::Training)?;
         engine
             .meminit_normal_mode_fast(
-                MemoryBootMode::Cold,
+                mode,
                 training_policy.cpu().package,
                 policy.power_down,
                 delay,
             )
             .map_err(ControllerError::Activation)?;
-        // The journal skips a byte-identical record: no flash write.
-        let captured = cache
-            .capture
-            .get_mut(..core::mem::size_of_val(record))
-            .map(|out| {
-                out.copy_from_slice(zerocopy::IntoBytes::as_bytes(record));
-                out.len()
-            });
+        // On S3 resume never write back to flash; on fast cold boot the journal
+        // skips a byte-identical record so there is no flash write either.
+        let captured = if mode == MemoryBootMode::S3 {
+            None
+        } else {
+            cache
+                .capture
+                .get_mut(..core::mem::size_of_val(record))
+                .map(|out| {
+                    out.copy_from_slice(zerocopy::IntoBytes::as_bytes(record));
+                    out.len()
+                })
+        };
         return unsafe {
             finish(
                 &engine,
                 sa,
                 map,
                 cpu,
+                mode,
                 training_policy,
                 policy,
                 None,
@@ -207,6 +217,11 @@ pub unsafe fn train_and_finalize_cold<'a>(
                 delay,
             )
         };
+    }
+    if mode != MemoryBootMode::Cold {
+        // S3 resume MUST replay cached training; never fall through to
+        // destructive cold training over suspended OS memory.
+        return Err(ControllerError::Preflight(Error::RetainedMemoryUnsupported));
     }
     // Native cold entry does not probe MC_LOCK or DDR_PTM before training.
     // The caller already rejected retained boot. Check the locks in the
@@ -245,6 +260,7 @@ pub unsafe fn train_and_finalize_cold<'a>(
 
 // Private tail-only seam permits disclosed synthetic calibration/keys in tests.
 // There is no production entry bypassing genuine train_cold or TSC sampling.
+#[allow(clippy::too_many_arguments)]
 unsafe fn finish_cold<'a>(
     engine: &Engine<'_>,
     sa: &'a EcamDevice,
@@ -294,6 +310,7 @@ unsafe fn finish_cold<'a>(
             sa,
             map,
             cpu,
+            mode,
             training_policy,
             policy,
             Some(training),
@@ -307,13 +324,16 @@ unsafe fn finish_cold<'a>(
     }
 }
 
-/// The tail shared by cold training and cached replay: alias check, memory
-/// test, scrub, EPG, MC done, CPU first-4-KiB test and compatible SMRAM.
+/// The tail shared by cold training and cached replay (fast cold and S3):
+/// optional destructive checks (cold only), EPG, MC done, CPU first-4-KiB test
+/// (non-destructive on S3) and compatible SMRAM.
+#[allow(clippy::too_many_arguments)]
 unsafe fn finish<'a>(
     engine: &Engine<'_>,
     sa: &'a EcamDevice,
     map: &'a ProgrammedMap,
     cpu: &impl MsrAccess,
+    mode: MemoryBootMode,
     training_policy: &ColdPolicy<'_>,
     policy: Policy,
     training: Option<ColdTrainingReport>,
@@ -324,22 +344,26 @@ unsafe fn finish<'a>(
     mapped_length: usize,
     delay: &mut impl DelayNs,
 ) -> Result<(ControllerReport, Smram<'a>), ControllerError> {
-    let mode = MemoryBootMode::Cold;
     let tail_error = |phase, source| ControllerError::Tail { phase, source };
-    let alias = training_policy.gates().training_enables & (1 << 28) != 0;
+    let destructive = mode == MemoryBootMode::Cold;
+    let alias = destructive && training_policy.gates().training_enables & (1 << 28) != 0;
     if alias {
         engine
             .meminit_alias_check(state, mode, false, work, delay)
             .map_err(|e| tail_error(Phase::AliasCheck, e))?;
     }
-    if policy.memory_test {
+    let full_memory_test_ran = destructive && policy.memory_test;
+    if full_memory_test_ran {
         engine
             .meminit_memory_test(state, mode, false, work, delay)
             .map_err(|e| tail_error(Phase::MemoryTest, e))?;
     }
-    engine
-        .memory_scrub(state, mode, false, policy.clean_memory, work, delay)
-        .map_err(|e| tail_error(Phase::Scrub, e))?;
+    let memory_zeroed = destructive && policy.clean_memory;
+    if destructive {
+        engine
+            .memory_scrub(state, mode, false, policy.clean_memory, work, delay)
+            .map_err(|e| tail_error(Phase::Scrub, e))?;
+    }
     let energy = energy_perf_gain::meminit_energy_perf_gain(
         engine.registers,
         engine.dimms,
@@ -355,18 +379,20 @@ unsafe fn finish<'a>(
     // SA-GV disabled; TXT inactive was rejected before training if requested.
     unsafe { engine.meminit_mc_done(mode, false, sa, map, cpu, delay) }
         .map_err(ControllerError::McDone)?;
-    unsafe { cpu_memory_test::basic_test(mapped_base, mapped_length, mode) }
-        .map_err(ControllerError::CpuTest)?;
+    if destructive {
+        unsafe { cpu_memory_test::basic_test(mapped_base, mapped_length, mode) }
+            .map_err(ControllerError::CpuTest)?;
+    }
     let smram = unsafe { Smram::enable_cold(sa, map, mode) }.map_err(ControllerError::Smram)?;
     Ok((
         ControllerReport {
             training,
             captured,
             alias_check_ran: alias,
-            full_memory_test_ran: policy.memory_test,
-            memory_zeroed: policy.clean_memory,
+            full_memory_test_ran,
+            memory_zeroed,
             energy_perf_gain: energy,
-            cpu_first_4k_test_ran: true,
+            cpu_first_4k_test_ran: destructive,
         },
         smram,
     ))

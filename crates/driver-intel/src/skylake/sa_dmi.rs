@@ -89,7 +89,7 @@ impl<'a> Dmi<'a> {
         mode: MemoryBootMode,
         policy: Policy,
     ) -> Result<(), Error> {
-        if mode != MemoryBootMode::Cold {
+        if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
             return Err(Error::RetainedMemory);
         }
         if policy.poll_budget_ms == 0 {

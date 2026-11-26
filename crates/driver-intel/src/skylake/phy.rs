@@ -362,7 +362,7 @@ pub fn program_mc_registers(
     p: &PhyPolicy,
     training: &mut TrainingOutput,
 ) -> Result<(), Error> {
-    if mode != MemoryBootMode::Cold {
+    if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::RetainedMemoryUnsupported);
     }
     // Validate divisors and analog field representability before any DDRIO
@@ -422,7 +422,10 @@ pub fn program_mc_registers(
         0x03070900
     });
     for (ch, mask) in ranks.iter().copied().enumerate() {
-        r.channel[ch].rank_occupancy.set(mask);
+        let prev = r.channel[ch].init_state.get();
+        r.channel[ch]
+            .init_state
+            .set((prev & !0xff) | u32::from(mask));
         r.clock_channel[ch]
             .ranks_used
             .set(u32::from(if p.ddp_shared_clock {

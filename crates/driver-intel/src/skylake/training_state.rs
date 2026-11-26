@@ -157,7 +157,11 @@ impl CalibrationState {
         iteration: u8,
         dummy_reads: bool,
     ) -> Result<(), super::Error> {
-        if mode != crate::sunrise_point::pmc::MemoryBootMode::Cold {
+        if !matches!(
+            mode,
+            crate::sunrise_point::pmc::MemoryBootMode::Cold
+                | crate::sunrise_point::pmc::MemoryBootMode::S3
+        ) {
             return Err(super::Error::RetainedMemoryUnsupported);
         }
         // native training.c MAX_RETRAIN_ITERATIONS=1 means two TOTAL attempts.

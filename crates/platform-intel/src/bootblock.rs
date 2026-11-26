@@ -295,6 +295,9 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             .northbridge
             .early_init()
             .and_then(|()| self.southbridge.early_init());
+        if early.is_err() && self.southbridge.detect_s3_resume() {
+            self.boot_path = BootPath::S3Resume;
+        }
         self.check("early init", early);
         // Consume the southbridge indication exactly once, before board clock
         // programming. Resume work must not perturb retained DRAM frequency.

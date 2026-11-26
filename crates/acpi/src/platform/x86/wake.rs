@@ -46,6 +46,32 @@ pub fn find_wakeup_vector_with(read: impl Fn(u64, &mut [u8]) -> bool) -> Option<
         .filter(|vector| *vector < REAL_MODE_LIMIT)
 }
 
+/// Firmware entry: read surviving tables directly from a known RSDP address
+/// through the low-4-GiB identity map.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub fn find_wakeup_vector_at_rsdp(
+    rsdp_addr: u64,
+    readable: impl Fn(u64, usize) -> bool,
+) -> Option<u32> {
+    let read = |addr: u64, buf: &mut [u8]| {
+        let Some(end) = addr.checked_add(buf.len() as u64) else {
+            return false;
+        };
+        if end > 0x1_0000_0000 || !readable(addr, buf.len()) {
+            return false;
+        }
+        // SAFETY: the checked span lies inside the installed low-4-GiB
+        // identity map; `copy` also permits a corrupt source to overlap this
+        // stack buffer, and RAM reads have no side effects.
+        unsafe {
+            core::ptr::copy(addr as usize as *const u8, buf.as_mut_ptr(), buf.len());
+        }
+        true
+    };
+    crate::wake::wakeup_vector_from_rsdp_with(&read, rsdp_addr)
+        .filter(|vector| *vector < REAL_MODE_LIMIT)
+}
+
 /// Firmware entry: read surviving tables through the low-4-GiB identity map.
 ///
 /// `readable` must approve only physical-memory spans that firmware may read;

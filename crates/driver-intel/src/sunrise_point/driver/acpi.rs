@@ -279,9 +279,9 @@ impl X86PlatformProvider for IntelSunrisePoint {
                 p_lvl3_lat: u16::MAX,
                 duty_offset: 0,
                 duty_width: 0,
-                pm2_cnt_offset: None,
-                pm1_evt_word_access: false,
-                gpe0_byte_access: false,
+                pm2_cnt_offset: Some(0x50),
+                pm1_evt_word_access: true,
+                gpe0_byte_access: true,
             },
         }
     }
@@ -296,13 +296,18 @@ impl SouthbridgeAcpi for IntelSunrisePoint {
             Method("_PIC",1,NotSerialized) { PICM=Arg0; }
             Name("_S0_",Package(0u32,0u32,0u32,0u32));
             // SLP_TYP 6: the SMM sleep handler powers off as for S5; the
-            // OS has saved its image. No retained-memory S3 is advertised.
+            // OS has saved its image.
             Name("_S4_",Package(6u32,0u32,0u32,0u32));
             Name("_S5_",Package(7u32,0u32,0u32,0u32));
         } }
         .into();
-        // No _S3 or fake sleep prepare/wake methods. S4/S5 SMI handling
-        // does not imply retained-memory or S3 resume support.
+        if self.s3_enabled {
+            let s3: Vec<u8> = acpi_dsl! { Scope("\\") {
+                Name("_S3_",Package(5u32,0u32,0u32,0u32));
+            } }
+            .into();
+            bytes.extend_from_slice(&s3);
+        }
         let mut body = Vec::new();
         let mut routes = Vec::new();
         for function in &snapshot.functions {

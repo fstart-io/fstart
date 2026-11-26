@@ -110,6 +110,11 @@ impl IntelSkylake {
             .ok_or(Error::Service(ServiceError::NotInitialized))?;
         let cpu = Cpu::from_signature(fstart_arch::x86::cpuid(1).0)
             .map_err(|_| Error::Service(ServiceError::NotSupported))?;
+        let mode = if self.boot_path == crate::BootPath::S3Resume {
+            MemoryBootMode::S3
+        } else {
+            MemoryBootMode::Cold
+        };
         let mut delay = Udelay;
         package_power::configure_interrupt_routing(resources.mch).map_err(Error::PackagePower)?;
         unsafe {
@@ -119,7 +124,7 @@ impl IntelSkylake {
                 sa_post_mem::EgressRegisters::at(early_sa::EP_BASE as usize),
                 map,
                 cpu,
-                MemoryBootMode::Cold,
+                mode,
                 self.config.post_memory,
                 &mut delay,
             )
@@ -129,7 +134,7 @@ impl IntelSkylake {
             sa_post_mem::init_vtd(
                 &resources,
                 self.config.ecam,
-                MemoryBootMode::Cold,
+                mode,
                 sa_post_mem::VtdRegisters::at(early_sa::GFX_VTD_BASE as usize),
                 sa_post_mem::VtdRegisters::at(early_sa::VTVC0_BASE as usize),
             )
@@ -144,7 +149,7 @@ impl IntelSkylake {
         if self.config.graphics.igd_enabled {
             let graphics = self.graphics_binding(&resources).map_err(Error::Service)?;
             graphics
-                .configure_pm(cpu, MemoryBootMode::Cold, &msr, &mut delay)
+                .configure_pm(cpu, mode, &msr, &mut delay)
                 .map_err(|_| Error::Service(ServiceError::HardwareError))?;
         }
         power
@@ -380,6 +385,31 @@ impl IntelNorthbridgeDriver for IntelSkylake {
 
     fn memory_info(&self) -> Option<fstart_core::memory_info::MemoryInfo> {
         self.memory_info
+    }
+
+    fn set_boot_path(&mut self, path: crate::BootPath) {
+        self.boot_path = path;
+    }
+
+    fn supports_s3_replay(&self) -> bool {
+        true
+    }
+
+    fn prepare_resume_reset(&self) {
+        let _ = crate::sunrise_point::pmc::clear_dram_initialized(&EcamDevice::new(0, 0x1f, 2));
+    }
+
+    fn resume_init(&mut self, address: Option<u32>) -> Result<(), ServiceError> {
+        self.stage_local_init()?;
+        if let Some(opregion) = address
+            && self.config.graphics.igd_enabled
+        {
+            let device = EcamDevice::new(0, 2, 0);
+            if device.is_present() {
+                crate::igd::register_opregion(&device, crate::igd::OpRegionSci::Swsci, opregion);
+            }
+        }
+        Ok(())
     }
 
     fn stage_local_init(&mut self) -> Result<(), ServiceError> {

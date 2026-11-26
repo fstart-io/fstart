@@ -284,22 +284,28 @@ pub fn pre_memory(
     mode: MemoryBootMode,
     delay: &mut impl DelayNs,
 ) -> Result<PreMemory, Error> {
-    if mode != MemoryBootMode::Cold {
+    if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::RetainedMemory);
     }
     let silicon = Silicon::read(lpc)?;
     let reference = silicon.reference()?;
-    let status = cse.status().map_err(Error::Cse)?;
-    let me_crc = if status.allows(cse::Command::HsioCrc) {
-        cse.initialize(delay).map_err(Error::Cse)?;
-        let (crc, _, _) = cse.hsio_crc(delay).map_err(Error::Cse)?;
-        Some(crc)
-    } else {
-        fstart_log::warn!(
-            "HSIO: CSE path {:?} does not allow HSIO CRC; applying reference table",
-            fstart_log::DebugValue(&status.bios_path())
-        );
+    let me_crc = if mode == MemoryBootMode::S3 {
+        // Native hsio.c:hsio_chipset_init_mismatch() skips the CSE CRC query on S3
+        // resume and programs the BIOS reference table directly.
         None
+    } else {
+        let status = cse.status().map_err(Error::Cse)?;
+        if status.allows(cse::Command::HsioCrc) {
+            cse.initialize(delay).map_err(Error::Cse)?;
+            let (crc, _, _) = cse.hsio_crc(delay).map_err(Error::Cse)?;
+            Some(crc)
+        } else {
+            fstart_log::warn!(
+                "HSIO: CSE path {:?} does not allow HSIO CRC; applying reference table",
+                fstart_log::DebugValue(&status.bios_path())
+            );
+            None
+        }
     };
     let result = PreMemory {
         silicon,

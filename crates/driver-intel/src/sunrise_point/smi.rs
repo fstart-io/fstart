@@ -209,15 +209,23 @@ impl Controller {
         value.modify(GenPmconB::SLEEP_AFTER_POWER_FAIL.val(u32::from(sleep)));
         unsafe { fstart_pci::cf8::write8(PMC.0, PMC.1, PMC.2, GEN_PMCON_B, value.get() as u8) };
     }
-    fn sleep(&self, sleep_type: u32) -> ! {
+    fn sleep(&self, sleep_type: u32) {
         self.pm.smi_enable().modify(SmiEnable::SLEEP::CLEAR);
-        // S3/S1 are not implemented or advertised. Never enter retained DRAM
-        // and later pretend a cold-only loader can restore the suspended OS.
-        if !matches!(sleep_type, 6 | 7) {
-            fstart_arch::x86::boot::halt();
+        if !matches!(sleep_type, 5..=7) {
+            self.pm.control().modify(PM_CONTROL::SLEEP_ENABLE::CLEAR);
+            self.pm.smi_enable().modify(SmiEnable::SLEEP::SET);
+            return;
         }
         for status in self.pm.gpe_status() {
             status.set(status.get());
+        }
+        if sleep_type == 5 {
+            // Flush all dirty cache lines to DRAM before entering self-refresh.
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            // SAFETY: WBINVD has no memory-safety preconditions in SMM.
+            unsafe {
+                core::arch::asm!("wbinvd", options(nomem, nostack, preserves_flags));
+            }
         }
         if sleep_type == 7 {
             for enable in self.pm.gpe_enable() {

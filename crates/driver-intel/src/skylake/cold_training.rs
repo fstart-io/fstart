@@ -770,27 +770,35 @@ pub unsafe fn train_cold(
     unreachable!("Required on the last attempt is an error")
 }
 
-/// romstage_native.c:native_restore_point() for a fast (cold power-on) boot:
+/// romstage_native.c:native_restore_point() for fast cold boot or S3 resume:
 /// the same controller setup as `train_cold` up to ODT, then the cached
-/// registers and mode registers instead of training, then the JEDEC reset
-/// replaying the trained mode registers. Normal mode is the caller's tail.
+/// registers and mode registers instead of training, then either JEDEC reset
+/// (fast cold boot) or self-refresh exit (S3 resume). Normal mode is the
+/// caller's tail.
 ///
 /// # Safety
 /// All `train_cold` obligations apply. `record` must have been parsed for
 /// this boot's identity (CPU, fuses, exact SPDs) and the same firmware.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn restore_fast(
     registers: &MchRegisters,
     pmc: &PmcRegisters,
     policy: &ColdPolicy<'_>,
+    mode: MemoryBootMode,
     state: &mut CalibrationState,
     record: &super::training_cache::Record,
     delay: &mut impl DelayNs,
 ) -> Result<(), ColdError> {
+    if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
+        return Err(ColdError::Phase {
+            phase: ColdPhase::Preflight,
+            source: Error::RetainedMemoryUnsupported,
+        });
+    }
     let engine = Engine {
         registers,
         dimms: &policy.memory.dimms,
     };
-    let mode = MemoryBootMode::Cold;
     let t = &policy.timings;
     let p = &policy.input;
     phase!(OverridesCapability, policy.revalidate());
@@ -837,21 +845,27 @@ pub unsafe fn restore_fast(
         Odt,
         engine.meminit_power_optimization(state, mode, p.cpu.package, 8)
     );
-    // Native runs pre-training with the restored mode registers, then
-    // restores the trained registers over everything above.
     record.restore_state(state);
-    phase!(
-        PreTraining,
-        engine.pre_training(mode, p.cpu.package, &state.saved_mr)
-    );
+    if mode == MemoryBootMode::Cold {
+        // Native runs pre-training on fast cold boot with the restored mode
+        // registers, then restores the trained registers over everything above.
+        phase!(
+            PreTraining,
+            engine.pre_training(mode, p.cpu.package, &state.saved_mr)
+        );
+    }
     fstart_log::debug!("DDR4 training: Restore");
     record.restore_registers(registers);
     phase!(Rcomp, phy::force_rcomp(registers, delay));
     phase!(Preflight, super::memory_check::stopped(&engine));
-    phase!(
-        Restore,
-        engine.reinitialize_cold(state, pmc, mode, 8, delay)
-    );
+    if mode == MemoryBootMode::S3 {
+        phase!(Restore, engine.meminit_self_refresh_exit(mode));
+    } else {
+        phase!(
+            Restore,
+            engine.reinitialize_cold(state, pmc, mode, 8, delay)
+        );
+    }
     Ok(())
 }
 

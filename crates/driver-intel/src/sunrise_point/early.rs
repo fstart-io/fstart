@@ -101,10 +101,21 @@ impl PowerState {
     pub fn mode(self) -> MemoryBootMode {
         let status = LocalRegisterCopy::<u16, PM_STATUS::Register>::new(self.pm1_status);
         let control = LocalRegisterCopy::<u32, PM_CONTROL::Register>::new(self.pm1_control);
+        let gen_b = LocalRegisterCopy::<u32, pmc::GenPmconB::Register>::new(self.reset.gen_pmcon_b);
+        let power_lost = gen_b.is_set(pmc::GenPmconB::POWER_FAIL)
+            || gen_b.is_set(pmc::GenPmconB::SUSPEND_POWER_FAIL);
         MemoryBootMode::from_power_state(
             self.reset.gen_pmcon_a,
-            status.is_set(PM_STATUS::WAKE) && control.read(PM_CONTROL::SLEEP_TYPE) == 5,
+            !power_lost
+                && status.is_set(PM_STATUS::WAKE)
+                && control.read(PM_CONTROL::SLEEP_TYPE) == 5,
         )
+    }
+    pub fn pm1_status(self) -> u16 {
+        self.pm1_status
+    }
+    pub fn pm1_control(self) -> u32 {
+        self.pm1_control
     }
     pub fn reset_state(self) -> pmc::ResetState {
         self.reset
@@ -182,7 +193,7 @@ pub unsafe fn pre_memory(
     let status = PioRegister::<u16, PM_STATUS::Register>::new(pmc::ACPI_BASE);
     let control = PioRegister::<u32, PM_CONTROL::Register>::new(pmc::ACPI_BASE + 4);
     let power = capture_power_state(pmc)?;
-    if power.mode() != MemoryBootMode::Cold {
+    if !matches!(power.mode(), MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::RetainedMemory);
     }
     let dci = pcr.register::<DciControl::Register>(Port::Dci, 0x04)?;

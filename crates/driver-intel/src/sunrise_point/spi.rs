@@ -236,7 +236,7 @@ fn require(device: &EcamDevice) -> Result<(), Error> {
 /// Saved Cold classification must precede this SPI write-enable setup. Own the
 /// actual mapped PCH SPI/PCI engines exclusively; no transaction may be active.
 pub(crate) unsafe fn initialize_cold(device: &EcamDevice, power: PowerState) -> Result<(), Error> {
-    if power.mode() != MemoryBootMode::Cold {
+    if !matches!(power.mode(), MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::Retained);
     }
     if let Err(error) = require(device) {

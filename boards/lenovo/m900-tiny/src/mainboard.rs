@@ -38,7 +38,9 @@ pub enum Error {
 /// power-loss policy and the hardware monitor. Returns the board's ACPI
 /// device, which describes what it set up.
 #[cfg(feature = "acpi")]
-pub fn init_superio() -> Result<crate::acpi::M900Acpi, Error> {
+pub fn init_superio(
+    tpm: Option<fstart_driver_tpm::Family>,
+) -> Result<crate::acpi::M900Acpi, Error> {
     use crate::hwm;
     use fstart_driver_intel::sunrise_point::pmc::AfterPowerLoss;
     use fstart_driver_superio::nct6687d::{self, AfterPowerFailure};
@@ -69,23 +71,5 @@ pub fn init_superio() -> Result<crate::acpi::M900Acpi, Error> {
     .map_err(Error::SuperIo)?;
     nct6687d::hwm::initialize(&mut ec, &mut fstart_arch::x86::Udelay, &hwm::CONFIG)
         .map_err(Error::Thermal)?;
-    Ok(crate::acpi::M900Acpi::new(config, probe_tpm()))
-}
-
-/// The optional LPC TIS TPM (a TPM 1.2 on the M900). Firmware only
-/// identifies it; TPM_Startup is left to the OS driver, and no event log
-/// is kept, so there is no TCPA table.
-#[cfg(feature = "acpi")]
-fn probe_tpm() -> Option<fstart_driver_tpm::Family> {
-    use fstart_driver_tpm::tis;
-    // SAFETY: the PCH decodes the TIS window to LPC; nothing else drives it.
-    let tis = unsafe { tis::Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
-    let id = tis.probe()?;
-    fstart_log::info!(
-        "M900 TPM {:#x}:{:#x} revision {}",
-        id.vendor,
-        id.device,
-        id.revision
-    );
-    Some(id.family)
+    Ok(crate::acpi::M900Acpi::new(config, tpm))
 }

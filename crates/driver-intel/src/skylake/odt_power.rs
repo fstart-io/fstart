@@ -164,7 +164,7 @@ impl Engine<'_> {
         package: Package,
         sdram_lanes: u8,
     ) -> Result<(), Error> {
-        if mode != MemoryBootMode::Cold {
+        if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
             return Err(Error::RetainedMemoryUnsupported);
         }
         if sdram_lanes != 8 {

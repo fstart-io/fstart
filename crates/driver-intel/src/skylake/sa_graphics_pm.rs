@@ -177,7 +177,9 @@ register_structs! {
         (0x42000 => display_fuse: RO<u32, DisplayFuse::Register>),
         (0x42004 => _reserved36),
         (0x4402c => reg_4402c: RW<u32>),
-        (0x44030 => _reserved37),
+        (0x44030 => _reserved37a),
+        (0x45008 => dbuf_ctl: RW<u32>),
+        (0x4500c => _reserved37b),
         (0x45400 => display_power: RW<u32, DisplayPowerWell::Register>),
         (0x45404 => _reserved38),
         (0x46000 => cdclk: RW<u32, CdclkControl::Register>),
@@ -277,7 +279,7 @@ impl<'a> Graphics<'a> {
         delay: &mut impl DelayNs,
     ) -> Result<(), Error> {
         self.validate()?;
-        if mode != MemoryBootMode::Cold {
+        if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
             return Err(Error::RetainedMemory);
         }
         if Cpu::from_signature(cpu.signature).map_err(|_| Error::Cpu)? != cpu {
@@ -290,7 +292,7 @@ impl<'a> Graphics<'a> {
         msac.set(old_msac & !0x1f);
         msac.set(msac.get() | 1);
         command.set(old_command | 6);
-        let result = self.program_pm(cpu, msrs, delay);
+        let result = self.program_pm(cpu, mode, msrs, delay);
         msac.set(old_msac);
         command.set(old_command);
         result
@@ -299,6 +301,7 @@ impl<'a> Graphics<'a> {
     fn program_pm(
         &self,
         cpu: Cpu,
+        mode: MemoryBootMode,
         msrs: &impl MsrAccess,
         delay: &mut impl DelayNs,
     ) -> Result<(), Error> {
@@ -442,6 +445,50 @@ impl<'a> Graphics<'a> {
             .modify(Config0::SAMPLE_PART.val(sample as u32) + Config0::LOCK::SET);
         r.cdclk
             .modify(CdclkControl::DECIMAL.val(0x544) + CdclkControl::FREQUENCY.val(3));
+        if mode == MemoryBootMode::S3 {
+            // Native gt_cdclk_init() S3 resume path (systemagent.c): enable display
+            // power wells, CDCLK PLL and DBUF because GOP does not run on resume.
+            r.reset_handshake.modify(ResetHandshake::ENABLE::SET);
+            let _ = wait(&r.display_fuse, 1 << 27, 1 << 27, delay);
+            r.display_power.modify(DisplayPowerWell::PG1_REQUEST::SET);
+            let _ = wait(&r.display_power, 1 << 28, 1 << 28, delay);
+            let _ = wait(&r.display_fuse, 1 << 26, 1 << 26, delay);
+            r.display_power.modify(DisplayPowerWell::PG2_REQUEST::SET);
+            let _ = wait(&r.display_power, 1 << 30, 1 << 30, delay);
+            let _ = wait(&r.display_fuse, 1 << 25, 1 << 25, delay);
+            r.display_power.modify(DisplayPowerWell::MISC_REQUEST::SET);
+            let _ = wait(&r.display_power, 1, 1, delay);
+
+            if mailbox_wait(&r.mailbox, delay).is_err() {
+                fstart_log::warn!("GT: PCODE mailbox busy before CDCLK change");
+                return Ok(());
+            }
+            let mut ready = false;
+            for _ in 0..300 {
+                r.mailbox_data.set(3);
+                r.mailbox_data_high.set(0);
+                r.mailbox.set(0x8000_0007);
+                if mailbox_wait(&r.mailbox, delay).is_ok() && (r.mailbox_data.get() & 1 != 0) {
+                    ready = true;
+                    break;
+                }
+                delay.delay_us(10);
+            }
+            if !ready {
+                fstart_log::warn!("GT: CDCLK initialization failed, not changing CDCLK");
+                return Ok(());
+            }
+            r.cdclk_pll.modify(CdclkPll::ENABLE::SET);
+            let _ = wait(&r.cdclk_pll, 1 << 30, 1 << 30, delay);
+            r.cdclk
+                .modify(CdclkControl::DECIMAL.val(0x544) + CdclkControl::FREQUENCY.val(3));
+            r.mailbox_data.set(3);
+            r.mailbox_data_high.set(0);
+            r.mailbox.set(0x8000_0007);
+            let _ = mailbox_wait(&r.mailbox, delay);
+            r.dbuf_ctl.set(r.dbuf_ctl.get() | (1 << 31));
+            let _ = wait(&r.dbuf_ctl, 1 << 30, 1 << 30, delay);
+        }
         Ok(())
     }
 
@@ -507,6 +554,17 @@ impl<'a> Graphics<'a> {
         command.set(old);
         Ok(())
     }
+}
+
+fn mailbox_wait<R: Readable<T = u32>>(register: &R, delay: &mut impl DelayNs) -> Result<(), ()> {
+    // Native GT_MAILBOX_TIMEOUT_US = 100 us in 10 us steps.
+    for _ in 0..10 {
+        if register.get() & (1 << 31) == 0 {
+            return Ok(());
+        }
+        delay.delay_us(10);
+    }
+    Err(())
 }
 
 fn wait<R: Readable<T = u32>>(

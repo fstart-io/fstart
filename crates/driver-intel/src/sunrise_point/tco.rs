@@ -78,7 +78,7 @@ pub(crate) unsafe fn configure_cold(
     power: PowerState,
     intrusion_smi: bool,
 ) -> Result<(), Error> {
-    if power.mode() != MemoryBootMode::Cold {
+    if !matches!(power.mode(), MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::Retained);
     }
     require(device)?;

@@ -703,14 +703,17 @@ fn reset_ports(
     kind: dmi::Kind,
     count: u8,
     debug: Option<u8>,
+    resume: bool,
     delay: &mut impl DelayNs,
 ) -> Result<(), Error> {
-    for port in 0..count {
-        if Some(port) == debug {
-            continue;
+    if !resume {
+        for port in 0..count {
+            if Some(port) == debug {
+                continue;
+            }
+            let status = &r.ss_port(kind, usize::from(port)).status;
+            status.set(portsc_value(status.get(), PORTSC::WPR::SET));
         }
-        let status = &r.ss_port(kind, usize::from(port)).status;
-        status.set(portsc_value(status.get(), PORTSC::WPR::SET));
     }
     r.aux1.set(r.aux1.get() & !(1 << 16));
     for sample in 0..=12000 {
@@ -749,11 +752,12 @@ fn reset_ports(
     Err(Error::PortResetTimeout)
 }
 /// # Safety
-/// Actual cold PCH-H/LP, assigned complete xHCI BAR mapped UC, before final
+/// Actual PCH-H/LP, assigned complete xHCI BAR mapped UC, before final
 /// SBI/xHCI/PMC locks. Own P2SB SBI, USB2/USB3 PHY, PMC XRAM and PCI engines
 /// exclusively; controller/DMAs are quiescent and no OS/AP/SMI/other USB driver
 /// competes. Errors are fatal partial initialization, never a reset/replay
 /// permission.
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn initialize(
     prepared: Prepared,
     config: &Config,
@@ -761,6 +765,7 @@ pub(crate) unsafe fn initialize(
     p2sb: &EcamDevice,
     pmc_dev: &EcamDevice,
     window: PciWindow,
+    resume: bool,
     delay: &mut impl DelayNs,
 ) -> Result<Outcome, Error> {
     if EcamDevice::new(0, 0x14, 1).is_present() {
@@ -774,8 +779,26 @@ pub(crate) unsafe fn initialize(
     if device.vendor_id() != 0x8086 || device.read32(8) >> 8 != 0x0c0330 {
         return Err(Error::Device);
     }
-    if device.read32(0x40) & (1 << 31) != 0 || device.read32(0x44) & (1 << 31) != 0 {
-        return Err(Error::Locked);
+    let xhcc1 = device.read32(0x40);
+    let xhcc2 = device.read32(0x44);
+    if xhcc1 & (1 << 31) != 0 || xhcc2 & (1 << 31) != 0 {
+        if !resume {
+            fstart_log::error!(
+                "xHCI: locked before init (XHCC1={} XHCC2={})",
+                fstart_log::Hex(u64::from(xhcc1)),
+                fstart_log::Hex(u64::from(xhcc2)),
+            );
+            return Err(Error::Locked);
+        }
+        // XHCC1.ACCTRL / XHCC2.OCCFDONE sit in the suspend well on Sunrise Point
+        // and stay latched across S3 (PLTRST# without RSMRST#). Hardware ignores
+        // writes to the already-programmed locked fields while letting the rest
+        // of the controller recipe run, matching native coreboot xhci.c.
+        fstart_log::info!(
+            "xHCI: retained lock across S3 (XHCC1={} XHCC2={})",
+            fstart_log::Hex(u64::from(xhcc1)),
+            fstart_log::Hex(u64::from(xhcc2)),
+        );
     }
     let base = usize::try_from(window.base).map_err(|_| Error::Resource)?;
     if window.kind != PciWindowKind::Mmio
@@ -789,7 +812,13 @@ pub(crate) unsafe fn initialize(
     {
         return Err(Error::Resource);
     }
-    if p2sb.vendor_id() != 0x8086 || p2sb.read32(0xe0) & (1 << 31) != 0 {
+    let p2sb_e0 = p2sb.read32(0xe0);
+    if p2sb.vendor_id() != 0x8086 || p2sb_e0 & (1 << 31) != 0 {
+        fstart_log::error!(
+            "xHCI: P2SB unavailable or SBI locked (vid={} E0={})",
+            fstart_log::Hex(u64::from(p2sb.vendor_id())),
+            fstart_log::Hex(u64::from(p2sb_e0)),
+        );
         return Err(Error::Locked);
     }
     let mut sbi = unsafe { Sbi::new(p2sb) }?;
@@ -841,7 +870,7 @@ pub(crate) unsafe fn initialize(
         // DE can change during the source host recipe. Re-observe the actual
         // debug capability before the warm-port reset pass.
         let debug = debug_port(base, window.size, r, ss_offset, count)?;
-        reset_ports(r, kind, count, debug, delay)?;
+        reset_ports(r, kind, count, debug, resume, delay)?;
         for pin in 0..8u16 {
             device.write32(0xb0 + 4 * pin, maps.usb2_oc[usize::from(pin)]);
             device.write32(0xd0 + 4 * pin, maps.usb3_oc[usize::from(pin)]);

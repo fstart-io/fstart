@@ -123,6 +123,7 @@ pub struct IntelSunrisePoint {
     smbus: EcamDevice,
     heci: EcamDevice,
     bus: Option<I801SmBus>,
+    saved_power: Option<early::PowerState>,
     pre_memory: Option<early::PreMemory>,
     me: me::NativeMe,
     smi: Option<smi::Controller>,
@@ -145,6 +146,8 @@ pub struct IntelSunrisePoint {
     interconnect_outcome: Option<interconnect::Outcome>,
     failure: Option<Error>,
     acpi: Option<acpi::Snapshot>,
+    s3_enabled: bool,
+    resume: bool,
     #[cfg(not(target_os = "none"))]
     host_baseline: bool,
 }
@@ -267,6 +270,7 @@ impl IntelSunrisePoint {
             smbus,
             heci,
             bus: None,
+            saved_power: None,
             pre_memory: None,
             me: me::NativeMe::new(config.me),
             smi: None,
@@ -288,10 +292,30 @@ impl IntelSunrisePoint {
             interconnect_prepared: None,
             interconnect_outcome: None,
             acpi: None,
+            s3_enabled: false,
+            resume: false,
             failure: None,
             #[cfg(not(target_os = "none"))]
             host_baseline: false,
         })
+    }
+
+    /// Whether this stage is executing an ACPI S3 resume path.
+    pub fn is_resume(&self) -> bool {
+        self.resume
+    }
+
+    /// Clear DISB and global-reset override on PMC (00:1f.2), then trigger a
+    /// full cold reset so a failed S3 resume recovers cleanly into a cold boot.
+    pub fn reset_failed_resume() -> ! {
+        // SAFETY: PMC 00:1f.2 is fixed PCH config space; we are resetting.
+        unsafe {
+            let gen_a_hi = fstart_pci::cf8::read8(0, 0x1f, 2, 0xa2);
+            fstart_pci::cf8::write8(0, 0x1f, 2, 0xa2, gen_a_hi & !(1 << 7));
+            let etr = fstart_pci::cf8::read32(0, 0x1f, 2, 0xac);
+            fstart_pci::cf8::write32(0, 0x1f, 2, 0xac, etr & !((1 << 20) | (1 << 18)));
+        }
+        fstart_arch::x86::boot::full_reset();
     }
 
     /// Populate synthetic host-side state so `check-acpi` can assemble the
@@ -518,14 +542,23 @@ impl IntelSunrisePoint {
                     self.sata_early.take().ok_or(Error::Phase)?,
                     self.sata_bar,
                 )?);
-                self.hda_outcome = Some(hda::initialize(
+                match hda::initialize(
                     &self.pcr,
                     kind,
                     self.config.hda,
                     self.hda_bar,
                     display_audio,
                     &mut Udelay,
-                )?);
+                ) {
+                    Ok(outcome) => self.hda_outcome = Some(outcome),
+                    Err(error) if self.resume => {
+                        fstart_log::warn!(
+                            "PCH HDA init failed on S3 resume; continuing: {:?}",
+                            fstart_log::DebugValue(&error)
+                        );
+                    }
+                    Err(error) => return Err(error.into()),
+                }
                 self.usb_outcome = Some(usb::initialize(
                     self.usb_early.take().ok_or(Error::Phase)?,
                     self.config.usb,
@@ -533,6 +566,7 @@ impl IntelSunrisePoint {
                     &self.p2sb,
                     &self.pmc,
                     self.usb_bar.ok_or(Error::Phase)?,
+                    self.resume,
                     &mut Udelay,
                 )?);
                 power::configure_native(
@@ -571,6 +605,18 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
     fn board_options(_: &Config) {}
     fn options(&self) {}
     fn set_options(&mut self, _: ()) {}
+    fn detect_s3_resume(&self) -> bool {
+        self.pre_memory
+            .map(early::PreMemory::power)
+            .or(self.saved_power)
+            .is_some_and(|power| power.mode() == pmc::MemoryBootMode::S3)
+    }
+    fn set_s3_enabled(&mut self, enabled: bool) {
+        self.s3_enabled = enabled;
+    }
+    fn set_resume(&mut self, resume: bool) {
+        self.resume = resume;
+    }
     fn training_identity(&self) -> Option<[u8; 5]> {
         // SAFETY: fixed LPC/eSPI function; the overlay is its type-0 header.
         let header = unsafe { self.lpc.regs::<fstart_pci::overlay::PciType0Config>() };
@@ -585,21 +631,7 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
     fn config(&self) -> &'static Config {
         self.config
     }
-    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
-        if self.phase == Phase::ColdNew && self.existing().is_ok() {
-            // A stage after the bootblock, which programmed these decodes and
-            // trained DRAM in this boot.
-            self.phase = Phase::Running;
-            let trained = unsafe { self.pmc.register::<u32, pmc::GenPmconA::Register>(0xa0) }
-                .is_set(pmc::GenPmconA::DISB);
-            let result = if trained {
-                self.bus = Some(I801SmBus::new(self.config.smbus_base));
-                Ok(())
-            } else {
-                Err(Error::Decode)
-            };
-            return self.finish(result, Phase::LateImported);
-        }
+    fn bootblock_pre_console_init(&mut self) -> Result<(), ServiceError> {
         if self.phase != Phase::ColdNew {
             return self.reject();
         }
@@ -614,17 +646,20 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
             fstart_log::debug!("PCH pre-console: capture wake/reset state");
             let pmc = unsafe { PmcRegisters::at(pmc::PWRM_BASE) };
             let saved = early::capture_power_state(pmc)?;
+            self.saved_power = Some(saved);
             if saved.mode() == pmc::MemoryBootMode::Warm {
                 // A hard reset, such as the OS's reboot through CF9, keeps
                 // DRAM in self-refresh and the memory controller programmed.
-                // There is no self-refresh exit path yet, and cold training
-                // needs the controller at its reset state, so power-cycle
-                // through S5 into a cold boot. Clear DISB first (native
-                // pmc_clear_disb) so that boot is classified cold.
+                // Cold training needs the controller at its reset state, so
+                // power-cycle through S5 into a cold boot. Clear DISB first
+                // (native pmc_clear_disb) so that boot is classified cold.
                 pmc::clear_dram_initialized(&self.pmc)?;
                 fstart_arch::x86::boot::full_reset();
             }
-            if saved.mode() != pmc::MemoryBootMode::Cold {
+            if !matches!(
+                saved.mode(),
+                pmc::MemoryBootMode::Cold | pmc::MemoryBootMode::S3
+            ) {
                 fstart_log::error!("PCH pre-console: retained boot state");
                 return Err(Error::Retained);
             }
@@ -651,6 +686,23 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
         })();
         self.finish(result, Phase::ColdDecoded)
     }
+    fn pre_console_init(&mut self) -> Result<(), ServiceError> {
+        if self.phase == Phase::ColdNew && self.existing().is_ok() {
+            // A stage after the bootblock, which programmed these decodes and
+            // trained DRAM in this boot.
+            self.phase = Phase::Running;
+            let trained = unsafe { self.pmc.register::<u32, pmc::GenPmconA::Register>(0xa0) }
+                .is_set(pmc::GenPmconA::DISB);
+            let result = if trained {
+                self.bus = Some(I801SmBus::new(self.config.smbus_base));
+                Ok(())
+            } else {
+                Err(Error::Decode)
+            };
+            return self.finish(result, Phase::LateImported);
+        }
+        self.bootblock_pre_console_init()
+    }
     fn early_init(&mut self) -> Result<(), ServiceError> {
         if self.phase == Phase::LateImported {
             return Ok(());
@@ -659,10 +711,24 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
             return self.reject();
         }
         self.phase = Phase::Running;
+        if let Some(power) = self.saved_power {
+            let reset = power.reset_state();
+            fstart_log::info!(
+                "PCH early: PM1_STS={} PM1_CNT={} GEN_PMCON_A={} GEN_PMCON_B={} mode={:?}",
+                fstart_log::Hex(u64::from(power.pm1_status())),
+                fstart_log::Hex(u64::from(power.pm1_control())),
+                fstart_log::Hex(u64::from(reset.gen_pmcon_a)),
+                fstart_log::Hex(u64::from(reset.gen_pmcon_b)),
+                fstart_log::DebugValue(&power.mode()),
+            );
+        }
+        let s3 = self.detect_s3_resume();
         let result = (|| {
             self.existing()?;
             let mut cse = unsafe { cse::MmioCse::bind(self.heci, Budgets::SOURCE) }?;
-            if !cse.status()?.is_debug_mode() {
+            if s3 {
+                fstart_log::debug!("PCH early: S3 resume; deferring HECI init");
+            } else if !cse.status()?.is_debug_mode() {
                 cse.initialize(&mut Udelay)?;
             } else {
                 fstart_log::warn!("PCH early: ME in Debug mode; skipping HECI init");
@@ -679,7 +745,12 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
             self.pre_memory = Some(observed);
             Ok(())
         })();
-        self.finish(result, Phase::ColdReady)
+        self.finish(
+            result.inspect_err(|error| {
+                fstart_log::error!("PCH early init: {:?}", fstart_log::DebugValue(error));
+            }),
+            Phase::ColdReady,
+        )
     }
     fn smbus_mut(&mut self) -> Option<&mut dyn SmBus> {
         if !matches!(
@@ -719,24 +790,24 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
                 )
             }?;
             let scratch = mbp_scratch().ok_or(Error::Phase)?;
-            let (request, response) = scratch.split_at_mut(2576);
-            let mut cse = unsafe { cse::MmioCse::bind(self.heci, Budgets::SOURCE) }?;
-            match hsio::post_memory(
-                &self.lpc,
-                &mut cse,
-                request,
-                &mut response[..20],
-                &mut Udelay,
-            )? {
-                hsio::SyncOutcome::InSync => {}
-                hsio::SyncOutcome::ColdResetRequired => {
-                    fstart_log::info!("HSIO: settings updated; issuing cold reset");
-                    pmc::clear_dram_initialized(&self.pmc)?;
-                    fstart_arch::x86::boot::full_reset();
+            if !self.resume {
+                let (request, response) = scratch.split_at_mut(2576);
+                let mut cse = unsafe { cse::MmioCse::bind(self.heci, Budgets::SOURCE) }?;
+                match hsio::post_memory(
+                    &self.lpc,
+                    &mut cse,
+                    request,
+                    &mut response[..20],
+                    &mut Udelay,
+                )? {
+                    hsio::SyncOutcome::InSync => {}
+                    hsio::SyncOutcome::ColdResetRequired => {
+                        fstart_log::info!("HSIO: settings updated; issuing cold reset");
+                        pmc::clear_dram_initialized(&self.pmc)?;
+                        fstart_arch::x86::boot::full_reset();
+                    }
                 }
             }
-            #[allow(clippy::drop_non_drop)] // the HECI binding ends here
-            drop(cse);
             unsafe {
                 let pmc_regs = PmcRegisters::at(pmc::PWRM_BASE);
                 hda::prepare(&self.pcr, pmc_regs, self.config.hda)?;
@@ -752,7 +823,8 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
                     pmc_regs,
                 )?);
                 self.usb_early = Some(usb::prepare(&self.pcr, pmc_regs, &mut Udelay)?);
-                self.me.initialize(&self.pcr, kind, scratch, &mut Udelay)?;
+                self.me
+                    .initialize(&self.pcr, kind, self.resume, scratch, &mut Udelay)?;
                 interconnect::before_root_ports(
                     &self.pcr,
                     &self.p2sb,
@@ -854,7 +926,7 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
             // Native pch_finalize_script locks TCO before its CSE ready hook.
             // Permanent SMM and TCO_EN have already been installed above.
             tco::lockdown(&self.smbus, &self.pcr)?;
-            self.me.ready_to_boot(&self.pcr, &mut Udelay)?;
+            self.me.ready_to_boot(&self.pcr, self.resume, &mut Udelay)?;
             if !self.config.spi_visible_to_os {
                 spi::hide_from_os(&self.spi)?;
             }
@@ -874,13 +946,15 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
                     true,
                 )?;
             }
-            // Native pm1_enable_pwrbtn_smi (skylake/pmc.c), last thing before
-            // the payload: with SCI_EN clear a press raises a PM1 SMI and the
-            // handler enters S5. Drop the press that powered the board on.
-            let acpi = pmio::AcpiIo::new(pmc::ACPI_BASE);
-            acpi.status()
-                .write(crate::southbridge::pmio_ich::PM_STATUS::POWER_BUTTON::SET);
-            acpi.enable().modify(pmio::Enable::POWER_BUTTON::SET);
+            if !self.resume {
+                // Native pm1_enable_pwrbtn_smi (skylake/pmc.c), last thing before
+                // the payload: with SCI_EN clear a press raises a PM1 SMI and the
+                // handler enters S5. Drop the press that powered the board on.
+                let acpi = pmio::AcpiIo::new(pmc::ACPI_BASE);
+                acpi.status()
+                    .write(crate::southbridge::pmio_ich::PM_STATUS::POWER_BUTTON::SET);
+                acpi.enable().modify(pmio::Enable::POWER_BUTTON::SET);
+            }
             Ok(())
         })();
         self.finish(
@@ -952,6 +1026,12 @@ impl IntelSouthbridgeDriver for IntelSunrisePoint {
             }
         }
         bars
+    }
+    fn system_reset(&self, hard: bool) -> ! {
+        if hard {
+            Self::reset_failed_resume()
+        }
+        fstart_arch::x86::boot::system_reset(false)
     }
 }
 

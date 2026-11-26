@@ -27,12 +27,7 @@ fn cpu_basic_preflight_rejects_retained_short_or_overflow_without_access() {
             MemoryBootMode::Warm,
             Error::RetainedMemoryUnsupported,
         ),
-        (
-            usize::MAX,
-            0,
-            MemoryBootMode::S3,
-            Error::RetainedMemoryUnsupported,
-        ),
+        (usize::MAX, 0, MemoryBootMode::S3, Error::MappingTooSmall),
         (0, 0, MemoryBootMode::Cold, Error::MappingTooSmall),
         (
             usize::MAX,

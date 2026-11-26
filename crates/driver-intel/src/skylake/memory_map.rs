@@ -440,7 +440,7 @@ pub unsafe fn program_cold(
     policy: Policy,
     prm: uncore_prmrr::Request,
 ) -> Result<ProgrammedMap, Error> {
-    if mode != MemoryBootMode::Cold {
+    if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::RetainedMemory);
     }
     early_sa::validate_host(sa)?;

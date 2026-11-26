@@ -13,7 +13,7 @@ use embedded_hal::delay::DelayNs;
 use tock_registers::interfaces::ReadWriteable;
 
 pub(crate) fn cold_ranks(engine: &Engine<'_>, mode: MemoryBootMode) -> Result<[u8; 2], Error> {
-    if mode != MemoryBootMode::Cold {
+    if !matches!(mode, MemoryBootMode::Cold | MemoryBootMode::S3) {
         return Err(Error::RetainedMemoryUnsupported);
     }
     let ranks = [rank_mask(engine.dimms, 0)?, rank_mask(engine.dimms, 1)?];

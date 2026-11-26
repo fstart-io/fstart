@@ -12,12 +12,13 @@ static CONSOLE: StaticConsole<Ns16550> = StaticConsole::new();
 fstart_platform_intel::entry!(main);
 
 fn main() -> ! {
-    let rs = Ramstage::<Board>::enter()
+    let mut rs = Ramstage::<Board>::enter()
         .console(&CONSOLE, mainboard::console())
         .memory_map()
         .scan_bus(&[])
         .init_chipset();
-    let Ok(acpi) = mainboard::init_superio() else {
+    let tpm = rs.init_tis_tpm();
+    let Ok(acpi) = mainboard::init_superio(tpm.family) else {
         rs.fail("Super I/O");
     };
     let rs = rs.start_cpus().verify_boot_media().init_display();

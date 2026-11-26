@@ -645,6 +645,14 @@ impl<B: IntelBoard> Ramstage<B, Chipset> {
         // SAFETY: LPC TIS window, exclusively used by the BSP before handoff.
         let mut tis = unsafe { tis::Tis::new(tis::BASE, fstart_arch::x86::Udelay) };
         let id = tis.probe();
+        if let Some(id) = id {
+            fstart_log::info!(
+                "TPM: {:#x}:{:#x} revision {}",
+                id.vendor,
+                id.device,
+                id.revision
+            );
+        }
         let irq = id.and_then(|_| tis.irq());
         let same_tpm = self
             .store
@@ -659,16 +667,36 @@ impl<B: IntelBoard> Ramstage<B, Chipset> {
             self.southbridge.set_s3_enabled(false);
         }
         let mut family = id.map(|i| i.family);
-        if let Some(kind) = family
-            && fstart_driver_tpm::startup(&mut tis, kind, resume).is_err()
-        {
-            if resume {
-                self.fail("TPM resume");
+        if let Some(kind) = family {
+            match fstart_driver_tpm::startup(&mut tis, kind, resume) {
+                Ok(()) => {
+                    if resume {
+                        fstart_log::info!("TPM: S3 state restored");
+                    }
+                }
+                Err(error) => {
+                    match error {
+                        fstart_driver_tpm::Error::Code(code) => {
+                            fstart_log::error!(
+                                "TPM: {} failed, code {:#x}",
+                                if resume { "resume" } else { "startup" },
+                                code
+                            );
+                        }
+                        _ => fstart_log::error!(
+                            "TPM: {} transport failed",
+                            if resume { "resume" } else { "startup" }
+                        ),
+                    }
+                    if resume {
+                        self.fail("TPM resume");
+                    }
+                    fstart_log::warn!("TPM: cold startup failed; withholding TPM device and S3");
+                    family = None;
+                    self.northbridge.set_s3_enabled(false);
+                    self.southbridge.set_s3_enabled(false);
+                }
             }
-            fstart_log::warn!("TPM: cold startup failed; withholding TPM device and S3");
-            family = None;
-            self.northbridge.set_s3_enabled(false);
-            self.southbridge.set_s3_enabled(false);
         }
         crate::tpm::TisProbe { family, irq }
     }
@@ -948,9 +976,18 @@ impl<B: IntelBoard> Ramstage<B, Resume> {
             let e = s.find(fstart_store::tag::ACPI)?;
             Some((s.address(&e) as u64, e.len() as u64))
         });
-        self.wake_vector = fstart_acpi::platform::x86::wake::find_wakeup_vector(|addr, size| {
-            crate::tables::wake_readable(e820, acpi, addr, size)
-        });
+        self.wake_vector = acpi
+            .and_then(|(rsdp_addr, _)| {
+                fstart_acpi::platform::x86::wake::find_wakeup_vector_at_rsdp(
+                    rsdp_addr,
+                    |addr, size| crate::tables::wake_readable(e820, acpi, addr, size),
+                )
+            })
+            .or_else(|| {
+                fstart_acpi::platform::x86::wake::find_wakeup_vector(|addr, size| {
+                    crate::tables::wake_readable(e820, acpi, addr, size)
+                })
+            });
         self.phase(
             fstart_timestamp::id::LOAD_MEMORY_POLICY,
             Self::refresh_load_policy,

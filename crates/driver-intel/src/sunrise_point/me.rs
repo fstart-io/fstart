@@ -91,6 +91,7 @@ impl NativeMe {
         &mut self,
         pcr: &Pcr,
         kind: super::dmi::Kind,
+        resume: bool,
         scratch: &mut [u8],
         delay: &mut impl DelayNs,
     ) -> Result<(), Error> {
@@ -99,7 +100,7 @@ impl NativeMe {
         }
         self.kind = kind;
         self.phase = Phase::Running;
-        let result = self.initialize_inner(pcr, scratch, delay);
+        let result = self.initialize_inner(pcr, resume, scratch, delay);
         self.phase = if result.is_ok() {
             Phase::Initialized
         } else {
@@ -110,12 +111,13 @@ impl NativeMe {
     fn initialize_inner(
         &mut self,
         pcr: &Pcr,
+        resume: bool,
         scratch: &mut [u8],
         delay: &mut impl DelayNs,
     ) -> Result<(), Error> {
         let heci = EcamDevice::new(0, 0x16, 0);
         let initial = FirmwareStatus::read(&heci)?;
-        let payload = if initial.allows(cse::Command::BiosPayload) {
+        let payload = if !resume && initial.allows(cse::Command::BiosPayload) {
             set_idle(&heci, false, delay)?;
             let mut service = unsafe { MmioCse::bind(heci, Budgets::SOURCE) }?;
             service.initialize(delay)?;
@@ -169,14 +171,19 @@ impl NativeMe {
         self.status = Some(status); // actual snapshot before any function hide
         Ok(())
     }
-    /// Cold ready-to-boot. Only validated action 0 or the native explicitly
+    /// Ready-to-boot. Only validated action 0 or the native explicitly
     /// disabled-function paths complete. A reset request NEVER becomes Ready.
-    pub fn ready_to_boot(&mut self, pcr: &Pcr, delay: &mut impl DelayNs) -> Result<(), Error> {
+    pub fn ready_to_boot(
+        &mut self,
+        pcr: &Pcr,
+        resume: bool,
+        delay: &mut impl DelayNs,
+    ) -> Result<(), Error> {
         if self.phase != Phase::Initialized {
             return Err(Error::AlreadyAttempted);
         }
         self.phase = Phase::Running;
-        let result = self.ready_inner(pcr, delay);
+        let result = self.ready_inner(pcr, resume, delay);
         self.phase = if result.is_ok() {
             Phase::Ready
         } else {
@@ -184,7 +191,12 @@ impl NativeMe {
         };
         result
     }
-    fn ready_inner(&mut self, pcr: &Pcr, delay: &mut impl DelayNs) -> Result<(), Error> {
+    fn ready_inner(
+        &mut self,
+        pcr: &Pcr,
+        resume: bool,
+        delay: &mut impl DelayNs,
+    ) -> Result<(), Error> {
         let heci = EcamDevice::new(0, 0x16, 0);
         let status = if self.visible {
             FirmwareStatus::read(&heci)?
@@ -194,11 +206,13 @@ impl NativeMe {
         if self.visible {
             match status.bios_path() {
                 BiosPath::Normal | BiosPath::Error | BiosPath::Recovery => {
-                    set_idle(&heci, false, delay)?;
-                    let mut service = unsafe { MmioCse::bind(heci, Budgets::SOURCE) }?;
-                    service.initialize(delay)?;
-                    if service.end_of_post(delay)? != EndOfPostAction::Continue {
-                        return Err(Error::GlobalResetRequired);
+                    if !resume {
+                        set_idle(&heci, false, delay)?;
+                        let mut service = unsafe { MmioCse::bind(heci, Budgets::SOURCE) }?;
+                        service.initialize(delay)?;
+                        if service.end_of_post(delay)? != EndOfPostAction::Continue {
+                            return Err(Error::GlobalResetRequired);
+                        }
                     }
                 }
                 BiosPath::TemporaryDisable

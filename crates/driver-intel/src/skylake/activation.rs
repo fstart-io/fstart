@@ -187,7 +187,41 @@ impl Engine<'_> {
         self.power_weights(ranks);
         Ok(())
     }
-    /// warm_reset.c:meminit_normal_mode() for a fast boot with SA GV off.
+    /// warm_reset.c:meminit_self_refresh_exit() for S3 resume (DDR4).
+    /// Downloads the read register file for all populated ranks via DATACTL0
+    /// channel broadcast, marks SRX_RESET in MC_CH_INIT_STATE, and primes
+    /// MC_DDR4_MPR_TEMP to hot until the first real temperature read.
+    pub fn meminit_self_refresh_exit(&self, mode: MemoryBootMode) -> Result<(), Error> {
+        if mode != MemoryBootMode::S3 {
+            return Err(Error::InvalidPolicy);
+        }
+        let ranks = cold_ranks(self, mode)?;
+        for ch in 0..2 {
+            if ranks[ch] == 0 {
+                continue;
+            }
+            // Read from byte lane 0 (0x80 + ch*0x100), write to channel broadcast
+            // (0x3080 + ch*0x100) so all 8 byte lanes receive the download command.
+            let dctl0 = (self.registers.data_lane[0][ch].control0.get() | (1 << 20)) & !(3 << 22);
+            let mut temp_val = 0u32;
+            for rank in 0..4u32 {
+                if ranks[ch] & (1 << rank) == 0 {
+                    continue;
+                }
+                self.registers.data_channel[ch]
+                    .control0
+                    .set(dctl0 | (rank << 22));
+                temp_val |= 0x02 << (rank * 8); // RANK_TEMP_HOT_DDR4
+            }
+            let init_state = self.registers.channel[ch].init_state.get();
+            self.registers.channel[ch]
+                .init_state
+                .set(init_state | (1 << 4)); // MC_CH_INIT_SRX_RESET
+            self.registers.channel[ch].ddr4_mpr_temp.set(temp_val);
+        }
+        Ok(())
+    }
+    /// warm_reset.c:meminit_normal_mode() for a fast boot or S3 resume with SA GV off.
     /// The cached registers already hold mc_activate's scrambler, scheduler,
     /// data-lane and thermal images; only the REUT sequencer mode, the
     /// self-refresh exit and the shared power-down register remain.
