@@ -24,7 +24,6 @@ use crate::dxio::{Dxio, DxioError, Hooks, UnitView, op, prop};
 use crate::fch::gpio::{self, Pin};
 use crate::nbio::{Nbio, NbioReg, nbif};
 use crate::smn::SmnAddr;
-use crate::smu::SmuMessages;
 use crate::window::Window;
 
 register_bitfields![u32,
@@ -864,23 +863,26 @@ pub fn enable_sata<P: ConfigRegionAccess + Clone>(nbio: &Nbio<P>) {
 /// << 8 | ccds, 1}` (Rome `ffdfefa5`; Milan when PCD32 0xAF ≠ 0x40).
 /// `f1x330` is D18F1x330 of socket 0's node 0 (the donor reads that fixed
 /// ECAM address for both sockets), `ccd_mask` the socket's present CCDs.
-pub fn xgmi_init<M: SmuMessages + ?Sized>(
+pub fn xgmi_init<M: crate::smu::AsyncSmuMessages + ?Sized>(
     generation: Silicon,
     dxio: &Dxio<'_, M>,
     f1x330: u32,
     ccd_mask: u8,
     two_socket: bool,
 ) -> Result<(), DxioError> {
-    if generation == Silicon::Zp {
-        return Ok(());
-    }
-    if generation == Silicon::Gn && two_socket {
-        dxio.rpc(op::XGMI_BER_ADAPT, [0; 5])?;
-    }
-    let ccds = ccd_mask as u32;
-    let arg = ((f1x330 & 0x1F) << 8 | ccds) << 8 | ccds;
-    dxio.rpc(op::SET_RUNTIME_PROP, [prop::XGMI, 0, arg, 1, 0])
-        .map(|_| ())
+    fstart_core::task::block_on(async {
+        if generation == Silicon::Zp {
+            return Ok(());
+        }
+        if generation == Silicon::Gn && two_socket {
+            dxio.rpc(op::XGMI_BER_ADAPT, [0; 5]).await?;
+        }
+        let ccds = ccd_mask as u32;
+        let arg = ((f1x330 & 0x1F) << 8 | ccds) << 8 | ccds;
+        dxio.rpc(op::SET_RUNTIME_PROP, [prop::XGMI, 0, arg, 1, 0])
+            .await
+            .map(|_| ())
+    })
 }
 
 /// GPIO26 PCIE_RST0_L, GPIO27 PCIE_RST3_L, RMT GPIO10/11 PCIE_RST1/2_L

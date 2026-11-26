@@ -189,6 +189,99 @@ impl Mailbox {
         self.request(smn, TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], delay)
             .map(drop)
     }
+
+    async fn poll_async(
+        &self,
+        smn: &impl SmnAccess,
+        timer: &(impl fstart_core::services::Timer + ?Sized),
+        timeout_us: u32,
+    ) -> Result<Option<u32>, Error> {
+        fstart_core::task::poll_until(timer, u64::from(timeout_us), || {
+            let response = smn.reg(self.response).get();
+            if response == u32::MAX {
+                Some(Err(Error::Unavailable))
+            } else if response != 0 {
+                Some(Ok(response))
+            } else {
+                None
+            }
+        })
+        .await
+        .transpose()
+    }
+
+    /// Asynchronous counterpart to [`Self::request_raw_within`], polling via
+    /// [`fstart_core::task::poll_until`] so sibling tasks can run while waiting
+    /// on the SMU.
+    pub async fn request_raw_within_async(
+        &self,
+        smn: &impl SmnAccess,
+        message: u32,
+        arguments: [u32; ARGUMENT_COUNT],
+        timer: &(impl fstart_core::services::Timer + ?Sized),
+        timeout_us: u32,
+    ) -> Result<Reply, Error> {
+        if self.wait_before {
+            self.poll_async(smn, timer, timeout_us)
+                .await?
+                .ok_or(Error::BusyTimeout)?;
+        }
+        let start = timer.timestamp_us();
+        self.post(smn, message, arguments);
+        let response = self
+            .poll_async(smn, timer, timeout_us)
+            .await?
+            .ok_or(Error::CompletionTimeout)?;
+        let took_ms = timer.timestamp_us().wrapping_sub(start) / 1000;
+        if took_ms > u64::from(SLOW_MS) {
+            fstart_log::info!("smu: message {:#x} took {} ms", message, took_ms);
+        }
+        Ok(Reply {
+            status: response,
+            arguments: core::array::from_fn(|i| smn.reg(self.argument(i)).get()),
+        })
+    }
+
+    /// Asynchronous counterpart to [`Self::request`].
+    pub async fn request_async(
+        &self,
+        smn: &impl SmnAccess,
+        message: u32,
+        arguments: [u32; ARGUMENT_COUNT],
+        timer: &(impl fstart_core::services::Timer + ?Sized),
+    ) -> Result<[u32; ARGUMENT_COUNT], Error> {
+        let reply = self
+            .request_raw_within_async(smn, message, arguments, timer, DEFAULT_TIMEOUT_US)
+            .await?;
+        if reply.status != OK {
+            return Err(Error::Rejected(reply.status));
+        }
+        Ok(reply.arguments)
+    }
+
+    /// Asynchronous [`TEST`].
+    pub async fn test_async(
+        &self,
+        smn: &impl SmnAccess,
+        timer: &(impl fstart_core::services::Timer + ?Sized),
+    ) -> Result<(), Error> {
+        self.request_async(smn, TEST, [0xaa55_aa55, 0, 0, 0, 0, 0], timer)
+            .await
+            .map(drop)
+    }
+}
+
+/// Asynchronous counterpart to [`SmuMessages`], yielding between SMU mailbox
+/// polls so sibling tasks in a cooperative executor can overlap with long SMU
+/// waits (e.g. DXIO link training).
+pub trait AsyncSmuMessages {
+    /// Send message `id` with `args`; on success `args` holds the response
+    /// arguments.
+    fn send_async<'a>(
+        &'a self,
+        id: u32,
+        args: &'a mut [u32; ARGUMENT_COUNT],
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'a;
 }
 
 /// Sends SMU messages to one SMU instance (a die on Naples, Zeppelin and
@@ -280,6 +373,42 @@ impl<P: ConfigRegionAccess, D: DelayNs + Copy> SmuMessages for Smu<P, D> {
                 fstart_log::error!("smu: message {:#x} response {:#x}", id, *code)
             }
         })?;
+        if reply.status != OK {
+            fstart_log::error!("smu: message {:#x} response {:#x}", id, reply.status);
+            return Err(Error::Rejected(reply.status));
+        }
+        *args = reply.arguments;
+        Ok(())
+    }
+}
+
+impl<P: ConfigRegionAccess, D: fstart_core::services::Timer + Copy> AsyncSmuMessages for Smu<P, D> {
+    async fn send_async(&self, id: u32, args: &mut [u32; ARGUMENT_COUNT]) -> Result<(), Error> {
+        if id >= self.id_limit {
+            fstart_log::error!(
+                "smu: message {:#x} exceeds ID limit {:#x}",
+                id,
+                self.id_limit
+            );
+            return Err(Error::Rejected(response::UNKNOWN_CMD));
+        }
+        let timer = self.delay.get();
+        let reply = self
+            .mailbox
+            .request_raw_within_async(&self.smn, id, *args, &timer, self.timeout_us)
+            .await
+            .inspect_err(|error| match error {
+                Error::BusyTimeout => {
+                    fstart_log::error!("smu: timed out before message {:#x}", id)
+                }
+                Error::CompletionTimeout => fstart_log::error!("smu: message {:#x} timed out", id),
+                Error::Unavailable => {
+                    fstart_log::error!("smu: message {:#x} mailbox unavailable", id)
+                }
+                Error::Rejected(code) => {
+                    fstart_log::error!("smu: message {:#x} response {:#x}", id, *code)
+                }
+            })?;
         if reply.status != OK {
             fstart_log::error!("smu: message {:#x} response {:#x}", id, reply.status);
             return Err(Error::Rejected(reply.status));

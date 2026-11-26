@@ -7,6 +7,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 pub mod acpi;
 #[cfg(feature = "host")]
 pub mod board;
@@ -29,6 +32,7 @@ pub mod security;
 pub mod smbios;
 pub mod smm;
 pub mod stage;
+pub mod task;
 pub mod typed;
 
 pub mod mmio;

@@ -121,14 +121,22 @@ impl Init for Zeppelin {
     /// link training of the board's engines `lanes`.
     fn train_dxio(
         ctx: &Ctx<'_, Self>,
-        FchUp { bridges, nonpci }: FchUp,
+        fch_up: FchUp,
         lanes: &DxioConfig,
+    ) -> Result<Trained, &'static str> {
+        fstart_core::task::block_on(Self::train_dxio_async(ctx, fch_up, lanes))
+    }
+
+    async fn train_dxio_async<'a, 'b>(
+        ctx: &'a Ctx<'a, Self>,
+        FchUp { bridges, nonpci }: FchUp,
+        lanes: Self::Lanes<'b>,
     ) -> Result<Trained, &'static str> {
         static mut DXIO_BUFFERS: dxio::zp::Buffers<MAX_DIES> = dxio::zp::Buffers::new();
         // SAFETY: firmware BSS in the reserved early region below 4 GiB,
         // handed out once here.
         let buffers = unsafe { &mut *core::ptr::addr_of_mut!(DXIO_BUFFERS) };
-        silicon::pre_mp_dxio(
+        silicon::pre_mp_dxio_async(
             &ctx.hw.dies,
             &ctx.hw.fch,
             ctx.msr,
@@ -142,6 +150,7 @@ impl Init for Zeppelin {
             buffers,
             &ctx.clock,
         )
+        .await
     }
 
     /// USB, the SMU, the late DF, the NBIO and FCH environment.

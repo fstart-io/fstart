@@ -321,29 +321,33 @@ pub unsafe fn train<S: Soc>(
     acp::power_off(smn, options.acp_enabled, delay).map_err(Error::Acp)?;
     let mailbox = die.mailbox(TimerDelay(timer));
     let dxio = Dxio::new(&mailbox, S::DXIO_SERVICE);
-    dxio.init()?;
-    dxio.version()?;
-    for variable in [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1] {
-        dxio.set_var(variable, 1, 0)?;
-    }
-    if options.am4 {
-        dxio.set_var(var::SKIP_PSP, 0, 0)?;
-    }
-    let silicon = u32::from(options.silicon_id & (1 << 31) != 0);
-    dxio.set_var(var::MAP_EXACT_MATCH, silicon, 0)?;
-    dxio.load_caps()?;
-    let mut unit = Unit::with_heaps(0, 0, dxio, dma, &heaps, 0..engines.len() as u8)?
-        .ok_or(DxioError::Buffer)?;
-    unit.load_heaps()?;
-    let started = timer.timestamp_us();
-    unit.dxio.sm_start()?;
     let mut training = Training {
         die,
         descriptors,
         mapped: None,
         configured: false,
     };
-    run(&mut unit, &mut training, timer, &RULES, TIMEOUT_US)?;
+    let (started, unit) = fstart_core::task::block_on(async {
+        dxio.init().await?;
+        dxio.version().await?;
+        for variable in [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1] {
+            dxio.set_var(variable, 1, 0).await?;
+        }
+        if options.am4 {
+            dxio.set_var(var::SKIP_PSP, 0, 0).await?;
+        }
+        let silicon = u32::from(options.silicon_id & (1 << 31) != 0);
+        dxio.set_var(var::MAP_EXACT_MATCH, silicon, 0).await?;
+        dxio.load_caps().await?;
+        let mut unit = Unit::with_heaps(0, 0, dxio, dma, &heaps, 0..engines.len() as u8)?
+            .ok_or(DxioError::Buffer)?;
+        unit.load_heaps().await?;
+        let started = timer.timestamp_us();
+        unit.dxio.sm_start().await?;
+        run(&mut unit, &mut training, timer, &RULES, TIMEOUT_US).await?;
+        unit.read_back().await?;
+        Ok::<_, Error>((started, unit))
+    })?;
     // The two requested return events must precede success.
     let mut topology = training.mapped.ok_or(DxioError::StateMachine {
         state: state::MAPPED,
@@ -354,7 +358,6 @@ pub unsafe fn train<S: Soc>(
         }
         .into());
     }
-    unit.read_back()?;
     let inhibit = smn.reg(pcie::link_status(0)).get();
     topology.training_done(unit.engines(), descriptors, inhibit)?;
     if timer.timestamp_us().wrapping_sub(started) >= TIMEOUT_US {

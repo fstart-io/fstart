@@ -385,14 +385,14 @@ const RULES: LoopRules = sequence::rules(false);
 impl<S: Soc, P: ConfigRegionAccess + Copy> Training<'_, S, P> {
     /// Train the die's engines through `unit`, which [`sequence::setup`]
     /// started.
-    fn train<M: crate::smu::SmuMessages + ?Sized>(
+    async fn train_async<M: crate::smu::AsyncSmuMessages + ?Sized>(
         &mut self,
         unit: &mut Unit<'_, M>,
         timer: &impl Timer,
     ) -> Result<(), Error> {
         let die = self.die;
-        run(unit, self, timer, &RULES, TIMEOUT_US)?;
-        unit.read_back()?;
+        run(unit, self, timer, &RULES, TIMEOUT_US).await?;
+        unit.read_back().await?;
         training_done(&die.smn(), unit.engines(), &mut self.topology)?;
         for port in self.topology.ports.iter().flatten() {
             info!(
@@ -597,16 +597,16 @@ fn set_subsystem_ids(smn: &Smn<impl ConfigRegionAccess>, subsystem_id: u32) {
     }
 }
 
-fn post_training<S: Soc, P: ConfigRegionAccess + Copy>(
+async fn post_training_async<S: Soc, P: ConfigRegionAccess + Copy>(
     die: &Die<S, P>,
     topology: &PcieTopology,
     subsystem_id: u32,
-    dxio: &Dxio<'_, impl crate::smu::SmuMessages + ?Sized>,
+    dxio: &Dxio<'_, impl crate::smu::AsyncSmuMessages + ?Sized>,
 ) {
     bridges(&die.smn(), topology);
     // Not on AM4: meaning unknown, the argument depends on the socket count
     // (0xf: one socket). The vendor code ignores the result.
-    let _ = dxio.raw(op::POST_TRAINING, [0, 0xf, 0, 0, 0]);
+    let _ = dxio.raw(op::POST_TRAINING, [0, 0xf, 0, 0, 0]).await;
     interface_after_dxio(die, topology);
     set_subsystem_ids(&die.smn(), subsystem_id);
 }
@@ -648,7 +648,25 @@ pub unsafe fn init<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
     buffers: &'static mut Buffers<N>,
     timer: &impl Timer,
 ) -> Result<[PcieTopology; N], Error> {
-    let delay = &mut TimerDelay(timer);
+    // SAFETY: same contract as `init`.
+    fstart_core::task::block_on(unsafe {
+        init_async(dies, descriptors, subsystem_id, ecam_buses, buffers, timer)
+    })
+}
+
+/// Asynchronous counterpart to [`init`], yielding to the cooperative executor
+/// during SMU DXIO waits so spawned board tasks can overlap with training.
+///
+/// # Safety
+/// Same as [`init`].
+pub async unsafe fn init_async<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
+    dies: &[Die<S, P>],
+    descriptors: &[&[Descriptor]],
+    subsystem_id: u32,
+    ecam_buses: u16,
+    buffers: &'static mut Buffers<N>,
+    timer: &impl Timer,
+) -> Result<[PcieTopology; N], Error> {
     let mut topologies = [PcieTopology::default(); N];
     let board = |die: &Die<S, P>| -> &[Descriptor] {
         descriptors
@@ -671,7 +689,8 @@ pub unsafe fn init<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
         return Ok(topologies);
     };
     smu::MAILBOX
-        .test(&first.smn(), delay)
+        .test_async(&first.smn(), timer)
+        .await
         .map_err(DxioError::Smu)?;
     for die in dies {
         pre_training(&die.smn());
@@ -695,7 +714,7 @@ pub unsafe fn init<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
         let dxio = Dxio::new(mailbox, S::DXIO_SERVICE);
         // Vendor PCD 0xcd/0xce/0xcf select die 0 for the early init cleanup.
         if die.index() == 0 {
-            dxio.reload_sm(0)?;
+            dxio.reload_sm(0).await?;
         }
         if descriptors.is_empty() {
             continue;
@@ -707,19 +726,19 @@ pub unsafe fn init<S: Soc, P: ConfigRegionAccess + Copy, const N: usize>(
         let mut unit = Unit::with_heaps(0, die.index(), dxio, dma, heaps, board_engines)?
             .ok_or(DxioError::Buffer)?;
         // No ancillary data: the descriptors have no tuning records.
-        sequence::setup(&mut unit, false)?;
+        sequence::setup(&mut unit, false).await?;
         let mut training = Training {
             die,
             descriptors,
             topology: PcieTopology::default(),
         };
-        training.train(&mut unit, timer)?;
+        training.train_async(&mut unit, timer).await?;
         *topology = training.topology;
     }
 
     for ((die, topology), mailbox) in dies.iter().zip(&topologies).zip(&mailboxes) {
         let dxio = Dxio::new(mailbox, S::DXIO_SERVICE);
-        post_training(die, topology, subsystem_id, &dxio);
+        post_training_async(die, topology, subsystem_id, &dxio).await;
     }
     let buses: Vec<u8, N> = dies.iter().map(Die::bus).collect();
     for (i, die) in dies.iter().enumerate() {

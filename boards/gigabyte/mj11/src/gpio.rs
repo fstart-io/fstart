@@ -44,6 +44,13 @@ const BMC_READY: u8 = 149;
 /// 500 ms each: the vendor "2 minutes" default.
 const BMC_READY_POLLS: u32 = 240;
 
+/// Configure the BMC ready pin (GPIO149, active-low) and return whether the
+/// BMC is already up without blocking.
+pub fn bmc_ready(gpio: &Gpio<impl Window>) -> bool {
+    let ready = Pad::native_with(BMC_READY, 1, Control::DEBOUNCE.val(5));
+    gpio.configure(&[ready], &[]).is_ok() && gpio.get(BMC_READY) == Ok(false)
+}
+
 /// GbtVgaInitial waits for the BMC before it uses the AST2500 VGA: GPIO149
 /// with debounce 5 on IOMUX function 1, then poll the pin.
 pub fn wait_for_bmc(gpio: &Gpio<impl Window>, clock: &mut impl DelayNs) {

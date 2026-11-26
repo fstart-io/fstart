@@ -20,6 +20,7 @@ serde = { workspace = true, optional = true }
 heapless = { workspace = true }
 zerocopy = { workspace = true }
 embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
 embedded-io = { workspace = true }
 embedded-storage = { workspace = true }
 tock-registers = { workspace = true }

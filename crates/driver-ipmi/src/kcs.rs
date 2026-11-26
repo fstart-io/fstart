@@ -2,6 +2,8 @@
 use crate::Error;
 use embedded_hal::delay::DelayNs;
 use fstart_core::pio::PioRegister;
+use fstart_core::services::Timer;
+use fstart_core::task;
 use tock_registers::{
     LocalRegisterCopy,
     interfaces::{Readable, Writeable},
@@ -63,7 +65,7 @@ pub struct Kcs<D, P = PioRegister<u8>, S = PioRegister<u8, Status::Register>> {
     started: bool,
 }
 
-impl<D: DelayNs> Kcs<D> {
+impl<D> Kcs<D> {
     /// The data port at `base`, status/command `spacing` ports above.
     ///
     /// # Safety
@@ -80,7 +82,6 @@ impl<D: DelayNs> Kcs<D> {
 
 impl<D, P, S> Kcs<D, P, S>
 where
-    D: DelayNs,
     P: Readable<T = u8> + Writeable<T = u8>,
     S: Readable<T = u8, R = Status::Register> + Writeable<T = u8, R = Status::Register>,
 {
@@ -117,6 +118,29 @@ where
             && !status.is_set(Status::OBF)
     }
 
+    /// Drop a stale output byte.
+    fn clear_output(&self) {
+        if self.status.is_set(Status::OBF) {
+            self.data.get();
+        }
+    }
+
+    fn expect_write_state(&self) -> Result<(), Error> {
+        let status = self.status.extract();
+        if status.is_set(Status::OBF) && !status.matches_all(Status::STATE::Write) {
+            return Err(Error::State(status.get()));
+        }
+        self.clear_output();
+        Ok(())
+    }
+}
+
+impl<D, P, S> Kcs<D, P, S>
+where
+    D: DelayNs,
+    P: Readable<T = u8> + Writeable<T = u8>,
+    S: Readable<T = u8, R = Status::Register> + Writeable<T = u8, R = Status::Register>,
+{
     fn wait(
         &mut self,
         done: impl Fn(LocalRegisterCopy<u8, Status::Register>) -> bool,
@@ -135,28 +159,12 @@ where
         self.wait(|status| !status.is_set(Status::IBF))
     }
 
-    /// Drop a stale output byte.
-    fn clear_output(&self) {
-        if self.status.is_set(Status::OBF) {
-            self.data.get();
-        }
-    }
-
     fn write_command(&mut self, command: u8) -> Result<(), Error> {
         self.wait_input_empty()?;
         self.clear_output();
         self.status.set(command);
         self.started |= command == START_WRITE;
         self.wait_input_empty()?;
-        self.clear_output();
-        Ok(())
-    }
-
-    fn expect_write_state(&self) -> Result<(), Error> {
-        let status = self.status.extract();
-        if status.is_set(Status::OBF) && !status.matches_all(Status::STATE::Write) {
-            return Err(Error::State(status.get()));
-        }
         self.clear_output();
         Ok(())
     }
@@ -306,6 +314,203 @@ where
         };
         // No indexing: this also runs in SMM images, which take no panic
         // formatting code.
+        let buffer: &'a [u8] = buffer;
+        match buffer.get(..length).ok_or(Error::Short)? {
+            [_, _, 0, data @ ..] => Ok(data),
+            [_, _, code, ..] => Err(Error::Completion(*code)),
+            _ => Err(Error::Short),
+        }
+    }
+}
+
+impl<D, P, S> Kcs<D, P, S>
+where
+    D: Timer,
+    P: Readable<T = u8> + Writeable<T = u8>,
+    S: Readable<T = u8, R = Status::Register> + Writeable<T = u8, R = Status::Register>,
+{
+    async fn wait_async(
+        &self,
+        start: u64,
+        budget_us: u64,
+        done: impl Fn(LocalRegisterCopy<u8, Status::Register>) -> bool,
+    ) -> Result<(), Error> {
+        let elapsed = self.delay.timestamp_us().wrapping_sub(start);
+        let remaining = budget_us.saturating_sub(elapsed);
+        task::poll_until(&self.delay, remaining, || {
+            done(self.status.extract()).then_some(())
+        })
+        .await
+        .ok_or(Error::Timeout)
+    }
+
+    async fn wait_input_empty_async(&self, start: u64, budget_us: u64) -> Result<(), Error> {
+        self.wait_async(start, budget_us, |status| !status.is_set(Status::IBF))
+            .await
+    }
+
+    async fn write_command_async(
+        &mut self,
+        command: u8,
+        start: u64,
+        budget_us: u64,
+    ) -> Result<(), Error> {
+        self.wait_input_empty_async(start, budget_us).await?;
+        self.clear_output();
+        self.status.set(command);
+        self.started |= command == START_WRITE;
+        self.wait_input_empty_async(start, budget_us).await?;
+        self.clear_output();
+        Ok(())
+    }
+
+    async fn write_data_async(
+        &mut self,
+        byte: u8,
+        start: u64,
+        budget_us: u64,
+    ) -> Result<(), Error> {
+        self.data.set(byte);
+        self.wait_input_empty_async(start, budget_us).await?;
+        self.expect_write_state()
+    }
+
+    async fn send_async(
+        &mut self,
+        netfn: u8,
+        command: u8,
+        request: &[u8],
+        start: u64,
+        budget_us: u64,
+    ) -> Result<(), Error> {
+        self.write_command_async(START_WRITE, start, budget_us)
+            .await?;
+        self.write_data_async(netfn << 2, start, budget_us).await?;
+        let (&last, body) = request
+            .split_last()
+            .map_or((&command, &[][..]), |(last, rest)| (last, rest));
+        if !request.is_empty() {
+            self.write_data_async(command, start, budget_us).await?;
+        }
+        for &byte in body {
+            self.write_data_async(byte, start, budget_us).await?;
+        }
+        self.write_command_async(END_WRITE, start, budget_us)
+            .await?;
+        self.wait_input_empty_async(start, budget_us).await?;
+        self.expect_write_state()?;
+        self.data.set(last);
+        Ok(())
+    }
+
+    async fn receive_async(
+        &mut self,
+        buffer: &mut [u8],
+        start: u64,
+        budget_us: u64,
+    ) -> Result<usize, Error> {
+        let mut length = 0;
+        loop {
+            self.wait_input_empty_async(start, budget_us).await?;
+            let status = self.status.extract();
+            match status.read_as_enum(Status::STATE) {
+                Some(Status::STATE::Value::Idle) => {
+                    self.clear_output();
+                    return Ok(length);
+                }
+                Some(Status::STATE::Value::Read) => {}
+                _ => return Err(Error::State(status.get())),
+            }
+            self.wait_async(start, budget_us, |status| status.is_set(Status::OBF))
+                .await?;
+            let byte = self.data.get();
+            if let Some(slot) = buffer.get_mut(length) {
+                *slot = byte;
+                length += 1;
+            }
+            self.data.set(READ_BYTE);
+        }
+    }
+
+    async fn error_exit_async(&mut self, start: u64, budget_us: u64) -> Result<u8, Error> {
+        self.wait_input_empty_async(start, budget_us).await?;
+        self.status.set(GET_STATUS_ABORT);
+        self.wait_input_empty_async(start, budget_us).await?;
+        self.clear_output();
+        self.data.set(0);
+        self.wait_input_empty_async(start, budget_us).await?;
+        let status = self.status.extract();
+        if !status.matches_all(Status::STATE::Read) {
+            return Err(Error::State(status.get()));
+        }
+        self.wait_async(start, budget_us, |status| status.is_set(Status::OBF))
+            .await?;
+        let code = self.data.get();
+        self.data.set(READ_BYTE);
+        self.wait_input_empty_async(start, budget_us).await?;
+        let status = self.status.extract();
+        if !status.matches_all(Status::STATE::Idle) {
+            return Err(Error::State(status.get()));
+        }
+        self.wait_async(start, budget_us, |status| status.is_set(Status::OBF))
+            .await?;
+        self.data.get();
+        Ok(code)
+    }
+
+    async fn error_exits_async(&mut self, start: u64, budget_us: u64) -> Result<u8, Error> {
+        for _ in 0..ABORT_ATTEMPTS {
+            if let Ok(code) = self.error_exit_async(start, budget_us).await
+                && self.idle()
+            {
+                return Ok(code);
+            }
+        }
+        Err(Error::Stuck)
+    }
+
+    /// Asynchronous counterpart to [`Self::abort`], polling via
+    /// [`task::poll_until`] with a monotonic deadline so sibling tasks can run.
+    pub async fn abort_async(&mut self) -> Result<u8, Error> {
+        let start = self.delay.timestamp_us();
+        let budget_us = u64::from(self.poll_budget) * 10;
+        self.error_exits_async(start, budget_us).await
+    }
+
+    /// Asynchronous counterpart to [`Self::request`], polling via
+    /// [`task::poll_until`] with a monotonic deadline so sibling tasks (e.g.
+    /// SMU DXIO waits or [`task::join`]) can overlap with BMC KCS latency.
+    ///
+    /// Kept separate from the synchronous [`Self::request`] path so SMM
+    /// images (which enforce link-time panic absence) link only the
+    /// synchronous implementation.
+    pub async fn request_async<'a>(
+        &mut self,
+        netfn: u8,
+        command: u8,
+        request: &[u8],
+        buffer: &'a mut [u8],
+    ) -> Result<&'a [u8], Error> {
+        let start = self.delay.timestamp_us();
+        let total_us = u64::from(self.poll_budget) * 10;
+        let reserve_us = total_us.div_ceil(u64::from(ABORT_SHARE));
+        let request_budget = total_us - reserve_us;
+        self.started = false;
+        let result = match self
+            .send_async(netfn, command, request, start, request_budget)
+            .await
+        {
+            Ok(()) => self.receive_async(buffer, start, request_budget).await,
+            Err(error) => Err(error),
+        };
+        let length = match result {
+            Ok(length) => length,
+            Err(error) if !self.started => return Err(error),
+            Err(error) => {
+                self.error_exits_async(start, total_us).await?;
+                return Err(error);
+            }
+        };
         let buffer: &'a [u8] = buffer;
         match buffer.get(..length).ok_or(Error::Short)? {
             [_, _, 0, data @ ..] => Ok(data),
@@ -759,5 +964,91 @@ mod tests {
         busy.borrow_mut().busy = true;
         assert_eq!(notify.report_on(kcs(&busy), 0xc5), None);
         assert!(busy.into_inner().writes.is_empty());
+    }
+
+    #[test]
+    fn async_request_matches_blocking_wire_format_and_overlaps_via_join() {
+        let blocking_bmc = RefCell::new(Bmc {
+            answer: vec![0x2c << 2, 0x20, 0, 0xaa, 0xbb],
+            ..Bmc::default()
+        });
+        let async_bmc = RefCell::new(Bmc {
+            answer: vec![0x2c << 2, 0x20, 0, 0xaa, 0xbb],
+            ..Bmc::default()
+        });
+        let mut sync_buf = [0; 8];
+        let expected = kcs(&blocking_bmc)
+            .request(0x2e, 0x20, &[1, 2, 3], &mut sync_buf)
+            .unwrap()
+            .to_vec();
+
+        let timer = fstart_core::services::ManualTimer::ticking();
+        let mut async_kcs = Kcs::with_registers(Data(&async_bmc), Command(&async_bmc), &timer);
+        let mut async_buf = [0; 8];
+        let (kcs_res, sibling_done) = task::block_on(task::join(
+            async {
+                async_kcs
+                    .request_async(0x2e, 0x20, &[1, 2, 3], &mut async_buf)
+                    .await
+                    .map(|d| d.to_vec())
+            },
+            async {
+                task::delay_us(&timer, 25).await;
+                true
+            },
+        ));
+        assert!(sibling_done);
+        assert_eq!(kcs_res.unwrap(), expected);
+
+        let blocking_bmc = blocking_bmc.into_inner();
+        let async_bmc = async_bmc.into_inner();
+        assert_eq!(async_bmc.request, blocking_bmc.request);
+        assert_eq!(async_bmc.writes, blocking_bmc.writes);
+        assert_eq!((async_bmc.state, async_bmc.output), (IDLE, None));
+    }
+
+    #[test]
+    fn async_request_handles_completion_error_abort_and_stuck() {
+        let timer = fstart_core::services::ManualTimer::ticking();
+        let bmc = RefCell::new(Bmc {
+            answer: vec![0x04, 0x01, 0xc1],
+            ..Bmc::default()
+        });
+        let mut buf = [0; 8];
+        let mut client = Kcs::with_registers(Data(&bmc), Command(&bmc), &timer);
+        assert_eq!(
+            task::block_on(client.request_async(0x00, 0x01, &[], &mut buf)),
+            Err(Error::Completion(0xc1))
+        );
+        assert_eq!(bmc.into_inner().request, [0x00, 0x01]);
+
+        let failing = RefCell::new(Bmc {
+            answer: vec![0x05 << 2, 0x02, 0, 1, 2],
+            fail_after: Some(2),
+            ..Bmc::default()
+        });
+        let mut client =
+            Kcs::with_registers(Data(&failing), Command(&failing), &timer).with_poll_budget(64);
+        assert!(matches!(
+            task::block_on(client.request_async(0x04, 0x02, &[1, 2, 3], &mut buf)),
+            Err(Error::Timeout | Error::State(_))
+        ));
+        assert!(client.idle());
+        let failing = failing.into_inner();
+        assert_eq!((failing.state, failing.output), (IDLE, None));
+        assert!(failing.writes.contains(&(true, GET_STATUS_ABORT)));
+
+        let deaf = RefCell::new(Bmc {
+            answer: vec![0x05 << 2, 0x02, 0],
+            fail_after: Some(1),
+            deaf: true,
+            ..Bmc::default()
+        });
+        let mut client =
+            Kcs::with_registers(Data(&deaf), Command(&deaf), &timer).with_poll_budget(64);
+        assert_eq!(
+            task::block_on(client.request_async(0x04, 0x02, &[1], &mut buf)),
+            Err(Error::Stuck)
+        );
     }
 }

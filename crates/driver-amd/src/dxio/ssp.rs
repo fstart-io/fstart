@@ -16,7 +16,7 @@ use super::lanes::{Engine, EngineKind, Speed};
 use super::{DxioPolicy, PerstPolicy};
 use crate::cpu::Silicon;
 use crate::dxio::{DxioError, Hooks, LoopRules, Unit, finish_unit, prop, run, state, var};
-use crate::smu::SmuMessages;
+use crate::smu::AsyncSmuMessages;
 
 /// The DXIO SMU message on Rome and Milan (`smu::v11::msg::DXIO`).
 pub const DXIO_MSG: u32 = 0x08;
@@ -51,76 +51,94 @@ pub fn speed_fixup(engine: &mut Engine<'_>, fuse: Option<u32>) {
 }
 
 /// Everything up to and including SM_START for one socket.
-pub fn setup<M: SmuMessages + ?Sized>(
+pub async fn setup<M: AsyncSmuMessages + ?Sized>(
     generation: Silicon,
     unit: &mut Unit<'_, M>,
     policy: &DxioPolicy,
 ) -> Result<(), DxioError> {
-    let d = &unit.dxio;
     let p = &policy.sp3;
     let milan = generation == Silicon::Gn;
     if policy.early_train_unit == Some((unit.socket, 0)) {
-        d.reload_sm(policy.reload_sm_arg as u32)?;
+        unit.dxio.reload_sm(policy.reload_sm_arg as u32).await?;
     }
-    unit.version = Some(d.version()?);
-    d.init()?;
+    unit.version = Some(unit.dxio.version().await?);
+    unit.dxio.init().await?;
     let slip = p.slip_interval.map_or((0, 0), |v| (1, v as u32));
     if let Some((mask, value)) = p.clock_gating {
-        d.set_prop(
-            prop::CLOCK_GATING,
-            (mask & 0x7F) as u32,
-            (value & 0x7F) as u32,
-            0,
-        )?;
+        unit.dxio
+            .set_prop(
+                prop::CLOCK_GATING,
+                (mask & 0x7F) as u32,
+                (value & 0x7F) as u32,
+                0,
+            )
+            .await?;
     }
     if milan {
         // `ffd0f53e`.
-        d.set_var(var::PCIE_COMPL, p.pcie_compliance as u32, 0)?;
-        d.set_var(var::SLIP_INTERVAL, slip.0, slip.1)?;
+        unit.dxio
+            .set_var(var::PCIE_COMPL, p.pcie_compliance as u32, 0)
+            .await?;
+        unit.dxio
+            .set_var(var::SLIP_INTERVAL, slip.0, slip.1)
+            .await?;
         if p.ntb_hotplug {
-            d.set_var(var::NTB_HP_EN, 1, 0)?;
+            unit.dxio.set_var(var::NTB_HP_EN, 1, 0).await?;
         }
-        d.set_var(
-            var::POWER_OFF_DELAY,
-            p.power_off_delay.0 as u32,
-            p.power_off_delay.1 as u32,
-        )?;
+        unit.dxio
+            .set_var(
+                var::POWER_OFF_DELAY,
+                p.power_off_delay.0 as u32,
+                p.power_off_delay.1 as u32,
+            )
+            .await?;
     } else {
         // `ffdfd42f`, then SKIP_PSP = 1 until the policy clears it.
-        d.set_var(var::SLIP_INTERVAL, slip.0, slip.1)?;
-        d.set_var(var::SKIP_PSP, 1, 0)?;
+        unit.dxio
+            .set_var(var::SLIP_INTERVAL, slip.0, slip.1)
+            .await?;
+        unit.dxio.set_var(var::SKIP_PSP, 1, 0).await?;
     }
-    [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1]
-        .iter()
-        .try_for_each(|&v| d.set_var(v, 1, 0))?;
+    for v in [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1] {
+        unit.dxio.set_var(v, 1, 0).await?;
+    }
     if p.map_exact_match {
-        d.set_var(var::MAP_EXACT_MATCH, 1, 0)?;
+        unit.dxio.set_var(var::MAP_EXACT_MATCH, 1, 0).await?;
     }
-    d.set_var(var::PHY_PROG, p.phy_prog as u32, 0)?;
+    unit.dxio
+        .set_var(var::PHY_PROG, p.phy_prog as u32, 0)
+        .await?;
     if milan {
-        d.set_var(var::SKIP_PSP, p.skip_psp as u32, 0)?;
+        unit.dxio
+            .set_var(var::SKIP_PSP, p.skip_psp as u32, 0)
+            .await?;
         if let Some(s3) = p.s3_mode {
-            d.set_var(var::S3_MODE, s3 as u32, 0)?;
+            unit.dxio.set_var(var::S3_MODE, s3 as u32, 0).await?;
         }
     } else {
         if !p.skip_psp {
-            d.set_var(var::SKIP_PSP, 0, 0)?;
+            unit.dxio.set_var(var::SKIP_PSP, 0, 0).await?;
         }
         if p.ntb_hotplug {
-            d.set_var(var::NTB_HP_EN, 1, 0)?;
+            unit.dxio.set_var(var::NTB_HP_EN, 1, 0).await?;
         }
     }
-    d.load_caps()?;
-    unit.load_heaps()?;
+    unit.dxio.load_caps().await?;
+    unit.load_heaps().await?;
     if let Some([reset, rxpoll, l0poll]) = p.training_timers {
-        d.set_prop(prop::TRAINING_TIMERS, reset, rxpoll, l0poll)?;
+        unit.dxio
+            .set_prop(prop::TRAINING_TIMERS, reset, rxpoll, l0poll)
+            .await?;
     }
-    p.set_conf
+    for (code, v) in p
+        .set_conf
         .iter()
         .enumerate()
         .filter_map(|(code, v)| v.map(|v| (code as u32, v)))
-        .try_for_each(|(code, v)| d.set_prop(prop::SET_CONF, code, v, 0))?;
-    d.sm_start()
+    {
+        unit.dxio.set_prop(prop::SET_CONF, code, v, 0).await?;
+    }
+    unit.dxio.sm_start().await
 }
 
 /// Pass-1 rules: pause at CONFIGURED (PERST on request) or VETTING
@@ -143,7 +161,7 @@ pub const fn rules(policy: &DxioPolicy) -> LoopRules {
 }
 
 /// Two-pass training of every socket.
-pub fn train<M, H, T>(
+pub async fn train<M, H, T>(
     generation: Silicon,
     units: &mut [Unit<'_, M>],
     hooks: &mut H,
@@ -151,21 +169,22 @@ pub fn train<M, H, T>(
     policy: &DxioPolicy,
 ) -> Result<(), DxioError>
 where
-    M: SmuMessages + ?Sized,
+    M: AsyncSmuMessages + ?Sized,
     H: Hooks<Error = DxioError> + ?Sized,
     T: Timer + ?Sized,
 {
     let rules = rules(policy);
-    units.iter_mut().try_for_each(|u| {
-        setup(generation, u, policy)?;
-        run(u, hooks, timer, &rules, policy.timeout_us).map(|_| ())
-    })?;
+    for u in units.iter_mut() {
+        setup(generation, u, policy).await?;
+        run(u, hooks, timer, &rules, policy.timeout_us).await?;
+    }
     if policy.perst == PerstPolicy::Deferred {
         hooks.release_all();
     }
-    units
-        .iter_mut()
-        .try_for_each(|u| finish_unit(u, hooks, timer, &rules, policy.timeout_us))
+    for u in units.iter_mut() {
+        finish_unit(u, hooks, timer, &rules, policy.timeout_us).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -244,13 +263,13 @@ mod tests {
         };
         let mut units = [mk(&s0, 0, &mut w0), mk(&s1, 1, &mut w1)];
         let mut hooks = Recorder::default();
-        train(
+        fstart_core::task::block_on(train(
             Silicon::Ssp,
             &mut units,
             &mut hooks,
             &ManualTimer::ticking(),
             &policy,
-        )
+        ))
         .unwrap();
 
         use op::*;
@@ -357,13 +376,13 @@ mod tests {
         let (m, n) = crate::nbio::nbio_tests::nbio(Silicon::Ssp, 0, 0);
         let nbios = [n];
         let mut setup = PortSetup::new(Silicon::Ssp, &nbios, &b, Count(0));
-        train(
+        fstart_core::task::block_on(train(
             Silicon::Ssp,
             &mut units,
             &mut setup,
             &ManualTimer::ticking(),
             &policy,
-        )
+        ))
         .unwrap();
         setup.finish();
         let p = setup.ports()[0];
@@ -399,13 +418,13 @@ mod tests {
         .unwrap()
         .unwrap()];
         let mut hooks = Recorder::default();
-        train(
+        fstart_core::task::block_on(train(
             Silicon::Gn,
             &mut units,
             &mut hooks,
             &ManualTimer::ticking(),
             &policy,
-        )
+        ))
         .unwrap();
         let vars: std::vec::Vec<(u32, u32, u32)> = smu
             .args()

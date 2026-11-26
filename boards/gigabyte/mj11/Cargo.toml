@@ -47,6 +47,7 @@ smm = ["fstart-platform-amd/smm"]
 
 [dependencies]
 fstart-platform-amd = { workspace = true }
+fstart-core = { workspace = true, features = ["alloc"] }
 fstart-acpi = { workspace = true, features = ["x86"] }
 fstart-driver-amd = { workspace = true }
 fstart-driver-aspeed = { workspace = true }
@@ -61,10 +62,6 @@ fstart-driver-ipmi = { workspace = true, features = ["acpi"] }
 fstart-arch = { workspace = true, features = ["x86_64"] }
 zerocopy = { workspace = true }
 tock-registers = { workspace = true }
-
-[dev-dependencies]
-# The pinned ACPI tables (src/acpi.rs).
-fstart-core = { workspace = true }
 
 # The only stage, which the PSP copies to DRAM: src/bin/stage.rs.
 

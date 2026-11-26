@@ -183,6 +183,18 @@ pub trait Init: Sized + 'static {
         fch_up: Self::FchUp,
         lanes: Self::Lanes<'_>,
     ) -> Result<Self::Trained, &'static str>;
+    /// Asynchronous counterpart to [`Init::train_dxio`], yielding to the
+    /// cooperative executor during SMU DXIO waits so spawned board tasks can
+    /// overlap with link training. SoCs that do not override this fall back
+    /// to [`Init::train_dxio`].
+    fn train_dxio_async<'a, 'b>(
+        ctx: &'a Ctx<'a, Self>,
+        fch_up: Self::FchUp,
+        lanes: Self::Lanes<'b>,
+    ) -> impl core::future::Future<Output = Result<Self::Trained, &'static str>> + use<'a, 'b, Self>
+    {
+        async move { Self::train_dxio(ctx, fch_up, lanes) }
+    }
     /// The rest of the silicon init before MP.
     fn init_chipset(
         ctx: &Ctx<'_, Self>,

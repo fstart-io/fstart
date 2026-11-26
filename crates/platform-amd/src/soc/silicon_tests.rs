@@ -336,6 +336,6 @@ mod picasso {
         // The final register state is what the hardware was tested with,
         // the log follows the shared Family 17h sequences.
         assert_eq!(hw.state(), 0xc446_ef2a_df4d_6ca4);
-        assert_eq!(hw.fingerprint(), (3489, 0xe28d_bd56_8b80_fac0));
+        assert_eq!(hw.fingerprint(), (3482, 0x482a_a6f2_21c7_e19f));
     }
 }

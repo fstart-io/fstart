@@ -25,7 +25,7 @@
 //! calls [`train`] with a [`ports::PortSetup`] as the hooks, then
 //! [`ports::PortSetup::finish`] and, with hotplug slots, [`hotplug`].
 use crate::cpu::Silicon;
-use crate::smu::{ARGUMENT_COUNT, Error as SmuError, SmuMessages};
+use crate::smu::{ARGUMENT_COUNT, Error as SmuError};
 use core::ptr::NonNull;
 use core::sync::atomic::{Ordering, compiler_fence};
 pub use descriptor::*;
@@ -291,38 +291,43 @@ pub struct Dxio<'s, M: ?Sized> {
     msg: u32,
 }
 
-impl<'s, M: SmuMessages + ?Sized> Dxio<'s, M> {
+impl<'s, M: ?Sized> Dxio<'s, M> {
     /// DXIO over `smu` with SMU message `msg` (V9 0x0F, V11 0x08).
     pub fn new(smu: &'s M, msg: u32) -> Self {
         Self { smu, msg }
     }
+}
 
+impl<'s, M: crate::smu::AsyncSmuMessages + ?Sized> Dxio<'s, M> {
     /// Send `op` with request words `req`; returns the six reply words
     /// without judging the result.
-    pub fn raw(&self, op: u32, req: [u32; 5]) -> Result<[u32; ARGUMENT_COUNT], DxioError> {
+    pub async fn raw(&self, op: u32, req: [u32; 5]) -> Result<[u32; ARGUMENT_COUNT], DxioError> {
         let mut args = [op, req[0], req[1], req[2], req[3], req[4]];
-        self.smu.send(self.msg, &mut args).inspect_err(|e| {
-            let (status, timeout) = match e {
-                SmuError::Rejected(s) => (*s, false),
-                SmuError::BusyTimeout | SmuError::CompletionTimeout | SmuError::Unavailable => {
-                    (0, true)
-                }
-            };
-            fstart_log::error!(
-                "dxio: SMU message {:#x} op {:#x}: status {:#x} timeout {}",
-                self.msg,
-                op,
-                status,
-                timeout
-            );
-        })?;
+        self.smu
+            .send_async(self.msg, &mut args)
+            .await
+            .inspect_err(|e| {
+                let (status, timeout) = match e {
+                    SmuError::Rejected(s) => (*s, false),
+                    SmuError::BusyTimeout | SmuError::CompletionTimeout | SmuError::Unavailable => {
+                        (0, true)
+                    }
+                };
+                fstart_log::error!(
+                    "dxio: SMU message {:#x} op {:#x}: status {:#x} timeout {}",
+                    self.msg,
+                    op,
+                    status,
+                    timeout
+                );
+            })?;
         Ok(args)
     }
 
     /// Send `op` and require result OK. Rome normalizes
     /// `(word & 0xFFFFFF00) == 0x300` to OK; the low byte carries the code.
-    pub fn rpc(&self, op: u32, req: [u32; 5]) -> Result<[u32; ARGUMENT_COUNT], DxioError> {
-        let r = self.raw(op, req)?;
+    pub async fn rpc(&self, op: u32, req: [u32; 5]) -> Result<[u32; ARGUMENT_COUNT], DxioError> {
+        let r = self.raw(op, req).await?;
         fstart_log::info!(
             "dxio: op {:#x} req {:x} {:x} {:x} {:x} {:x} -> {:x} {:x} {:x} {:x} {:x} {:x}",
             op,
@@ -344,56 +349,64 @@ impl<'s, M: SmuMessages + ?Sized> Dxio<'s, M> {
         }
     }
 
-    pub fn init(&self) -> Result<(), DxioError> {
-        self.rpc(op::INIT, [0; 5]).map(|_| ())
+    pub async fn init(&self) -> Result<(), DxioError> {
+        self.rpc(op::INIT, [0; 5]).await.map(|_| ())
     }
 
     /// `(major, minor)`.
-    pub fn version(&self) -> Result<(u32, u32), DxioError> {
-        self.rpc(op::GET_VERSION, [0; 5]).map(|r| (r[2], r[3]))
+    pub async fn version(&self) -> Result<(u32, u32), DxioError> {
+        self.rpc(op::GET_VERSION, [0; 5])
+            .await
+            .map(|r| (r[2], r[3]))
     }
 
-    pub fn set_var(&self, var: u32, value: u32, value2: u32) -> Result<(), DxioError> {
+    pub async fn set_var(&self, var: u32, value: u32, value2: u32) -> Result<(), DxioError> {
         self.rpc(op::SET_VARIABLE, [var, value, value2, 0, 0])
+            .await
             .map(|_| ())
     }
 
     /// `{1, sub, a, b, c}`.
-    pub fn set_prop(&self, sub: u32, a: u32, b: u32, c: u32) -> Result<(), DxioError> {
+    pub async fn set_prop(&self, sub: u32, a: u32, b: u32, c: u32) -> Result<(), DxioError> {
         self.rpc(op::SET_RUNTIME_PROP, [1, sub, a, b, c])
+            .await
             .map(|_| ())
     }
 
-    pub fn load_caps(&self) -> Result<(), DxioError> {
-        self.rpc(op::LOAD_CAPS, [0; 5]).map(|_| ())
+    pub async fn load_caps(&self) -> Result<(), DxioError> {
+        self.rpc(op::LOAD_CAPS, [0; 5]).await.map(|_| ())
     }
 
     /// LOAD_DATA of `dwords` at `addr` (below 4 GiB).
-    pub fn load_heap(&self, heap: u32, addr: u32, dwords: u32) -> Result<(), DxioError> {
+    pub async fn load_heap(&self, heap: u32, addr: u32, dwords: u32) -> Result<(), DxioError> {
         self.rpc(op::LOAD_DATA, [0, addr, dwords, 0, heap])
+            .await
             .map(|_| ())
     }
 
     /// An empty heap (flag 1): heaps 2 and 5 are always sent this way.
-    pub fn load_empty(&self, heap: u32) -> Result<(), DxioError> {
-        self.rpc(op::LOAD_DATA, [0, 0, 0, 1, heap]).map(|_| ())
-    }
-
-    pub fn get_engine_cfg(&self, addr: u32, dwords: u32) -> Result<(), DxioError> {
-        self.rpc(op::GET_ENGINE_CFG, [0, addr, dwords, 0, 0])
+    pub async fn load_empty(&self, heap: u32) -> Result<(), DxioError> {
+        self.rpc(op::LOAD_DATA, [0, 0, 0, 1, heap])
+            .await
             .map(|_| ())
     }
 
-    pub fn reload_sm(&self, arg: u32) -> Result<(), DxioError> {
-        self.rpc(op::RELOAD_SM, [arg, 0, 0, 0, 0]).map(|_| ())
+    pub async fn get_engine_cfg(&self, addr: u32, dwords: u32) -> Result<(), DxioError> {
+        self.rpc(op::GET_ENGINE_CFG, [0, addr, dwords, 0, 0])
+            .await
+            .map(|_| ())
     }
 
-    pub fn sm_start(&self) -> Result<(), DxioError> {
-        self.rpc(op::SM_START, [0; 5]).map(|_| ())
+    pub async fn reload_sm(&self, arg: u32) -> Result<(), DxioError> {
+        self.rpc(op::RELOAD_SM, [arg, 0, 0, 0, 0]).await.map(|_| ())
     }
 
-    pub fn sm_resume(&self) -> Result<(), DxioError> {
-        self.rpc(op::SM_RESUME, [0; 5]).map(|_| ())
+    pub async fn sm_start(&self) -> Result<(), DxioError> {
+        self.rpc(op::SM_START, [0; 5]).await.map(|_| ())
+    }
+
+    pub async fn sm_resume(&self) -> Result<(), DxioError> {
+        self.rpc(op::SM_RESUME, [0; 5]).await.map(|_| ())
     }
 }
 
@@ -459,7 +472,7 @@ pub struct Unit<'s, M: ?Sized> {
     pub version: Option<(u32, u32)>,
 }
 
-impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
+impl<'s, M: ?Sized> Unit<'s, M> {
     /// A unit over `dxio` with `heaps` placed in `dma`; `board` is the
     /// board engine index of each engine in heap 3.
     pub fn with_heaps(
@@ -499,28 +512,34 @@ impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
             board: &self.board,
         }
     }
+}
 
+impl<'s, M: crate::smu::AsyncSmuMessages + ?Sized> Unit<'s, M> {
     /// Heaps 6 (if any), 2, 5 and 3, the order of every generation.
-    pub fn load_heaps(&self) -> Result<(), DxioError> {
+    pub async fn load_heaps(&self) -> Result<(), DxioError> {
         if self.anc_dwords != 0 {
-            self.dxio.load_heap(
-                heap::ANCILLARY,
-                self.dma.phys(ANCILLARY_OFFSET),
-                self.anc_dwords,
-            )?;
+            self.dxio
+                .load_heap(
+                    heap::ANCILLARY,
+                    self.dma.phys(ANCILLARY_OFFSET),
+                    self.anc_dwords,
+                )
+                .await?;
         }
-        self.dxio.load_empty(heap::MACPCS)?;
-        self.dxio.load_empty(heap::GPIO)?;
+        self.dxio.load_empty(heap::MACPCS).await?;
+        self.dxio.load_empty(heap::GPIO).await?;
         self.dxio
             .load_heap(heap::ENGINE_CONFIG, self.dma.phys(0), self.engine_dwords)
+            .await
     }
 
     /// GetEngineCfg into the DMA window and copy the engines back.
-    pub fn read_back(&mut self) -> Result<(), DxioError> {
+    pub async fn read_back(&mut self) -> Result<(), DxioError> {
         self.dma
             .write(0, &[0; ENGINE_HEAP_MAX][..self.engine_dwords as usize * 4]);
         self.dxio
-            .get_engine_cfg(self.dma.phys(0), self.engine_dwords)?;
+            .get_engine_cfg(self.dma.phys(0), self.engine_dwords)
+            .await?;
         let mut buf = [0u8; ENGINE_HEAP_MAX];
         self.dma
             .read(0, &mut buf[..self.engine_dwords as usize * 4]);
@@ -558,7 +577,7 @@ pub struct LoopRules {
 /// Run the state machine of `unit` until DONE, a pause state or an error
 /// (Rome `ffe02383`, Milan `ffd156a0`, Naples `ffdf13fc`). Bounded by
 /// `timeout_us` where the donor polls forever.
-pub fn run<M, H, T>(
+pub async fn run<M, H, T>(
     unit: &mut Unit<'_, M>,
     hooks: &mut H,
     timer: &T,
@@ -566,7 +585,7 @@ pub fn run<M, H, T>(
     timeout_us: u64,
 ) -> Result<Stop, H::Error>
 where
-    M: SmuMessages + ?Sized,
+    M: crate::smu::AsyncSmuMessages + ?Sized,
     H: Hooks + ?Sized,
     T: Timer + ?Sized,
 {
@@ -577,7 +596,7 @@ where
         if timer.timestamp_us().wrapping_sub(start) >= timeout_us {
             return Err(DxioError::Timeout.into());
         }
-        let r = unit.dxio.raw(op::GET_SM_STATE, [0; 5])?;
+        let r = unit.dxio.raw(op::GET_SM_STATE, [0; 5]).await?;
         let (res, kind, st) = (result_of(r[0]), r[1] & 0xFF, r[2]);
         // Bring-up trace: every distinct state-machine reply.
         if last != Some(r) {
@@ -604,7 +623,7 @@ where
             (result::OK, reply::SM) => {
                 match st {
                     state::MAPPED => {
-                        unit.read_back()?;
+                        unit.read_back().await?;
                         hooks.mapped(&unit.view())?;
                     }
                     state::CONFIGURED => hooks.configured(&unit.view())?,
@@ -622,7 +641,8 @@ where
                     hooks.perst(&unit.view(), &r);
                     // Deassert (state ≠ 0) waits once per loop call.
                     if st != 0 && !delayed && rules.perst_deassert_delay_ms != 0 {
-                        timer.delay_ms(rules.perst_deassert_delay_ms as u64);
+                        fstart_core::task::delay_ms(timer, rules.perst_deassert_delay_ms as u64)
+                            .await;
                         delayed = true;
                     }
                 }
@@ -631,16 +651,16 @@ where
             (result::OK, _) => {}
             (other, _) => return Err(DxioError::NoReturn(other).into()),
         }
-        unit.dxio.sm_resume()?;
+        unit.dxio.sm_resume().await?;
         if rules.resume_delay_us != 0 {
-            timer.delay_us(u64::from(rules.resume_delay_us));
+            fstart_core::task::delay_us(timer, u64::from(rules.resume_delay_us)).await;
         }
     }
 }
 
 /// Resume a paused unit and run it to DONE, then read the engines back
 /// (the end of every orchestration: 0x308, loop, 0x14).
-pub fn finish_unit<M, H, T>(
+pub async fn finish_unit<M, H, T>(
     unit: &mut Unit<'_, M>,
     hooks: &mut H,
     timer: &T,
@@ -648,20 +668,20 @@ pub fn finish_unit<M, H, T>(
     timeout_us: u64,
 ) -> Result<(), H::Error>
 where
-    M: SmuMessages + ?Sized,
+    M: crate::smu::AsyncSmuMessages + ?Sized,
     H: Hooks + ?Sized,
     T: Timer + ?Sized,
 {
     if unit.paused {
         unit.paused = false;
-        unit.dxio.sm_resume()?;
+        unit.dxio.sm_resume().await?;
         let rules = LoopRules {
             pause_at: &[],
             ..*rules
         };
-        run(unit, hooks, timer, &rules, timeout_us)?;
+        run(unit, hooks, timer, &rules, timeout_us).await?;
     }
-    Ok(unit.read_back()?)
+    Ok(unit.read_back().await?)
 }
 
 /// When PERST# is released (§3.4).
@@ -796,7 +816,7 @@ pub trait PcieReset {
     fn release(&mut self, socket: u8, die: u8);
 }
 
-impl<'s, M: SmuMessages + ?Sized> Unit<'s, M> {
+impl<'s, M: ?Sized> Unit<'s, M> {
     /// Encode the board engines of `(socket, die)` and place both heaps in
     /// `dma`, with the platform-wide `ancillary` data (for example the
     /// optional APOB PHY override) next to the board tuning. `None` when the
@@ -855,13 +875,29 @@ pub fn train<M, H, T>(
     policy: &DxioPolicy,
 ) -> Result<(), DxioError>
 where
-    M: SmuMessages + ?Sized,
+    M: crate::smu::AsyncSmuMessages + ?Sized,
+    H: Hooks<Error = DxioError> + ?Sized,
+    T: Timer + ?Sized,
+{
+    fstart_core::task::block_on(train_async(generation, units, hooks, timer, policy))
+}
+
+/// Asynchronous counterpart to [`train`].
+pub async fn train_async<M, H, T>(
+    generation: Silicon,
+    units: &mut [Unit<'_, M>],
+    hooks: &mut H,
+    timer: &T,
+    policy: &DxioPolicy,
+) -> Result<(), DxioError>
+where
+    M: crate::smu::AsyncSmuMessages + ?Sized,
     H: Hooks<Error = DxioError> + ?Sized,
     T: Timer + ?Sized,
 {
     match generation {
-        Silicon::Zp => zp::sequence::train(units, hooks, timer, policy),
-        Silicon::Ssp | Silicon::Gn => ssp::train(generation, units, hooks, timer, policy),
+        Silicon::Zp => zp::sequence::train(units, hooks, timer, policy).await,
+        Silicon::Ssp | Silicon::Gn => ssp::train(generation, units, hooks, timer, policy).await,
         // Fail closed on a generation this build does not carry.
         #[allow(unreachable_patterns)]
         _ => {
@@ -879,7 +915,7 @@ pub(crate) mod sp3_tests {
     use std::collections::VecDeque;
 
     use super::*;
-    use crate::smu::Error as SmuError;
+    use crate::smu::{Error as SmuError, SmuMessages};
 
     #[derive(Default)]
     pub struct FakeSmu {
@@ -926,6 +962,12 @@ pub(crate) mod sp3_tests {
         pub fn script(self, sm: &[[u32; 3]]) -> Self {
             *self.sm.borrow_mut() = sm.iter().copied().collect();
             self
+        }
+    }
+
+    impl crate::smu::AsyncSmuMessages for FakeSmu {
+        async fn send_async(&self, id: u32, args: &mut [u32; 6]) -> Result<(), SmuError> {
+            self.send(id, args)
         }
     }
 
@@ -1075,7 +1117,7 @@ pub(crate) mod sp3_tests {
             } else {
                 assert_eq!(u.engines()[0].ancillary_offset.get(), 0);
             }
-            u.load_heaps().unwrap();
+            fstart_core::task::block_on(u.load_heaps()).unwrap();
             assert_eq!(
                 smu.args()[0],
                 [
@@ -1108,7 +1150,7 @@ pub(crate) mod sp3_tests {
             .unwrap()
             .unwrap();
             assert_eq!(u.anc_dwords, 0);
-            u.load_heaps().unwrap();
+            fstart_core::task::block_on(u.load_heaps()).unwrap();
             assert!(
                 !smu.args()
                     .iter()
@@ -1121,9 +1163,11 @@ pub(crate) mod sp3_tests {
     fn opcode_names_and_results() {
         let smu = FakeSmu::default();
         let d = Dxio::new(&smu, 0x08);
-        d.init().unwrap();
-        assert_eq!(d.version().unwrap(), (1, 2));
-        d.set_var(var::PHY_PROG, 1, 0).unwrap();
+        fstart_core::task::block_on(async {
+            d.init().await.unwrap();
+            assert_eq!(d.version().await.unwrap(), (1, 2));
+            d.set_var(var::PHY_PROG, 1, 0).await.unwrap();
+        });
         assert_eq!(smu.args()[0][0], 0x00, "0x00 is Init");
         assert_eq!(smu.args()[1][0], 0x13, "0x13 is GetVersion");
         assert_eq!(smu.args()[2], [0x22, 0x14, 1, 0, 0, 0]);
@@ -1133,7 +1177,7 @@ pub(crate) mod sp3_tests {
             ..Default::default()
         };
         assert_eq!(
-            Dxio::new(&bad, 8).load_caps(),
+            fstart_core::task::block_on(Dxio::new(&bad, 8).load_caps()),
             Err(DxioError::Rpc {
                 op: op::LOAD_CAPS,
                 result: 2
@@ -1168,13 +1212,13 @@ pub(crate) mod sp3_tests {
             )
             .unwrap()
             .unwrap();
-            run(
+            fstart_core::task::block_on(run(
                 &mut u,
                 &mut Recorder::default(),
                 &ManualTimer::ticking(),
                 &rules,
                 timeout,
-            )
+            ))
         };
         let smu = FakeSmu::default().script(&[[2, 2, 3]]);
         assert_eq!(

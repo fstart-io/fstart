@@ -258,6 +258,11 @@ pub fn apply_phy_tuning(die0: &Die<GlobalEcam>) {
     apply(&die0.smn(), records);
 }
 
+/// Non-blocking check for whether the BMC ready pin is already asserted.
+pub fn bmc_ready(gpio: &Gpio<impl Window>) -> bool {
+    gpio::bmc_ready(gpio)
+}
+
 /// Wait for the BMC before its VGA is used.
 pub fn wait_for_bmc(gpio: &Gpio<impl Window>, clock: Tsc) {
     gpio::wait_for_bmc(gpio, &mut { clock });

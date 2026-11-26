@@ -11,7 +11,7 @@ use fstart_core::services::Timer;
 
 use crate::dxio::DxioPolicy;
 use crate::dxio::{DxioError, Hooks, LoopRules, Unit, finish_unit, run, state, var};
-use crate::smu::SmuMessages;
+use crate::smu::AsyncSmuMessages;
 
 /// The DXIO SMU message on Naples (`smu::v9::msg::DXIO`).
 pub const DXIO_MSG: u32 = 0x0F;
@@ -20,23 +20,22 @@ pub const DXIO_MSG: u32 = 0x0F;
 /// request sequence, for the units of a multi-socket SoC and Zeppelin's
 /// dies alike. `reload` first reloads the state machine (the vendor's
 /// early-train unit).
-pub fn setup<M: SmuMessages + ?Sized>(
+pub async fn setup<M: AsyncSmuMessages + ?Sized>(
     unit: &mut Unit<'_, M>,
     reload: bool,
 ) -> Result<(), DxioError> {
-    let d = &unit.dxio;
     if reload {
-        d.reload_sm(0)?;
+        unit.dxio.reload_sm(0).await?;
     }
     // Init first; GetVersion and the variables only after it succeeds.
-    d.init()?;
-    unit.version = Some(d.version()?);
-    [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1]
-        .iter()
-        .try_for_each(|&v| d.set_var(v, 1, 0))?;
-    d.load_caps()?;
-    unit.load_heaps()?;
-    d.sm_start()
+    unit.dxio.init().await?;
+    unit.version = Some(unit.dxio.version().await?);
+    for v in [var::RET_AFTER_MAP, var::RET_AFTER_CONF, var::ANCILLARY_V1] {
+        unit.dxio.set_var(v, 1, 0).await?;
+    }
+    unit.dxio.load_caps().await?;
+    unit.load_heaps().await?;
+    unit.dxio.sm_start().await
 }
 
 fn reload<M: ?Sized>(unit: &Unit<'_, M>, policy: &DxioPolicy) -> bool {
@@ -54,34 +53,35 @@ pub const fn rules(concurrent: bool) -> LoopRules {
     }
 }
 
-pub fn train<M, H, T>(
+pub async fn train<M, H, T>(
     units: &mut [Unit<'_, M>],
     hooks: &mut H,
     timer: &T,
     policy: &DxioPolicy,
 ) -> Result<(), DxioError>
 where
-    M: SmuMessages + ?Sized,
+    M: AsyncSmuMessages + ?Sized,
     H: Hooks<Error = DxioError> + ?Sized,
     T: Timer + ?Sized,
 {
     let rules = rules(policy.naples_concurrent);
     if policy.naples_concurrent {
-        units
-            .iter_mut()
-            .try_for_each(|u| setup(u, reload(u, policy)))?;
-        units
-            .iter_mut()
-            .try_for_each(|u| run(u, hooks, timer, &rules, policy.timeout_us).map(|_| ()))?;
+        for u in units.iter_mut() {
+            setup(u, reload(u, policy)).await?;
+        }
+        for u in units.iter_mut() {
+            run(u, hooks, timer, &rules, policy.timeout_us).await?;
+        }
     } else {
-        units.iter_mut().try_for_each(|u| {
-            setup(u, reload(u, policy))?;
-            run(u, hooks, timer, &rules, policy.timeout_us).map(|_| ())
-        })?;
+        for u in units.iter_mut() {
+            setup(u, reload(u, policy)).await?;
+            run(u, hooks, timer, &rules, policy.timeout_us).await?;
+        }
     }
-    units
-        .iter_mut()
-        .try_for_each(|u| finish_unit(u, hooks, timer, &rules, policy.timeout_us))
+    for u in units.iter_mut() {
+        finish_unit(u, hooks, timer, &rules, policy.timeout_us).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -133,7 +133,13 @@ mod tests {
             (20, 27)
         );
         let mut hooks = Recorder::default();
-        train(&mut units, &mut hooks, &ManualTimer::ticking(), &policy).unwrap();
+        fstart_core::task::block_on(train(
+            &mut units,
+            &mut hooks,
+            &ManualTimer::ticking(),
+            &policy,
+        ))
+        .unwrap();
         use op::*;
         let tail = [
             INIT,
