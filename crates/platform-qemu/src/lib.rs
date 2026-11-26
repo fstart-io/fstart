@@ -102,7 +102,11 @@ pub use virt_stage::Virt;
 pub use sbsa::QemuSbsaMainstage;
 #[cfg(all(feature = "stage", feature = "riscv64", target_arch = "riscv64"))]
 pub use sifive_u::QemuSifiveUMainstage;
-#[cfg(all(feature = "bundle-q35", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "bundle-q35",
+    feature = "mctp-validate",
+    target_arch = "x86_64"
+))]
 pub mod mctp_validate;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub mod q35;
@@ -627,7 +631,7 @@ mod stage {
         step("display", || mainstage.init_display());
         #[cfg(target_arch = "x86_64")]
         step("page_tables", || mainstage.map_memory());
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(feature = "mctp-validate", target_arch = "x86_64"))]
         crate::mctp_validate::run(mainstage.hostbridge.ecam());
         step("mp_smm", || mainstage.init_mp_smm());
         fstart_log::info!("qemu-q35 {}", crate::messages::READY);

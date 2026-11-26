@@ -32,8 +32,10 @@ aarch64-el2-relocate-entry = ["fstart-stage?/aarch64-el2-relocate-entry"]
 bundle-q35 = [
   "stage", "x86_64", "fstart-arch/x86-identity-paging",
   "fstart-stage/ed25519", "fstart-stage/sha2-digest", "smm", "tpm",
-  "dep:fstart-mctp", "dep:fstart-pldm", "dep:fstart-spdm",
 ]
+# Opt-in QEMU validation requester (PCIe DOE + COM2 Serial); off by default so
+# ordinary q35 boots never probe COM2 or transmit unsolicited SPDM/MCTP traffic.
+mctp-validate = ["dep:fstart-mctp", "dep:fstart-pldm", "dep:fstart-spdm"]
 # TIS TPM 1.2/2.0 (swtpm) and TCG measured boot into QEMU's TPM log area.
 tpm = ["dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-stage?/tcg", "fstart-payload?/tcg"]
 # Q35 TSEG/SMM chipset ops (no SMM panic handler: safe inside the stage build).

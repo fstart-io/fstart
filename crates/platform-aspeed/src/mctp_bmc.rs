@@ -103,24 +103,29 @@ pub fn serve_if_present() {
         ControlResponder::new(0x00, [0xAA; 16], &[0x01, 0x05, 0x06]),
     );
 
-    // Handle the first packet (expected SetEndpointId Control request).
-    if let Ok((hdr, body)) = fstart_mctp::MctpHeader::parse(&first_pkt[..first_len])
-        && let Some((&type_byte, ctrl_req)) = body.split_first()
-        && (type_byte & 0x7F) == MessageType::Control as u8
-        && hdr.tag_owner
-    {
-        let mut ctrl_resp = [0u8; 64];
-        if let Ok(rlen) = ep.control_mut().handle_request(ctrl_req, &mut ctrl_resp)
-            && rlen > 0
-        {
-            let _ = ep.send_message(
-                hdr.src_eid,
-                MessageType::Control as u8,
-                Some(hdr.msg_tag),
-                &ctrl_resp[..rlen],
-            );
-        }
+    // Handle the first packet: require a valid MCTP Control SetEndpointId request.
+    let Ok((hdr, body)) = fstart_mctp::MctpHeader::parse(&first_pkt[..first_len]) else {
+        return;
+    };
+    let Some((&type_byte, ctrl_req)) = body.split_first() else {
+        return;
+    };
+    if (type_byte & 0x7F) != MessageType::Control as u8 || !hdr.tag_owner {
+        return;
     }
+    let mut ctrl_resp = [0u8; 64];
+    let Ok(rlen) = ep.control_mut().handle_request(ctrl_req, &mut ctrl_resp) else {
+        return;
+    };
+    if rlen == 0 {
+        return;
+    }
+    let _ = ep.send_message(
+        hdr.src_eid,
+        MessageType::Control as u8,
+        Some(hdr.msg_tag),
+        &ctrl_resp[..rlen],
+    );
 
     match serve_session(&mut ep) {
         Ok(()) => fstart_log::info!("ast2500-bmc: MCTP+PLDM+SPDM-SERIAL PASS"),

@@ -31,7 +31,10 @@ stage = [
 armv5te = ["fstart-arch/armv5te", "fstart-stage?/armv5te", "fstart-payload?/armv5te"]
 ast2500 = ["dep:aspeed-pac", "aspeed-pac?/ast2500-arm", "dep:aspeed-hal", "aspeed-hal?/ast2500"]
 bundle-ast2500-bootblock = ["stage", "ast2500", "armv5te"]
-bundle-ast2500-main = ["stage", "ast2500", "armv5te", "dep:fstart-mctp", "dep:fstart-pldm", "dep:fstart-spdm"]
+bundle-ast2500-main = ["stage", "ast2500", "armv5te"]
+# Opt-in QEMU validation responder on UART1 (off by default so real hardware
+# boots never touch SUART1 or link the deterministic test responder).
+mctp-validate = ["dep:fstart-mctp", "dep:fstart-pldm", "dep:fstart-spdm"]
 # Bare ELF payloads, entered at e_entry.
 payload-elf = ["fstart-payload?/elf"]
 

@@ -55,46 +55,89 @@ def wait_for_marker(proc: subprocess.Popen, marker: str, timeout: float, label: 
     return ok
 
 
+def verify_pcapng(pcap_path: Path) -> int:
+    """Parse pcapng SHB, IDB (SLL2=276), and Enhanced Packet Blocks carrying ETH_P_MCTP."""
+    data = pcap_path.read_bytes()
+    off = 0
+    saw_shb = False
+    saw_idb = False
+    mctp_packets = 0
+    while off + 12 <= len(data):
+        btype, blen = struct.unpack_from("<II", data, off)
+        assert blen >= 12 and off + blen <= len(data), f"malformed block at {off}"
+        if btype == 0x0A0D0D0A:
+            saw_shb = True
+        elif btype == 0x00000001:
+            link_type = struct.unpack_from("<H", data, off + 8)[0]
+            assert link_type == 276, f"expected LINKTYPE_LINUX_SLL2 (276), got {link_type}"
+            saw_idb = True
+        elif btype == 0x00000006:
+            cap_len = struct.unpack_from("<I", data, off + 20)[0]
+            pkt = data[off + 28 : off + 28 + cap_len]
+            assert len(pkt) >= 24, f"short SLL2+MCTP packet ({len(pkt)}B)"
+            proto = struct.unpack_from(">H", pkt, 0)[0]
+            assert proto == 0x00FA, f"expected ETH_P_MCTP (0x00FA), got {proto:#x}"
+            assert (pkt[20] & 0x0F) == 0x01, f"bad MCTP version byte {pkt[20]:#x}"
+            mctp_packets += 1
+        off += blen
+    assert saw_shb and saw_idb and mctp_packets >= 10, (
+        f"pcapng incomplete: shb={saw_shb}, idb={saw_idb}, mctp_packets={mctp_packets}"
+    )
+    return mctp_packets
+
+
+def cleanup_procs(*procs: subprocess.Popen | None) -> None:
+    for p in procs:
+        if p is not None and p.poll() is None:
+            p.terminate()
+    for p in procs:
+        if p is not None:
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait(timeout=5)
+
+
 def test_pcie_doe(q35_bios: Path) -> None:
     print("=== Test 1: qemu-q35 Host SPDM 1.2 over PCIe DOE ===")
     with tempfile.TemporaryDirectory(prefix="fstart-doe-") as tmp:
         nvme_img = Path(tmp) / "nvme.img"
         nvme_img.write_bytes(b"\x00" * (1024 * 1024))
         port = 23231
-        broker = subprocess.Popen(
-            [str(BROKER), "spdm-emu", "--port", str(port)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        time.sleep(0.3)
-        qemu = subprocess.Popen(
-            [
-                "qemu-system-x86_64",
-                "-machine", "q35",
-                "-accel", "tcg",
-                "-cpu", "max",
-                "-m", "1G",
-                "-no-reboot",
-                "-vga", "none",
-                "-nographic",
-                "-bios", str(q35_bios),
-                "-drive", f"file={nvme_img},format=raw,if=none,id=drv0",
-                "-device", f"nvme,serial=fstart0,drive=drv0,spdm_port={port},spdm_trans=doe",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        log: list[str] = []
+        broker = None
+        qemu = None
         try:
+            broker = subprocess.Popen(
+                [str(BROKER), "spdm-emu", "--port", str(port)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            time.sleep(0.3)
+            qemu = subprocess.Popen(
+                [
+                    "qemu-system-x86_64",
+                    "-machine", "q35",
+                    "-accel", "tcg",
+                    "-cpu", "max",
+                    "-m", "1G",
+                    "-no-reboot",
+                    "-vga", "none",
+                    "-nographic",
+                    "-bios", str(q35_bios),
+                    "-drive", f"file={nvme_img},format=raw,if=none,id=drv0",
+                    "-device", f"nvme,serial=fstart0,drive=drv0,spdm_port={port},spdm_trans=doe",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            log: list[str] = []
             ok = wait_for_marker(qemu, "qemu-q35: SPDM-DOE PASS", 30.0, "q35-doe", log)
             if not ok:
                 raise RuntimeError("qemu-q35 PCIe DOE SPDM validation failed")
             print("PASS: qemu-q35 SPDM 1.2 over PCIe DOE (NVMe)")
         finally:
-            qemu.terminate()
-            broker.terminate()
-            qemu.wait(timeout=5)
-            broker.wait(timeout=5)
+            cleanup_procs(qemu, broker)
 
 
 def test_dual_qemu_serial(q35_bios: Path, bmc_flash: Path, pcap_path: Path) -> None:
@@ -102,7 +145,6 @@ def test_dual_qemu_serial(q35_bios: Path, bmc_flash: Path, pcap_path: Path) -> N
     with tempfile.TemporaryDirectory(prefix="fstart-dual-") as tmp:
         bmc_sock = Path(tmp) / "bmc.sock"
         host_sock = Path(tmp) / "host.sock"
-        # Pad BMC flash image to 64 MiB for ast2500-evb MTD if smaller
         padded_bmc = Path(tmp) / "bmc-64m.bin"
         raw = bmc_flash.read_bytes()
         target_sz = 64 * 1024 * 1024
@@ -111,83 +153,74 @@ def test_dual_qemu_serial(q35_bios: Path, bmc_flash: Path, pcap_path: Path) -> N
         else:
             padded_bmc.write_bytes(raw[:target_sz])
 
-        broker = subprocess.Popen(
-            [
-                str(BROKER),
-                "bridge",
-                "--bmc-sock", str(bmc_sock),
-                "--host-sock", str(host_sock),
-                "--transport", "serial",
-                "--pcap", str(pcap_path),
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        for _ in range(50):
-            if bmc_sock.exists() and host_sock.exists():
-                break
-            time.sleep(0.05)
-
-        bmc = subprocess.Popen(
-            [
-                "qemu-system-arm",
-                "-M", "ast2500-evb,execute-in-place=on,fmc-model=mt25ql512ab",
-                "-no-reboot",
-                "-display", "none",
-                "-monitor", "none",
-                "-drive", f"file={padded_bmc},format=raw,if=mtd",
-                "-chardev", f"socket,id=mctp,path={bmc_sock}",
-                "-serial", "stdio",
-                "-serial", "chardev:mctp",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        # Give AST2500 bootblock time to verify Ed25519 + load mainstage on ARM1176 TCG
-        bmc_log: list[str] = []
-        if not wait_for_marker(bmc, "ast2500 mainstage: entered", 90.0, "ast2500-boot", bmc_log):
-            bmc.terminate()
-            broker.terminate()
-            raise RuntimeError("ast2500-evb did not reach mainstage")
-
-        host = subprocess.Popen(
-            [
-                "qemu-system-x86_64",
-                "-machine", "q35",
-                "-accel", "tcg",
-                "-cpu", "max",
-                "-m", "1G",
-                "-no-reboot",
-                "-vga", "none",
-                "-display", "none",
-                "-monitor", "none",
-                "-bios", str(q35_bios),
-                "-chardev", f"socket,id=mctp,path={host_sock}",
-                "-serial", "stdio",
-                "-serial", "chardev:mctp",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        host_log: list[str] = []
+        broker = None
+        bmc = None
+        host = None
         try:
+            broker = subprocess.Popen(
+                [
+                    str(BROKER),
+                    "bridge",
+                    "--bmc-sock", str(bmc_sock),
+                    "--host-sock", str(host_sock),
+                    "--transport", "serial",
+                    "--pcap", str(pcap_path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            for _ in range(50):
+                if bmc_sock.exists() and host_sock.exists():
+                    break
+                time.sleep(0.05)
+
+            bmc = subprocess.Popen(
+                [
+                    "qemu-system-arm",
+                    "-M", "ast2500-evb,execute-in-place=on,fmc-model=mt25ql512ab",
+                    "-no-reboot",
+                    "-display", "none",
+                    "-monitor", "none",
+                    "-drive", f"file={padded_bmc},format=raw,if=mtd",
+                    "-chardev", f"socket,id=mctp,path={bmc_sock}",
+                    "-serial", "stdio",
+                    "-serial", "chardev:mctp",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            bmc_log: list[str] = []
+            if not wait_for_marker(bmc, "ast2500 mainstage: entered", 90.0, "ast2500-boot", bmc_log):
+                raise RuntimeError("ast2500-evb did not reach mainstage")
+
+            host = subprocess.Popen(
+                [
+                    "qemu-system-x86_64",
+                    "-machine", "q35",
+                    "-accel", "tcg",
+                    "-cpu", "max",
+                    "-m", "1G",
+                    "-no-reboot",
+                    "-vga", "none",
+                    "-display", "none",
+                    "-monitor", "none",
+                    "-bios", str(q35_bios),
+                    "-chardev", f"socket,id=mctp,path={host_sock}",
+                    "-serial", "stdio",
+                    "-serial", "chardev:mctp",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            host_log: list[str] = []
             host_ok = wait_for_marker(host, "qemu-q35: MCTP+PLDM+SPDM-SERIAL PASS", 60.0, "q35-serial", host_log)
             bmc_ok = wait_for_marker(bmc, "ast2500-bmc: MCTP+PLDM+SPDM-SERIAL PASS", 15.0, "ast2500-serial", bmc_log)
             if not (host_ok and bmc_ok):
                 raise RuntimeError(f"Dual-QEMU serial failed (host_ok={host_ok}, bmc_ok={bmc_ok})")
-            # Verify pcapng was written with LINKTYPE_LINUX_SLL2 (276) and EPB packets
-            data = pcap_path.read_bytes()
-            assert len(data) > 100, f"pcapng too small: {len(data)} bytes"
-            link_type = struct.unpack_from("<H", data, 28 + 8)[0]
-            assert link_type == 276, f"unexpected link_type={link_type}"
-            print(f"PASS: Dual-QEMU Serial BMC <-> Host (pcapng: {pcap_path}, {len(data)} bytes, SLL2=276)")
+            count = verify_pcapng(pcap_path)
+            print(f"PASS: Dual-QEMU Serial BMC <-> Host (pcapng: {pcap_path}, {count} verified SLL2 ETH_P_MCTP packets)")
         finally:
-            host.terminate()
-            bmc.terminate()
-            broker.terminate()
-            host.wait(timeout=5)
-            bmc.wait(timeout=5)
-            broker.wait(timeout=5)
+            cleanup_procs(host, bmc, broker)
 
 
 def main() -> int:

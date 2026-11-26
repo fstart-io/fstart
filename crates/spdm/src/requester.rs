@@ -53,6 +53,10 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             return Err(Error::BufferTooSmall);
         }
         self.vca = Sha256Transcript::new();
+        self.m_transcript = Sha256Transcript::new();
+        self.peer_cert_len = 0;
+        self.peer_cert_hash = [0; HASH_LEN];
+        self.eph = None;
         self.kx_transcript = None;
         self.session = None;
         out[..4].copy_from_slice(&[SPDM_VERSION_1_0, SpdmCode::GetVersion as u8, 0, 0]);
@@ -187,11 +191,16 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
 
     pub fn handle_digests(&mut self, resp: &[u8]) -> Result<[u8; HASH_LEN], Error> {
         let (hdr, body) = SpdmHeader::parse(resp)?;
-        if hdr.code != SpdmCode::Digests as u8 || body.len() < HASH_LEN {
+        let slot_count = hdr.param2.count_ones() as usize;
+        // Require slot 0 to be populated and hash all advertised slot digests into M1.
+        if hdr.code != SpdmCode::Digests as u8
+            || (hdr.param2 & 0x01) == 0
+            || body.len() < slot_count * HASH_LEN
+        {
             return Err(Error::InvalidMessage);
         }
         self.peer_cert_hash.copy_from_slice(&body[..HASH_LEN]);
-        self.m_transcript.update(&resp[..4 + HASH_LEN]);
+        self.m_transcript.update(&resp[..4 + slot_count * HASH_LEN]);
         Ok(self.peer_cert_hash)
     }
 

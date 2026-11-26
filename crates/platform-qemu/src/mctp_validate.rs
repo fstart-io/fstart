@@ -117,7 +117,8 @@ fn run_doe_spdm_handshake(
     req.handle_digests(&rx[..r]).map_err(|_| "handle_dig")?;
 
     let mut offset = 0u16;
-    loop {
+    let mut cert_done = false;
+    for _ in 0..32 {
         let n = req
             .build_get_certificate(offset, 64, &mut tx)
             .map_err(|_| "build_cert")?;
@@ -131,13 +132,24 @@ fn run_doe_spdm_handshake(
             POLLS,
         )
         .map_err(|_| "doe_cert")?;
+        if r < 8 {
+            return Err("short_cert");
+        }
+        let portion = u16::from_le_bytes([rx[4], rx[5]]);
+        if portion == 0 {
+            return Err("zero_cert_portion");
+        }
         let rem = req
             .handle_certificate(&rx[..r])
             .map_err(|_| "handle_cert")?;
-        offset = offset.saturating_add(64);
+        offset = offset.checked_add(portion).ok_or("cert_overflow")?;
         if rem == 0 {
+            cert_done = true;
             break;
         }
+    }
+    if !cert_done {
+        return Err("cert_loop_limit");
     }
 
     let n = req
@@ -289,8 +301,13 @@ fn validate_serial_mctp() {
     if uart.init().is_err() {
         return;
     }
-    // Drain any stale RX bytes.
-    while let Ok(Some(_)) = uart.read_byte() {}
+    // Drain any stale RX bytes (bounded).
+    for _ in 0..64 {
+        match uart.read_byte() {
+            Ok(Some(_)) => {}
+            _ => break,
+        }
+    }
 
     // Short initial probe budget so normal boots without COM2 skip quickly;
     // once SetEID succeeds, switch to a generous budget for SPDM crypto on TCG.

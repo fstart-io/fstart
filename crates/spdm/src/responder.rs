@@ -492,11 +492,13 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         pos += 2;
 
         if signed {
+            if req.len() < 37 {
+                return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
+            }
             // SPDM 1.2 includes VCA in L1/L2 measurement transcript!
             // Strip any 1..3 trailing PCIe DOE DW-alignment pad bytes from req (37B).
-            let req_exact = req.len().min(37);
             let mut t = self.vca.clone();
-            t.update(&req[..req_exact]);
+            t.update(&req[..37]);
             t.update(&resp[..pos]);
             let l1_hash = t.finalize_clone();
             let sign_digest =
