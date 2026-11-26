@@ -387,6 +387,11 @@ fn resolve_for<P: IntelPlatform>(
     };
     let mut reservations = reservations::<P>(facts, debug.flash_console)?;
     let bios_size = reservations.firmware.size;
+    if payload == "uefi" && facts.protected_mode {
+        return Err(PlanError::unsupported_payload(
+            "the UEFI payload requires long mode",
+        ));
+    }
     if payload == "uefi" && !facts.protected_mode && bios_size <= 0x8_0000 {
         return Err(PlanError::unsupported_payload(format!(
             "UEFI payloads do not fit in the {bios_size:#x}-byte BIOS window"
@@ -833,6 +838,41 @@ mod tests {
         assert_eq!(roomy.stages[2].compression, crate::compression::RAMSTAGE);
         assert_eq!(roomy.reservations.postcar.heap, 0);
         assert!(select(0x8_0000, "halt").is_ok());
+    }
+
+    #[test]
+    fn protected_mode_rejects_uefi_as_unsupported_payload() {
+        let protected = FACTS.with_protected_mode();
+        for payload in ["uefi", "uefi-basic", "uefi-ui"] {
+            let err = resolve_for::<I945>(
+                protected,
+                2,
+                false,
+                BuildSelection {
+                    payload: Some(payload.into()),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, PlanError::UnsupportedPayload(ref msg) if msg.contains("long mode")),
+                "{payload}: {err:?}"
+            );
+        }
+        assert!(
+            resolve_for::<I945>(
+                protected,
+                2,
+                false,
+                BuildSelection {
+                    payload: Some("halt".into()),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
