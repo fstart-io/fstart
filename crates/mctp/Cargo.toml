@@ -1,0 +1,12 @@
+[package]
+name = "fstart-mctp"
+description = "MCTP core (DSP0236), Control Protocol, and multi-transport bindings (Serial, SMBus/I2C, I3C, KCS, PCIe VDM)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

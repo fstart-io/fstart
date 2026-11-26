@@ -123,6 +123,7 @@ fstart-ffs = { path = "crates/ffs" }
 fstart-image-build = { path = "crates/image-build" }
 fstart-load = { path = "crates/load" }
 fstart-log = { path = "crates/log" }
+fstart-mctp = { path = "crates/mctp" }
 fstart-memtest = { path = "crates/memtest" }
 fstart-options = { path = "crates/options" }
 fstart-payload = { path = "crates/payload" }
