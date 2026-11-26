@@ -246,6 +246,11 @@ mod stage {
 
     impl IntelEarlyPlatform for Baytrail {
         const RESUME_DISPLAY_INIT: bool = false;
+
+        fn reset_failed_postcar_resume() -> ! {
+            BaytrailSouth::reset_failed_resume()
+        }
+
         type Northbridge = BaytrailNorth;
         type Southbridge = BaytrailSouth;
         type Cpu = fstart_arch::x86::cpu::intel::silvermont::SilvermontCpuDriver;
@@ -255,6 +260,13 @@ mod stage {
             _southbridge: &Self::Southbridge,
         ) -> Self::Cpu {
             Self::Cpu::new(microcode)
+        }
+
+        fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
+            static WORK: crate::memory_cache::TrainingWorkspace<
+                { fstart_driver_intel::baytrail::raminit::CACHE_BYTES },
+            > = crate::memory_cache::TrainingWorkspace::new();
+            WORK.take()
         }
     }
 

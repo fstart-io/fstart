@@ -78,9 +78,12 @@ the shared `chip_init` hooks) is build-tested only.
 
 ## Known limitations
 
-- No S3 resume: the native raminit has no self-refresh exit path.
 - Raminit takes single-rank, unbuffered, 64-bit DDR3 only (rank 0 is the
   only one the PHY setup and training cover).
+- S3 resume replays cached cold-boot training parameters from the two-bank
+  `mrc-cache` journal via `CacheSpi` (`SBASE` hardware-sequencing SPI) and
+  exits DDR3 self-refresh via `OP_DRAM_WAKE`. Boards opt in with
+  `BoardFacts::with_memory_cache()`.
 - The B-unit stops answering host sideband reads during ramstage device
   init. `BaytrailNorth` latches BMBOUND/BMBOUND_HI in `chip_init`, before
   the bus scan, and uses the latched values afterwards (ACPI `_CRS`, e820).
