@@ -97,7 +97,7 @@ impl ResetGeometry {
             || self.size < 0x1_0000
         {
             Err(GeometryError::Alignment)
-        } else if self.destination < EARLY_REGION.end() {
+        } else if self.destination < DEFERRED_BUFFER.end() {
             Err(GeometryError::EarlyRegion)
         } else {
             Ok(())
@@ -163,6 +163,12 @@ const _: () = assert!(NVRAM.end() == RESET.flash_offset && NVRAM.offset.is_multi
 /// heap, stack and store of [`LAYOUT`].
 pub const EARLY_REGION: Region = Region::new(0x7500_0000, 0xc0_0000);
 
+/// Warm-reset-preserved DRAM for CrabEFI's deferred runtime variable journal:
+/// 128 KiB above [`EARLY_REGION`] and below [`RESET`], inside the reserved
+/// 16 MiB write-back window (`LAYOUT.early`) and untouched by early firmware
+/// init or the PSP reset-image copy.
+pub const DEFERRED_BUFFER: Region = Region::new(EARLY_REGION.end(), 0x2_0000);
+
 /// The reset image in DRAM and everything it needs besides its own bytes,
 /// in the vendor's 16 MiB write-back window (its MTRR 7 window, the
 /// layout's cache window). 256 PDPTs of 1 GiB pages (every Zen core has
@@ -188,6 +194,8 @@ pub const LAYOUT: Layout = Layout {
 .check();
 
 const _: () = assert!(EARLY_REGION.contains(&LAYOUT.store.unwrap()));
+const _: () =
+    assert!(LAYOUT.early.contains(&DEFERRED_BUFFER) && DEFERRED_BUFFER.end() <= RESET.destination);
 
 #[cfg(test)]
 mod tests {
@@ -220,7 +228,9 @@ mod tests {
     #[test]
     fn the_layout_is_the_vendor_window() {
         assert_eq!(LAYOUT.cache_window(), Region::new(0x7500_0000, 0x100_0000));
-        assert!(EARLY_REGION.end() <= RESET.destination);
+        assert!(EARLY_REGION.end() <= DEFERRED_BUFFER.base);
+        assert!(DEFERRED_BUFFER.end() <= RESET.destination);
+        assert!(LAYOUT.early.contains(&DEFERRED_BUFFER));
         // The page tables cover the canonical lower half with 1 GiB pages.
         assert_eq!((LAYOUT.pdpts * 512) << 30, 1 << 47);
     }

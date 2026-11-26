@@ -21,6 +21,9 @@ pub const PSP_PARTITION_END: u32 = 0x80_0000;
 pub const RESET_FLASH_OFFSET: u32 = (FLASH.size - IMAGE.size) as u32;
 /// fstart's EFI variable store, outside both the FFS and PSP partition.
 pub const NVRAM: Region = Region::new(FLASH.base + RESET_FLASH_OFFSET as u64 - 0x4_0000, 0x4_0000);
+/// Warm-reset-preserved RAM buffer for CrabEFI deferred runtime variable
+/// writes (128 KiB, inside `LAYOUT.early` between the stack and APOB).
+pub const DEFERRED_BUFFER: Region = Region::new(0x7580_0000, 0x2_0000);
 const _: () = assert!(NVRAM.base >= FLASH.base + PSP_PARTITION_END as u64);
 
 /// The firmware's DRAM where the S8040's vendor firmware has its own: the
@@ -43,6 +46,15 @@ pub const LAYOUT: Layout = Layout {
 }
 .check();
 
+const _: () = {
+    assert!(DEFERRED_BUFFER.base >= LAYOUT.stack.end());
+    assert!(DEFERRED_BUFFER.end() <= 0x7590_0000);
+    assert!(DEFERRED_BUFFER.base >= LAYOUT.early.base);
+    assert!(DEFERRED_BUFFER.end() <= LAYOUT.early.end());
+    assert!(DEFERRED_BUFFER.base.is_multiple_of(0x1000));
+    assert!(DEFERRED_BUFFER.size.is_multiple_of(0x1000));
+};
+
 impl crate::rs::Variant for Dense {
     const NAME: &'static str = "siena";
     /// Family 19h model A0h, the RSDN cores.
@@ -50,6 +62,7 @@ impl crate::rs::Variant for Dense {
     const LAYOUT: Layout = LAYOUT;
     const APOB: Region = Region::new(0x7590_0000, 0x10_0000);
     const NVRAM: Option<Region> = Some(NVRAM);
+    const DEFERRED_BUFFER: Option<Region> = Some(DEFERRED_BUFFER);
     /// Siena's SMU firmware rejects, rather than silently completing, IDs
     /// from 0x51 on.
     const SMU_ID_LIMIT: u32 = 0x51;

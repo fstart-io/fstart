@@ -510,6 +510,12 @@ pub(crate) fn launch<F>(
         handoff.variable_storage = storage
             .as_mut()
             .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+        if handoff.variable_storage.is_some() {
+            handoff.deferred_buffer = Some(fstart_payload::Range::new(
+                layout::DEFERRED_BUFFER.base,
+                layout::DEFERRED_BUFFER.size,
+            ));
+        }
     }
     fstart_payload::boot(handoff, ())
 }

@@ -55,6 +55,11 @@ pub trait DieSoc: crate::soc::DieInit {
     const LAYOUT: Layout;
     /// Where the PSP writes the APOB.
     const APOB: Region;
+    /// The native EFI settings store in the ROM window, outside the FFS.
+    const NVRAM: Option<Region> = None;
+    /// Warm-reset-preserved RAM buffer for CrabEFI deferred runtime variable
+    /// writes, inside `LAYOUT.early` and disjoint from stack, heap, and APOB.
+    const DEFERRED_BUFFER: Option<Region> = None;
     /// Where the PSP finds the BIOS directory.
     const BIOS_DIRECTORY: BiosDirectorySlot;
     /// A server SoC: the TCG platform class of its measured boot.
@@ -214,6 +219,23 @@ impl<S: DieSoc> crate::flow::Soc for S {
         let ffs = S::LAYOUT.ffs.ok_or("boot media")?;
         fstart_arch::x86::boot::enable_boot_media_rom_cache();
         crate::media::mount(e820.entries(), &S::LAYOUT, ffs).map_err(|error| error.step())?;
+        let nvram = S::NVRAM.map(|region| {
+            // SAFETY: the SoC reserves this read-only view of boot flash.
+            unsafe { core::slice::from_raw_parts(region.base as *const u8, region.size as usize) }
+        });
+        let mut options = fstart_options::Report::new();
+        if nvram.is_some() {
+            let mut level = fstart_log::max_level();
+            crate::options::resolve(
+                nvram,
+                &fstart_log::option::KNOBS,
+                &mut level,
+                &mut options,
+                |_| Ok(()),
+            );
+            // SAFETY: BSP only, before MP.
+            unsafe { fstart_log::set_max_level(level) };
+        }
         Ok(crate::flow::Mapped {
             top_mem,
             top_mem2,
@@ -221,8 +243,8 @@ impl<S: DieSoc> crate::flow::Soc for S {
             tseg: tseg.base,
             e820,
             ffs: ffs.base..ffs.end(),
-            nvram: None,
-            options: fstart_options::Report::new(),
+            nvram,
+            options,
             flow: (),
         })
     }
@@ -301,6 +323,66 @@ impl<S: DieSoc> crate::flow::Soc for S {
     #[cfg(all(feature = "bundle", target_os = "none", feature = "payload-uefi-basic"))]
     fn peripherals(ctx: &Ctx<'_, S>, config: &S::Config) -> Peripherals {
         <S as DieSoc>::peripherals(ctx, config)
+    }
+
+    #[cfg(all(feature = "bundle", target_os = "none"))]
+    #[cfg_attr(not(feature = "payload-uefi"), allow(unused_mut))]
+    fn launch(
+        mut handoff: fstart_payload::Handoff<'_>,
+        _ctx: &Ctx<'_, S>,
+        _state: &S::State,
+        (): &(),
+        _options: &fstart_options::Report,
+    ) -> ! {
+        #[cfg(feature = "payload-uefi")]
+        if let (Some(nvram), Some(ffs)) = (S::NVRAM, S::LAYOUT.ffs) {
+            use fstart_driver_amd::fch::{FchHw, SPI_BASE, lpc, spi::flash::Extent};
+            use fstart_driver_amd::window::Window;
+            use tock_registers::interfaces::Readable;
+            let base = _ctx
+                .hw
+                .fch
+                .lpc()
+                .at(lpc::SPI_BASE_ADDRESS)
+                .read(lpc::SpiBase::BASE);
+            handoff.settings = Some(crate::options::settings(_options));
+            if base == SPI_BASE >> 8 {
+                let flash_base = S::LAYOUT.flash.base;
+                let extent = Extent {
+                    offset: (nvram.base - flash_base) as u32,
+                    size: nvram.size as u32,
+                };
+                static mut STORAGE: Option<crate::options::FlashStorage> = None;
+                // SAFETY: BSP only. It now hands exclusive ownership of SPI100
+                // to CrabEFI, from DRAM, and writes only the reserved extent.
+                // The command engine must match the ROM view of the FFS.
+                let storage = unsafe {
+                    let probe = core::slice::from_raw_parts(ffs.base as *const u8, 64);
+                    let storage = &mut *core::ptr::addr_of_mut!(STORAGE);
+                    *storage = crate::options::storage(
+                        _ctx.clock,
+                        extent,
+                        (ffs.base - flash_base) as u32,
+                        probe,
+                    );
+                    storage
+                };
+                handoff.variable_storage = storage
+                    .as_mut()
+                    .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+                if handoff.variable_storage.is_some()
+                    && let Some(deferred) = S::DEFERRED_BUFFER
+                {
+                    handoff.deferred_buffer =
+                        Some(fstart_payload::Range::new(deferred.base, deferred.size));
+                }
+            } else {
+                fstart_log::warn!(
+                    "options: SPI100 not decoded at its fixed base, settings are volatile"
+                );
+            }
+        }
+        fstart_payload::boot(handoff, ())
     }
 }
 

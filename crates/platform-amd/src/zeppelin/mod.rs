@@ -36,6 +36,8 @@ impl noncar::host::HostSoc for Zeppelin {
 impl noncar::DieSoc for Zeppelin {
     const LAYOUT: crate::layout::Layout = layout::LAYOUT;
     const APOB: Region = Region::new(soc::APOB_BASE, soc::APOB_SIZE as u64);
+    const NVRAM: Option<Region> = Some(layout::NVRAM);
+    const DEFERRED_BUFFER: Option<Region> = Some(layout::DEFERRED_BUFFER);
     const BIOS_DIRECTORY: fstart_amdfw_format::efs::BiosDirectorySlot =
         fstart_amdfw_format::efs::BiosDirectorySlot::Family17hModel00;
     const SERVER: bool = true;

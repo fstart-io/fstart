@@ -8,7 +8,7 @@ use std::vec::Vec;
 
 use crate::board::Board;
 use crate::host::{Host, dual};
-use crate::sp3::layout::{self, EARLY_REGION, LAYOUT, RESET};
+use crate::sp3::layout::{self, LAYOUT, RESET};
 use crate::sp3::silicon::Generation;
 use fstart_image_build::amd::halved_flash::{FlashPlan, NvramSlot, ResetSlot};
 
@@ -80,7 +80,7 @@ pub fn flash_plan<B: Board>() -> FlashPlan {
             destination: RESET.destination,
         },
         ffs_offset: layout::FFS_OFFSET,
-        dram_floor: EARLY_REGION.end(),
+        dram_floor: layout::DEFERRED_BUFFER.end(),
         nvram: Some(NvramSlot {
             flash_offset: layout::NVRAM.offset,
             size: layout::NVRAM.size,
@@ -350,7 +350,7 @@ mod tests {
                     destination: 0x75d0_0000
                 },
                 ffs_offset: 0x60_0000,
-                dram_floor: 0x75c0_0000,
+                dram_floor: 0x75c2_0000,
                 nvram: Some(NvramSlot {
                     flash_offset: 0xcc_0000,
                     size: 0x4_0000

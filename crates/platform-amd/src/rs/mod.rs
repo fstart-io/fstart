@@ -64,6 +64,9 @@ pub trait Variant: Send + Sync + 'static {
     const APOB: Region;
     /// The native EFI settings store in the ROM window, outside the FFS.
     const NVRAM: Option<Region> = None;
+    /// Warm-reset-preserved RAM buffer for CrabEFI deferred runtime variable
+    /// writes, inside `LAYOUT.early` and disjoint from stack, heap, and APOB.
+    const DEFERRED_BUFFER: Option<Region> = None;
     /// The exclusive bound of the SMU firmware's message IDs.
     const SMU_ID_LIMIT: u32;
     /// The ACPI PM base the vendor's FCH init programs.

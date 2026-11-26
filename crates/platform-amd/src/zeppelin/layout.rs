@@ -17,6 +17,13 @@ const FLASH: Region = Region::new(0xff00_0000, 0x100_0000);
 pub const PSP_PARTITION_END: u32 = 0x29_4000;
 /// Where the PSP copies the reset image from.
 pub const RESET_FLASH_OFFSET: u32 = (FLASH.size - IMAGE.size) as u32;
+/// fstart's EFI variable store, outside both the FFS and PSP partition.
+pub const NVRAM: Region = Region::new(FLASH.base + RESET_FLASH_OFFSET as u64 - 0x4_0000, 0x4_0000);
+/// Warm-reset-preserved RAM buffer for CrabEFI deferred runtime variable
+/// writes (128 KiB, inside `LAYOUT.early` between the heap and stack).
+pub const DEFERRED_BUFFER: Region = Region::new(0x76a0_0000, 0x2_0000);
+
+const _: () = assert!(NVRAM.base >= FLASH.base + PSP_PARTITION_END as u64);
 
 pub const LAYOUT: Layout = Layout {
     early: Region::new(EARLY, IMAGE.end() - EARLY),
@@ -30,7 +37,16 @@ pub const LAYOUT: Layout = Layout {
     flash: FLASH,
     ffs: Some(Region::new(
         FLASH.base + PSP_PARTITION_END as u64,
-        (RESET_FLASH_OFFSET - PSP_PARTITION_END) as u64,
+        NVRAM.base - (FLASH.base + PSP_PARTITION_END as u64),
     )),
 }
 .check();
+
+const _: () = {
+    assert!(DEFERRED_BUFFER.base >= LAYOUT.heap.end());
+    assert!(DEFERRED_BUFFER.end() <= LAYOUT.stack.base);
+    assert!(DEFERRED_BUFFER.base >= LAYOUT.early.base);
+    assert!(DEFERRED_BUFFER.end() <= LAYOUT.early.end());
+    assert!(DEFERRED_BUFFER.base.is_multiple_of(0x1000));
+    assert!(DEFERRED_BUFFER.size.is_multiple_of(0x1000));
+};

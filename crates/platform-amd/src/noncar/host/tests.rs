@@ -183,8 +183,9 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 /// rename from `.sp3.*` to `.amd.*` in the linker script, for the one
 /// AMD host plan, for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`, for
 /// expanding the Zeppelin reset image to 3 MiB, for stage `-Zplt=yes`
-/// with compact soft `sha1`/`sha2`, and for moving `smm.bin` to FFS
-/// without per-board `FSTART_SMM_IMAGE`/`FSTART_MP_MAX_CPUS` unit env.)
+/// with compact soft `sha1`/`sha2`, for moving `smm.bin` to FFS without
+/// per-board `FSTART_SMM_IMAGE`/`FSTART_MP_MAX_CPUS` unit env, and for
+/// Zeppelin's NVRAM reservation.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -199,9 +200,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "40b6b25ddda9739964ef92256a137a703f01f8168b5e39fb0248dd07f879ec82",
-            "8e179fbf720cc4c6f0277db0fcf02c146561b1a9602e4a57bd9a706a39314adc",
-            "9c70988c82f0a5c22d193d259ea57c05627824becbad4ad689815e7d67168bb6",
+            "c2d4d9f8870d7eed1e5b544cf0e402cb068dd0f314f412bf2686616f413a55cc",
+            "050e69827aca4fea21f0fea92becaf145fb5f51bd4cde513f5b15ffc8d1c44b0",
+            "c3fda55ddf70a26e73c38ee5b6803b0bad26f4a91d17cb421eee3ac9317db38c",
         ]
     );
 }
@@ -248,7 +249,14 @@ fn zeppelin_packs_a_two_level_native_image() {
     let ffs = image.ffs.as_ref().unwrap();
     assert_eq!(
         (ffs.offset, ffs.size, image.reset_size),
-        (0x29_4000, 0xd0_0000 - 0x29_4000, 0x30_0000)
+        (0x29_4000, 0xcc_0000 - 0x29_4000, 0x30_0000)
+    );
+    assert_eq!(
+        image.nvram,
+        Some(fstart_image_build::amd::FlashRegion {
+            offset: 0xcc_0000,
+            size: 0x4_0000,
+        })
     );
     assert!(
         matches!(&plan.ffs_assembly().unwrap().microcode, Some(MicrocodeConfig::Amd(m)) if m.files.len() == 1)

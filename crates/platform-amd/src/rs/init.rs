@@ -775,6 +775,12 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
                 handoff.variable_storage = storage
                     .as_mut()
                     .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+                if handoff.variable_storage.is_some()
+                    && let Some(deferred) = V::DEFERRED_BUFFER
+                {
+                    handoff.deferred_buffer =
+                        Some(fstart_payload::Range::new(deferred.base, deferred.size));
+                }
             } else {
                 fstart_log::warn!(
                     "options: SPI100 not decoded at its fixed base, settings are volatile"
