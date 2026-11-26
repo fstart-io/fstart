@@ -715,6 +715,7 @@ impl<B: IntelBoard> Ramstage<B, Chipset> {
         {
             self.fail("MP init");
         }
+        fstart_stage::boot::set_parallel_runner(Some(fstart_arch::x86::mp::run_with_ap1));
         if self.northbridge.post_mp_init().is_err() {
             self.fail("northbridge post-MP init");
         }
@@ -1006,15 +1007,26 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
             }
             rs.southbridge.finalize_init()
         });
-        // mp_init leaves APs polling firmware mailboxes. Stop that activity before
-        // either payload or S3-resume ownership is transferred to the OS.
-        if !fstart_arch::x86::mp::park_aps_for_payload() {
-            fstart_log::error!(
-                "{}: failed to quiesce APs for OS handoff; resetting",
-                B::Platform::NAME
+        // mp_init leaves APs polling firmware mailboxes. Linux and coreboot
+        // launchers keep AP1 online across the FFS payload read so SHA-256
+        // runs concurrently with SPI flash reads, then clear the runner and
+        // park all APs before OS handoff. Resume and all other payloads park
+        // here.
+        let defer_ap_park = !self.resume
+            && matches!(
+                fstart_payload::SELECTED,
+                fstart_payload::Selected::Linux | fstart_payload::Selected::Coreboot
             );
-            fstart_log::flush();
-            self.reset_system();
+        if !defer_ap_park {
+            fstart_stage::boot::set_parallel_runner(None);
+            if !fstart_arch::x86::mp::park_aps_for_payload() {
+                fstart_log::error!(
+                    "{}: failed to quiesce APs for OS handoff; resetting",
+                    B::Platform::NAME
+                );
+                fstart_log::flush();
+                self.reset_system();
+            }
         }
         if self.resume {
             match self.wake_vector {
