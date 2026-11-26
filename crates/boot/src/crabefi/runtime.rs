@@ -7,7 +7,9 @@ pub(super) const EMPTY_REGION: MemoryRegion = MemoryRegion {
     region_type: MemoryType::Reserved,
 };
 
-pub(super) fn runtime_platform_config() -> RuntimePlatformConfig<'static> {
+pub(super) fn runtime_platform_config(
+    deferred_buffer: crabefi::DeferredBufferConfig,
+) -> RuntimePlatformConfig<'static> {
     #[cfg(target_arch = "x86_64")]
     let (time, reset, reset_port) = (
         crabefi::time_mechanism::X86_CMOS,
@@ -41,9 +43,7 @@ pub(super) fn runtime_platform_config() -> RuntimePlatformConfig<'static> {
             io_or_mmio_base: reset_port,
         },
         external_ranges: &[],
-        // Literal old library-mode behavior: no configured deferred buffer and
-        // no platform-entry linker symbols. This is not a durable NV policy.
-        deferred_buffer: crabefi::DeferredBufferConfig::disabled(),
+        deferred_buffer,
         // No payload MM: the runtime image keeps the variable store itself.
         mm_proxy: crabefi::MmProxyConfig::default(),
     }
@@ -205,9 +205,60 @@ mod tests {
 
     #[test]
     fn no_unbacked_runtime_mmio_or_implicit_retained_journal() {
-        let config = runtime_platform_config();
+        let config = runtime_platform_config(crabefi::DeferredBufferConfig::disabled());
         assert!(config.external_ranges.is_empty());
         assert_eq!(config.deferred_buffer.base, 0);
         assert_eq!(config.deferred_buffer.size, 0);
+    }
+
+    #[test]
+    fn deferred_buffer_requires_backing_store_and_aligned_range() {
+        use fstart_core::description::Range;
+        let valid = Range::new(0x75c0_0000, super::super::DEFERRED_BUFFER_SIZE);
+        // Never enable a retained journal without persistent storage.
+        let without_storage = deferred_buffer_config(false, Some(valid));
+        assert_eq!((without_storage.base, without_storage.size), (0, 0));
+        // Unaligned or zero ranges are ignored rather than panicking.
+        for bad in [
+            Range::new(0, 0x2_0000),
+            Range::new(0x75c0_0000, 0),
+            Range::new(0x75c0_0001, 0x2_0000),
+            Range::new(0x75c0_0000, 0x1001),
+        ] {
+            let cfg = deferred_buffer_config(true, Some(bad));
+            assert_eq!((cfg.base, cfg.size), (0, 0));
+        }
+        let enabled = deferred_buffer_config(true, Some(valid));
+        let runtime = runtime_platform_config(enabled);
+        assert!(runtime.external_ranges.is_empty());
+        assert_eq!(runtime.deferred_buffer.base, 0x75c0_0000);
+        assert_eq!(
+            runtime.deferred_buffer.size,
+            super::super::DEFERRED_BUFFER_SIZE as usize
+        );
+    }
+}
+
+pub(super) fn deferred_buffer_config(
+    has_variable_storage: bool,
+    range: Option<fstart_core::description::Range>,
+) -> crabefi::DeferredBufferConfig {
+    let Some(range) = range.filter(|_| has_variable_storage) else {
+        return crabefi::DeferredBufferConfig::disabled();
+    };
+    let Ok(size) = usize::try_from(range.size) else {
+        return crabefi::DeferredBufferConfig::disabled();
+    };
+    if range.base == 0
+        || size == 0
+        || !range.base.is_multiple_of(0x1000)
+        || !size.is_multiple_of(0x1000)
+        || range.base.checked_add(range.size).is_none()
+    {
+        return crabefi::DeferredBufferConfig::disabled();
+    }
+    crabefi::DeferredBufferConfig {
+        base: range.base,
+        size,
     }
 }

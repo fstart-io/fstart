@@ -61,6 +61,11 @@ pub struct Handoff<'a> {
     /// volatile.
     #[cfg(feature = "crabefi-basic")]
     pub variable_storage: Option<&'a mut dyn crate::crabefi::StorageBackend>,
+    /// Optional warm-reset-preserved reserved RAM window for CrabEFI's
+    /// deferred runtime variable journal. Honored only when
+    /// `variable_storage` is also provided.
+    #[cfg(feature = "crabefi-basic")]
+    pub deferred_buffer: Option<Range>,
     /// The board's options, for CrabEFI's firmware settings menu.
     #[cfg(feature = "crabefi-basic")]
     pub settings: Option<crate::crabefi::settings::FirmwareSettings>,
@@ -76,6 +81,8 @@ impl<'a> Handoff<'a> {
             peripherals: heap::vec::Vec::new(),
             #[cfg(feature = "crabefi-basic")]
             variable_storage: None,
+            #[cfg(feature = "crabefi-basic")]
+            deferred_buffer: None,
             #[cfg(feature = "crabefi-basic")]
             settings: None,
         }
@@ -225,6 +232,7 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
                 variable_storage: handoff
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
+                deferred_buffer: handoff.deferred_buffer,
                 settings: handoff.settings,
             },
             &static_entries,
@@ -363,6 +371,7 @@ impl Riscv64UefiPayload {
                 variable_storage: handoff
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
+                deferred_buffer: handoff.deferred_buffer,
                 settings: handoff.settings,
             },
             &static_entries,
@@ -634,6 +643,7 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
                 variable_storage: handoff
                     .variable_storage
                     .map(|s| s as &mut dyn crate::crabefi::StorageBackend),
+                deferred_buffer: handoff.deferred_buffer,
                 settings: handoff.settings,
             },
             description.memory,
