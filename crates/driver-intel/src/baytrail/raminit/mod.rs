@@ -2,13 +2,14 @@
 //! native series), for one channel with one memory-down module or DIMM.
 //!
 //! The data rate follows the SPD and the memory-rate fuse the vendor MRC
-//! honors. The flow: SPD decode, D-unit timings, DDRIO PHY init (with the
-//! DDR3 reset), pre-JEDEC setup and JEDEC init, then receive enable, write
-//! leveling, read and write training, and finally the geometry, memory
-//! map and lock. A short memory test guards the result.
-//!
-//! There is no S3 path: the reference trains on every boot.
+//! honors. On cold boot the flow runs SPD decode, D-unit timings, DDRIO PHY
+//! init (with the DDR3 reset), pre-JEDEC setup and JEDEC init, receive enable,
+//! write leveling, read and write training, final geometry/memory map/lock,
+//! and a short memory test before capturing a [`TrainingCache`]. On S3 resume
+//! [`sdram_resume`] replays the validated cache without resetting DRAM or
+//! running destructive memory tests, exiting self-refresh via `OP_DRAM_WAKE`.
 
+pub mod cache;
 pub mod cpgc;
 pub mod ddrio;
 pub mod ddrio_regs;
@@ -26,6 +27,7 @@ use fstart_driver_spd::ddr3::{self, Ddr3DimmInfo, Ddr3ModuleType};
 use fstart_pci::ConfigRegionAccess;
 use tock_registers::interfaces::ReadWriteable;
 
+pub use cache::{CACHE_BYTES, TrainingCache};
 pub use mc::{MemoryMap, Stolen};
 
 /// Byte lanes of the 64-bit channel.
@@ -80,10 +82,11 @@ pub struct Trained {
     pub map: MemoryMap,
     pub freq: DdrFreq,
     pub memory_info: MemoryInfo,
+    pub cache: TrainingCache,
 }
 
 impl Params {
-    fn new(spd: &[u8], fused: DdrFreq) -> Result<Self, ServiceError> {
+    pub(crate) fn new(spd: &[u8], fused: DdrFreq) -> Result<Self, ServiceError> {
         let spd: &[u8; 256] = spd.try_into().map_err(|_| ServiceError::InvalidParam)?;
         let dimm = ddr3::decode_dimm(spd).map_err(|error| {
             fstart_log::error!("baytrail: SPD decode failed: {:?}", error);
@@ -241,10 +244,49 @@ pub fn sdram_initialize<P: ConfigRegionAccess>(
     let mut memory_info = MemoryInfo::new(8192);
     let device = ddr3::memory_device(&p.dimm, spd, 0, 0, p.freq.mts());
     memory_info.push(device);
+    let cache = TrainingCache::capture(spd, &p, stolen, &map);
     Ok(Trained {
         map,
         freq: p.freq,
         memory_info,
+        cache,
+    })
+}
+
+/// Replay a cached cold-boot training record and exit DDR3 self-refresh
+/// without resetting or overwriting retained OS memory.
+pub fn sdram_resume<P: ConfigRegionAccess>(
+    iosf: &Iosf<P>,
+    spd: &[u8],
+    stolen: Stolen,
+    txe_mb: u32,
+    cached: &[u8],
+) -> Result<Trained, ServiceError> {
+    fstart_log::info!("baytrail: native raminit S3 resume");
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_SPD);
+    let mut p = Params::new(spd, mc::fused_max_freq(iosf))?;
+    let expected_map =
+        mc::compute_memory_map(p.dimm.size_mb(), stolen, txe_mb, crate::baytrail::TSEG_MB);
+    let cache = TrainingCache::decode(cached, spd, stolen, &expected_map, &mut p)?;
+
+    mc::clear_self_refresh(iosf);
+    mc::program_timings(iosf, &p);
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_PHY);
+    ddrio::init_s3(iosf, &p)?;
+    fstart_timestamp::add(fstart_timestamp::id::RAMINIT_FINALIZE);
+    let map = mc::finalize_s3(iosf, &p, stolen, txe_mb, crate::baytrail::TSEG_MB)?;
+    // DRAM init done.
+    pmc::regs().gen_pmcon1.modify(pmc::GEN_PMCON1::DISB::CLEAR);
+    mc::lock(iosf);
+
+    let mut memory_info = MemoryInfo::new(8192);
+    let device = ddr3::memory_device(&p.dimm, spd, 0, 0, p.freq.mts());
+    memory_info.push(device);
+    Ok(Trained {
+        map,
+        freq: p.freq,
+        memory_info,
+        cache,
     })
 }
 

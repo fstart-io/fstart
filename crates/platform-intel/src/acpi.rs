@@ -199,15 +199,16 @@ mod host_baseline {
     impl HostAcpiChipset for crate::baytrail::Baytrail {
         fn assemble_baseline(
             config: &'static Self::Config,
-            _facts: BoardFacts,
+            facts: BoardFacts,
             board: &impl AcpiDevice<Config = ()>,
             base: u64,
         ) -> Result<Vec<u8>, String> {
             use fstart_driver_intel::baytrail::{BaytrailNorth, BaytrailSouth};
             let north = BaytrailNorth::new_from_config(&config.north)
                 .map_err(|e| format!("Bay Trail north: {e:?}"))?;
-            let south = BaytrailSouth::new_from_config(&config.south)
+            let mut south = BaytrailSouth::new_from_config(&config.south)
                 .map_err(|e| format!("Bay Trail south: {e:?}"))?;
+            south.set_s3_enabled(facts.memory_cache);
             assemble_chipset(&north, &south, BaytrailNorth::HOST_CPUS as u32, board, base)
         }
     }

@@ -101,6 +101,7 @@ pub struct BaytrailSouth {
     config: &'static SouthConfig,
     smbus: Option<I801SmBus>,
     resume: bool,
+    s3_enabled: bool,
     pcie: PcieState,
     acpi_devices: AcpiModeDevices,
 }
@@ -110,9 +111,30 @@ impl BaytrailSouth {
         self.config
     }
 
+    /// Whether the platform has enabled ACPI S3 advertisement.
+    pub fn s3_enabled(&self) -> bool {
+        self.s3_enabled
+    }
+
     /// Functions firmware switched to ACPI mode.
     pub fn acpi_devices(&self) -> &[AcpiModeDevice] {
         &self.acpi_devices
+    }
+
+    /// Reset cleanly from postcar (before southbridge construction) when S3
+    /// resume cannot continue, clearing sticky CF9 global/resume-well bits first.
+    pub fn reset_failed_resume() -> ! {
+        use fstart_pci::ConfigRegionAccess;
+        // SAFETY: CF8/CFC PCI config read of Bay Trail LPC PBASE during early reset.
+        let pbase = unsafe { fstart_pci::cf8::Cf8.read(lpc::address(), lpc::PBASE) };
+        if pbase & lpc::BASE::ENABLE::SET.value != 0 {
+            let base = (pbase & 0xffff_fe00) as usize;
+            // SAFETY: PBASE was enabled by the bootblock and points to PMC MMIO.
+            let regs = unsafe { &*(base as *const pmc::PmcRegs) };
+            regs.etr
+                .modify(pmc::ETR::CWORWRE::CLEAR + pmc::ETR::CF9GR::CLEAR);
+        }
+        fstart_arch::x86::boot::system_reset(true)
     }
 
     /// PIRQ PIC routes, per-device routes, SCI on IRQ 9, the 8259s, the
@@ -131,7 +153,9 @@ impl BaytrailSouth {
         unsafe { fstart_arch::x86::ioapic::IoApic::new(super::IOAPIC_BASE as usize) }
             .set_id(super::IOAPIC_ID);
         fstart_arch::x86::legacy_pc::setup_i8259();
-        fstart_driver_rtc::init_clock("baytrail", PowerState::read().rtc_failed());
+        if !self.resume {
+            fstart_driver_rtc::init_clock("baytrail", PowerState::read().rtc_failed());
+        }
         let pmcon1 = &pmc::regs().gen_pmcon1;
         if self.config.disable_slp_x_stretch_sus_fail {
             fstart_log::debug!("baytrail: SLP_X stretching off");
@@ -182,6 +206,7 @@ impl crate::IntelSouthbridgeDriver for BaytrailSouth {
             config,
             smbus: None,
             resume: false,
+            s3_enabled: false,
             pcie: PcieState::default(),
             acpi_devices: AcpiModeDevices::new(),
         })
@@ -232,10 +257,15 @@ impl crate::IntelSouthbridgeDriver for BaytrailSouth {
         bars
     }
 
-    /// Log the boot's power state and clear a stale sleep type (coreboot
-    /// `fill_power_state`/`chipset_prev_sleep_state`). Native raminit has no
-    /// S3 path, so this never reports a resume and the tables never offer
-    /// S3.
+    fn training_identity(&self) -> Option<[u8; 5]> {
+        // SAFETY: ECAM is live once pre_console_init has run.
+        Some(crate::southbridge::lpc::training_identity(unsafe {
+            lpc::device().regs()
+        }))
+    }
+
+    /// Log the boot's power state, clear a latched sleep type, and report
+    /// whether this boot is an S3 resume (coreboot `chipset_prev_sleep_state`).
     fn detect_s3_resume(&self) -> bool {
         let ps = PowerState::read();
         fstart_log::debug!(
@@ -258,12 +288,15 @@ impl crate::IntelSouthbridgeDriver for BaytrailSouth {
         );
         if ps.pm1_sts & pmio::WAK_STS != 0 {
             let slp_typ = (ps.pm1_cnt & pmio::SLP_TYP_MASK) >> pmio::SLP_TYP_SHIFT;
-            if slp_typ == 5 && !ps.power_failed() {
-                fstart_log::warn!("baytrail: S3 wake without S3 support, booting cold");
-            }
+            let resume = slp_typ == 5 && !ps.power_failed();
             pmc::pm().write32(pmio::PM1_CNT, ps.pm1_cnt & !pmio::SLP_TYP_MASK);
+            return resume;
         }
         false
+    }
+
+    fn set_s3_enabled(&mut self, enabled: bool) {
+        self.s3_enabled = enabled;
     }
 
     fn set_resume(&mut self, resume: bool) {
@@ -341,6 +374,13 @@ impl crate::IntelSouthbridgeDriver for BaytrailSouth {
             .modify(pmc::GEN_PMCON2::SLPSX_STR_POL_LOCK::SET + pmc::GEN_PMCON2::SMI_LOCK::SET);
         regs.etr.modify(pmc::ETR::CF9LOCK::SET);
         Ok(())
+    }
+
+    fn system_reset(&self, hard: bool) -> ! {
+        pmc::regs()
+            .etr
+            .modify(pmc::ETR::CWORWRE::CLEAR + pmc::ETR::CF9GR::CLEAR);
+        fstart_arch::x86::boot::system_reset(hard)
     }
 }
 

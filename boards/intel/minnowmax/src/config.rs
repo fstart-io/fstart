@@ -99,5 +99,6 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     const CONFIG: &'static BaytrailPlatform = &MINNOWMAX_PLATFORM;
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FlashLayout::IntelIfd(FLASH), FLASH_SIZE)
-            .with_data_assets(&["data.vbt"]);
+            .with_data_assets(&["data.vbt"])
+            .with_memory_cache();
 }

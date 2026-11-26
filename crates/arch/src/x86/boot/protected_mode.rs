@@ -291,11 +291,12 @@ core::arch::global_asm!(
     "orl $0x800, %eax", // MTRR_DEF_TYPE_EN
     "wrmsr",
     postcar_uart_checkpoint!("0x6d"), // m
-    // Re-enable caching, flush stale CAR lines, take the fresh DRAM stack.
+    // Flush stale cache lines while CD=1, then re-enable caching and take the
+    // fresh DRAM stack.
     "movl %cr0, %eax",
     "andl $0x9fffffff, %eax", // clear CD|NW
-    "movl %eax, %cr0",
     "invd",
+    "movl %eax, %cr0",
     postcar_uart_checkpoint!("0x63"), // c
     // POST 0x71: transition done; CAR stack abandoned, DRAM stack next.
     "movb $0x71, %al",

@@ -1030,22 +1030,39 @@ fn iobuf_act<P: ConfigRegionAccess>(iosf: &Iosf<P>) {
     }
 }
 
-/// The PHY: MPLL, static settings and starting delays, power management,
-/// DDR3 reset, DLLs, clock alignment, pointers, compensation and IO buffers.
-pub fn init<P: ConfigRegionAccess>(iosf: &Iosf<P>, p: &Params) -> Result<(), ServiceError> {
-    fstart_log::info!("baytrail: DDRIO PHY init");
+fn init_common<P: ConfigRegionAccess>(
+    iosf: &Iosf<P>,
+    p: &Params,
+    reset_dram: bool,
+) -> Result<(), ServiceError> {
     sfr_vol_sel(iosf);
     pll_init(iosf, p.freq)?;
     static_init(iosf, p.freq, p.cas_latency, p.write_latency);
     static_perf(iosf);
     clock_gating(iosf, p.freq);
-    ddr3_reset(iosf);
+    if reset_dram {
+        ddr3_reset(iosf);
+    }
     dll_init(iosf);
     hmc_init(iosf)?;
     wr_ptr_init(iosf);
     comp_init(iosf, p.freq);
     iobuf_act(iosf);
     Ok(())
+}
+
+/// The PHY: MPLL, static settings and starting delays, power management,
+/// DDR3 reset, DLLs, clock alignment, pointers, compensation and IO buffers.
+pub fn init<P: ConfigRegionAccess>(iosf: &Iosf<P>, p: &Params) -> Result<(), ServiceError> {
+    fstart_log::info!("baytrail: DDRIO PHY init");
+    init_common(iosf, p, true)
+}
+
+/// S3 resume PHY init: identical to [`init`] without toggling `DDR3_RESET#`,
+/// leaving DRAM contents intact in self-refresh until the D-unit wakes it.
+pub fn init_s3<P: ConfigRegionAccess>(iosf: &Iosf<P>, p: &Params) -> Result<(), ServiceError> {
+    fstart_log::info!("baytrail: DDRIO PHY S3 init");
+    init_common(iosf, p, false)
 }
 
 /// Release the DQ FIFOs and tell CMD power management the sideband init

@@ -39,6 +39,8 @@ pub struct SleepSmi {
     /// Leave AFTER_G3 at "power on" when entering S5 (coreboot's
     /// `power_on_after_fail` CMOS option, `MAINBOARD_POWER_ON`).
     power_on_after_fail: bool,
+    /// Update ICH/PCH LPC `GEN_PMCON_3` (00:1f.0:0xa4) on S5 entry.
+    ich_pmcon3: bool,
 }
 
 impl SleepSmi {
@@ -47,6 +49,7 @@ impl SleepSmi {
         gpio_base: 0,
         dram_reset_gate: 0xff,
         power_on_after_fail: false,
+        ich_pmcon3: false,
     };
 }
 
@@ -245,6 +248,15 @@ impl IchSmi {
     pub const fn with_sleep_smi(mut self, gpio_base: u16) -> Self {
         self.sleep.enabled = true;
         self.sleep.gpio_base = gpio_base;
+        self.sleep.ich_pmcon3 = true;
+        self
+    }
+
+    /// Skip ICH/PCH LPC `GEN_PMCON_3` (00:1f.0:0xa4) updates on S5 entry
+    /// (Bay Trail keeps `AFTERG3_EN` in PMC MMIO `GEN_PMCON1`).
+    #[must_use]
+    pub const fn without_ich_pmcon3(mut self) -> Self {
+        self.sleep.ich_pmcon3 = false;
         self
     }
 
@@ -552,10 +564,7 @@ impl PendingSmi {
         // decode SLP_TYP.
         let sleep = (smi_sts & pmio::SLP_SMI_STS != 0)
             .then(|| {
-                pm.write8(
-                    pmio::SMI_EN,
-                    pm.read8(pmio::SMI_EN) & !(pmio::SLP_SMI_EN as u8),
-                );
+                pm.clrbits32(pmio::SMI_EN, pmio::SLP_SMI_EN);
                 let state = acpi_sleep_state(pm.read32(pmio::PM1_CNT));
                 if state.is_none() {
                     pm.clrbits32(pmio::PM1_CNT, pmio::SLP_TYP_MASK | pmio::SLP_EN);
@@ -714,13 +723,15 @@ impl PendingSmi {
                 self.gpe0.disable_all(&pm);
                 // SAFETY: the SMM rendezvous owner accesses PCI config.
                 unsafe {
-                    let pmcon3 = fstart_pci::cf8::read8(0, 0x1f, 0, 0xa4);
-                    let pmcon3 = if policy.power_on_after_fail {
-                        pmcon3 & !1
-                    } else {
-                        pmcon3 | 1
-                    };
-                    fstart_pci::cf8::write8(0, 0x1f, 0, 0xa4, pmcon3);
+                    if policy.ich_pmcon3 {
+                        let pmcon3 = fstart_pci::cf8::read8(0, 0x1f, 0, 0xa4);
+                        let pmcon3 = if policy.power_on_after_fail {
+                            pmcon3 & !1
+                        } else {
+                            pmcon3 | 1
+                        };
+                        fstart_pci::cf8::write8(0, 0x1f, 0, 0xa4, pmcon3);
+                    }
                     busmaster_disable_all();
                 }
             }

@@ -486,3 +486,25 @@ pub fn write_training<P: ConfigRegionAccess>(
     t.cpgc.disable();
     Ok(())
 }
+
+/// Replay trained PHY state from `p` for S3 resume without issuing CPGC
+/// traffic against self-refreshing DRAM.
+pub fn restore_for_s3<P: ConfigRegionAccess>(iosf: &Iosf<P>, p: &Params) {
+    let t = Trainer::new(iosf);
+    for m in 0..DQ_NUM_MODULES {
+        for reg in [dq_b0rxiobufctl(0, m), dq_b1rxiobufctl(0, m)] {
+            iosf.reg(reg).modify(DQ_B0RXIOBUFCTL::PWRDN::CLEAR);
+        }
+    }
+    t.override_odt_and_diffamp();
+    for s in 0..STROBES {
+        t.write_all_ranks(RCVN_MIN, s, 1);
+        t.write_all_ranks(WDQS_MIN, s, 1);
+        t.write_all_ranks(WDQ_MIN, s, 1);
+        t.set_delay(Delay::Rcvn, s, p.rcvn[s]);
+        t.set_delay(Delay::Wdqs, s, p.wdqs[s]);
+        t.set_delay(Delay::Wdq, s, p.wdq[s]);
+        t.write(RDQS_PI, s, p.rdq[s] as u32);
+    }
+    t.fifo_reset();
+}
