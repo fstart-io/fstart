@@ -8,7 +8,7 @@ use fstart_core::{
 };
 use fstart_ffs::builder::{FileLayout, FilePatch, InputFile, InputSegment};
 use zerocopy::{
-    FromBytes, Immutable, IntoBytes, KnownLayout,
+    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
     byteorder::{LE, U16, U64},
 };
 
@@ -30,12 +30,30 @@ pub fn validate_pointer_section(elf: &[u8]) -> Result<(), String> {
     }
     Ok(())
 }
+/// 24-bit unsigned little-endian integer (Intel FIT 3-byte size field).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(transparent)]
+struct U24Le([u8; 3]);
+
+impl U24Le {
+    const fn new(value: u32) -> Self {
+        let b = value.to_le_bytes();
+        Self([b[0], b[1], b[2]])
+    }
+
+    const fn get(self) -> u32 {
+        u32::from_le_bytes([self.0[0], self.0[1], self.0[2], 0])
+    }
+}
+
 const SIGNATURE: u64 = u64::from_le_bytes(*b"_FIT_   ");
-#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct Entry {
     address: U64<LE>,
-    size: [u8; 3],
+    size: U24Le,
     reserved: u8,
     version: U16<LE>,
     kind: u8,
@@ -43,10 +61,9 @@ struct Entry {
 }
 const _: () = assert!(core::mem::size_of::<Entry>() == 16);
 fn entry(address: u64, count: usize, kind: u8) -> Entry {
-    let count = (count as u32).to_le_bytes();
     Entry {
         address: address.into(),
-        size: [count[0], count[1], count[2]],
+        size: U24Le::new(count as u32),
         reserved: 0,
         version: 0x100.into(),
         kind,
@@ -402,7 +419,7 @@ pub fn inspect(bios: &[u8], base: u64) -> Result<Report, String> {
         .map_err(|_| "FIT offset")?;
     let (header, _) = Entry::read_from_prefix(bios.get(offset..).ok_or("FIT outside BIOS")?)
         .map_err(|_| "FIT header truncated")?;
-    let count = u32::from_le_bytes([header.size[0], header.size[1], header.size[2], 0]) as usize;
+    let count = header.size.get() as usize;
     if header.address.get() != SIGNATURE
         || header.kind != 0x80
         || header.version.get() != 0x100
@@ -426,7 +443,7 @@ pub fn inspect(bios: &[u8], base: u64) -> Result<Report, String> {
     for bytes in table[16..].as_chunks::<16>().0 {
         let entry = Entry::read_from_bytes(bytes).map_err(|_| "FIT entry")?;
         if entry.kind != 1
-            || entry.size != [0; 3]
+            || entry.size.get() != 0
             || entry.reserved != 0
             || entry.version.get() != 0x100
             || entry.checksum != 0

@@ -262,13 +262,23 @@ impl<'a> TableWriter<'a> {
     }
 
     pub fn mainboard(&mut self, vendor: &str, part: &str) -> Result<(), Full> {
+        #[repr(C)]
+        #[derive(Clone, Copy, IntoBytes, Immutable)]
+        struct MainboardPrefix {
+            vendor_idx: u8,
+            part_idx: u8,
+        }
         // Two index bytes, then both strings NUL-terminated.
-        let len = 2 + vendor.len() + 1 + part.len() + 1;
+        let prefix_len = core::mem::size_of::<MainboardPrefix>();
+        let len = prefix_len + vendor.len() + 1 + part.len() + 1;
         let body = self.record(tag::MAINBOARD, len)?;
-        body[0] = 0;
-        body[1] = (vendor.len() + 1) as u8;
-        body[2..2 + vendor.len()].copy_from_slice(vendor.as_bytes());
-        let part_at = 2 + vendor.len() + 1;
+        let prefix = MainboardPrefix {
+            vendor_idx: 0,
+            part_idx: (vendor.len() + 1) as u8,
+        };
+        body[..prefix_len].copy_from_slice(prefix.as_bytes());
+        body[prefix_len..prefix_len + vendor.len()].copy_from_slice(vendor.as_bytes());
+        let part_at = prefix_len + vendor.len() + 1;
         body[part_at..part_at + part.len()].copy_from_slice(part.as_bytes());
         Ok(())
     }

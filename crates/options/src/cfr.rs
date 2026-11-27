@@ -13,8 +13,61 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
+use zerocopy::little_endian::{U32, U64};
+use zerocopy::{Immutable, IntoBytes};
 
 use crate::{Availability, Kind, Provenance, Rejection, Report, Setting, SourceError};
+
+#[repr(C)]
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+struct CfrRootHeader {
+    tag: U32,
+    size: U32,
+    version: U32,
+    checksum: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+struct CfrRecordPrefix {
+    tag: U32,
+    size: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+struct CfrFormHeader {
+    object_id: U64,
+    dependency_id: U64,
+    flags: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+struct CfrOptionHeader {
+    object_id: U64,
+    dependency_id: U64,
+    flags: U32,
+    default_value: U32,
+    min: U32,
+    max: U32,
+    step: U32,
+    display_flags: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+struct CfrVarcharPrefix {
+    tag: U32,
+    size: U32,
+    data_length: U32,
+}
+
+const _: () = assert!(core::mem::size_of::<CfrRootHeader>() == 16);
+const _: () = assert!(core::mem::size_of::<CfrRecordPrefix>() == 8);
+const _: () = assert!(core::mem::size_of::<CfrFormHeader>() == 20);
+const _: () = assert!(core::mem::size_of::<CfrOptionHeader>() == 40);
+const _: () = assert!(core::mem::size_of::<CfrVarcharPrefix>() == 12);
 
 /// Coreboot table tag of the CFR root record.
 pub const TAG_ROOT: u32 = 0x47;
@@ -53,17 +106,21 @@ pub fn encode(report: &Report) -> Vec<u8> {
         for setting in report.settings.iter().filter(|s| s.meta.form == form) {
             option(&mut children, setting, next_id());
         }
-        let mut header = Vec::new();
-        put_u64(&mut header, next_id());
-        put_u64(&mut header, 0);
-        put_u32(&mut header, 0);
-        record(&mut body, TAG_FORM, &header, &children);
+        let header = CfrFormHeader {
+            object_id: U64::new(next_id()),
+            dependency_id: U64::ZERO,
+            flags: U32::ZERO,
+        };
+        record(&mut body, TAG_FORM, header.as_bytes(), &children);
     }
-    let mut out = Vec::with_capacity(16 + body.len());
-    put_u32(&mut out, TAG_ROOT);
-    put_u32(&mut out, (16 + body.len()) as u32);
-    put_u32(&mut out, VERSION);
-    put_u32(&mut out, crc32(&body));
+    let root = CfrRootHeader {
+        tag: U32::new(TAG_ROOT),
+        size: U32::new((core::mem::size_of::<CfrRootHeader>() + body.len()) as u32),
+        version: U32::new(VERSION),
+        checksum: U32::new(crc32(&body)),
+    };
+    let mut out = Vec::with_capacity(core::mem::size_of::<CfrRootHeader>() + body.len());
+    out.extend_from_slice(root.as_bytes());
     out.extend_from_slice(&body);
     out
 }
@@ -79,12 +136,16 @@ fn option(out: &mut Vec<u8>, setting: &Setting, id: u64) {
         Availability::Editable => 0,
         Availability::Inactive(_) => FLAG_INACTIVE,
     };
-    let mut header = Vec::new();
-    put_u64(&mut header, id);
-    put_u64(&mut header, 0);
-    for word in [flags, setting.default, min, max, step, 0] {
-        put_u32(&mut header, word);
-    }
+    let header = CfrOptionHeader {
+        object_id: U64::new(id),
+        dependency_id: U64::ZERO,
+        flags: U32::new(flags),
+        default_value: U32::new(setting.default),
+        min: U32::new(min),
+        max: U32::new(max),
+        step: U32::new(step),
+        display_flags: U32::ZERO,
+    };
     let mut children = Vec::new();
     varchar(&mut children, TAG_OPT_NAME, meta.key);
     varchar(&mut children, TAG_UI_NAME, meta.label);
@@ -96,12 +157,12 @@ fn option(out: &mut Vec<u8>, setting: &Setting, id: u64) {
             record(
                 &mut children,
                 TAG_ENUM_VALUE,
-                &choice.value.to_le_bytes(),
+                U32::new(choice.value).as_bytes(),
                 &name,
             );
         }
     }
-    record(out, tag, &header, &children);
+    record(out, tag, header.as_bytes(), &children);
 }
 
 /// The knob's help, with why it is greyed out or its stored value unused.
@@ -125,8 +186,13 @@ fn help(setting: &Setting) -> String {
 
 /// A record: tag, size, the fixed header fields after them, children.
 fn record(out: &mut Vec<u8>, tag: u32, header: &[u8], children: &[u8]) {
-    put_u32(out, tag);
-    put_u32(out, (8 + header.len() + children.len()) as u32);
+    let prefix = CfrRecordPrefix {
+        tag: U32::new(tag),
+        size: U32::new(
+            (core::mem::size_of::<CfrRecordPrefix>() + header.len() + children.len()) as u32,
+        ),
+    };
+    out.extend_from_slice(prefix.as_bytes());
     out.extend_from_slice(header);
     out.extend_from_slice(children);
 }
@@ -135,19 +201,14 @@ fn record(out: &mut Vec<u8>, tag: u32, header: &[u8], children: &[u8]) {
 fn varchar(out: &mut Vec<u8>, tag: u32, text: &str) {
     let length = text.len() + 1;
     let padded = length.next_multiple_of(4);
-    put_u32(out, tag);
-    put_u32(out, (12 + padded) as u32);
-    put_u32(out, length as u32);
+    let prefix = CfrVarcharPrefix {
+        tag: U32::new(tag),
+        size: U32::new((core::mem::size_of::<CfrVarcharPrefix>() + padded) as u32),
+        data_length: U32::new(length as u32),
+    };
+    out.extend_from_slice(prefix.as_bytes());
     out.extend_from_slice(text.as_bytes());
     out.resize(out.len() + padded - text.len(), 0);
-}
-
-fn put_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn put_u64(out: &mut Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_le_bytes());
 }
 
 /// coreboot's CRC32 of the CFR body: MSB first, polynomial `0x04c11db7`,

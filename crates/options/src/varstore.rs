@@ -104,6 +104,72 @@ impl<'a> Variable<'a> {
     }
 }
 
+#[cfg(feature = "alloc")]
+mod wire {
+    use zerocopy::little_endian::{U16, U32, U64};
+    use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+    #[repr(C)]
+    #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+    pub(super) struct FirmwareVolumeHeader {
+        pub zero_vector: [u8; 16],
+        pub file_system_guid: [u8; 16],
+        pub fv_length: U64,
+        pub signature: U32,
+        pub attributes: U32,
+        pub header_length: U16,
+        pub checksum: U16,
+        pub ext_header_offset: U16,
+        pub reserved: u8,
+        pub revision: u8,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+    pub(super) struct BlockMapEntry {
+        pub num_blocks: U32,
+        pub length: U32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+    pub(super) struct FvHeaderWithBlockMap {
+        pub header: FirmwareVolumeHeader,
+        pub blocks: BlockMapEntry,
+        pub terminator: BlockMapEntry,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+    pub(super) struct VariableStoreHeader {
+        pub signature: [u8; 16],
+        pub size: U32,
+        pub format: u8,
+        pub state: u8,
+        pub reserved: U16,
+        pub reserved1: U32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+    pub(super) struct AuthenticatedVariableHeader {
+        pub start_id: U16,
+        pub state: u8,
+        pub reserved: u8,
+        pub attributes: U32,
+        pub monotonic_count: U64,
+        pub timestamp: [u8; 16],
+        pub pubkey_index: U32,
+        pub name_size: U32,
+        pub data_size: U32,
+        pub vendor_guid: [u8; 16],
+    }
+
+    const _: () = assert!(core::mem::size_of::<FvHeaderWithBlockMap>() == 0x48);
+    const _: () = assert!(core::mem::size_of::<VariableStoreHeader>() == 0x1c);
+    const _: () = assert!(core::mem::size_of::<AuthenticatedVariableHeader>() == 0x3c);
+}
+
 /// A variable store of `size` bytes, a multiple of 4 KiB, holding
 /// `variables` in an authenticated-format store, as CrabEFI keeps it. What
 /// a build seeds a settings store with: options ([`Variable::option`]) and
@@ -115,39 +181,63 @@ pub fn store(size: usize, variables: &[Variable]) -> Option<alloc::vec::Vec<u8>>
     use varstore::{
         AUTH_VAR_HEADER_SIZE, EFI_AUTH_VARIABLE_GUID, EFI_SYSTEM_NV_DATA_FV_GUID, FV_HEADER_LENGTH,
         FV_REVISION, FV_SIGNATURE, HEADER_ALIGNMENT, VAR_ADDED, VARIABLE_DATA,
-        VARIABLE_STORE_FORMATTED, VARIABLE_STORE_HEALTHY,
+        VARIABLE_STORE_FORMATTED, VARIABLE_STORE_HEALTHY, VS_HEADER_LENGTH,
     };
+    use wire::{
+        AuthenticatedVariableHeader, BlockMapEntry, FirmwareVolumeHeader, FvHeaderWithBlockMap,
+        VariableStoreHeader,
+    };
+    use zerocopy::little_endian::{U16, U32, U64};
+    use zerocopy::{FromBytes, IntoBytes};
+
     const BLOCK: usize = 0x1000;
     if size == 0 || !size.is_multiple_of(BLOCK) || u32::try_from(size).is_err() {
         return None;
     }
     let mut out = alloc::vec![0xffu8; size];
     // The firmware volume header, its block map and the terminating entry.
-    let fv = &mut out[..FV_HEADER_LENGTH];
-    fv[..0x10].fill(0);
-    fv[0x10..0x20].copy_from_slice(&EFI_SYSTEM_NV_DATA_FV_GUID);
-    fv[0x20..0x28].copy_from_slice(&(size as u64).to_le_bytes());
-    fv[0x28..0x2c].copy_from_slice(&FV_SIGNATURE.to_le_bytes());
-    // EDK2's attributes of a variable firmware volume.
-    fv[0x2c..0x30].copy_from_slice(&0x0004_feffu32.to_le_bytes());
-    fv[0x30..0x32].copy_from_slice(&(FV_HEADER_LENGTH as u16).to_le_bytes());
-    fv[0x32..0x37].fill(0);
-    fv[0x37] = FV_REVISION;
-    fv[0x38..0x3c].copy_from_slice(&((size / BLOCK) as u32).to_le_bytes());
-    fv[0x3c..0x40].copy_from_slice(&(BLOCK as u32).to_le_bytes());
-    fv[0x40..0x48].fill(0);
-    let sum = fv.as_chunks::<2>().0.iter().fold(0u16, |sum, &word| {
-        sum.wrapping_add(u16::from_le_bytes(word))
-    });
-    fv[0x32..0x34].copy_from_slice(&sum.wrapping_neg().to_le_bytes());
+    let mut fv_wire = FvHeaderWithBlockMap {
+        header: FirmwareVolumeHeader {
+            zero_vector: [0; 16],
+            file_system_guid: EFI_SYSTEM_NV_DATA_FV_GUID,
+            fv_length: U64::new(size as u64),
+            signature: U32::new(FV_SIGNATURE),
+            // EDK2's attributes of a variable firmware volume.
+            attributes: U32::new(0x0004_feff),
+            header_length: U16::new(FV_HEADER_LENGTH as u16),
+            checksum: U16::ZERO,
+            ext_header_offset: U16::ZERO,
+            reserved: 0,
+            revision: FV_REVISION,
+        },
+        blocks: BlockMapEntry {
+            num_blocks: U32::new((size / BLOCK) as u32),
+            length: U32::new(BLOCK as u32),
+        },
+        terminator: BlockMapEntry {
+            num_blocks: U32::ZERO,
+            length: U32::ZERO,
+        },
+    };
+    let words = <[U16]>::ref_from_bytes(fv_wire.as_bytes()).ok()?;
+    let sum = words
+        .iter()
+        .fold(0u16, |acc, word| acc.wrapping_add(word.get()));
+    fv_wire.header.checksum = U16::new(sum.wrapping_neg());
+    out[..FV_HEADER_LENGTH].copy_from_slice(fv_wire.as_bytes());
+
     // The variable store header; its size includes it (PI).
-    let vs = &mut out[FV_HEADER_LENGTH..FV_HEADER_LENGTH + 0x1c];
-    vs[..0x10].copy_from_slice(&EFI_AUTH_VARIABLE_GUID);
-    vs[0x10..0x14].copy_from_slice(&((size - FV_HEADER_LENGTH) as u32).to_le_bytes());
-    vs[0x14] = VARIABLE_STORE_FORMATTED;
-    vs[0x15] = VARIABLE_STORE_HEALTHY;
-    vs[0x16..0x1c].fill(0);
-    let mut at = FV_HEADER_LENGTH + 0x1c;
+    let vs_wire = VariableStoreHeader {
+        signature: EFI_AUTH_VARIABLE_GUID,
+        size: U32::new((size - FV_HEADER_LENGTH) as u32),
+        format: VARIABLE_STORE_FORMATTED,
+        state: VARIABLE_STORE_HEALTHY,
+        reserved: U16::ZERO,
+        reserved1: U32::ZERO,
+    };
+    out[FV_HEADER_LENGTH..FV_HEADER_LENGTH + VS_HEADER_LENGTH].copy_from_slice(vs_wire.as_bytes());
+
+    let mut at = FV_HEADER_LENGTH + VS_HEADER_LENGTH;
     for variable in variables {
         let key = variable.name;
         if key.is_empty() || key.len() > MAX_KEY || !key.is_ascii() {
@@ -156,7 +246,7 @@ pub fn store(size: usize, variables: &[Variable]) -> Option<alloc::vec::Vec<u8>>
         let name: alloc::vec::Vec<u8> = key
             .bytes()
             .chain(core::iter::once(0))
-            .flat_map(|byte| u16::from(byte).to_le_bytes())
+            .flat_map(|byte| U16::new(u16::from(byte)).as_bytes().to_vec())
             .collect();
         let data = &variable.data;
         let record = AUTH_VAR_HEADER_SIZE + name.len() + data.len();
@@ -164,14 +254,19 @@ pub fn store(size: usize, variables: &[Variable]) -> Option<alloc::vec::Vec<u8>>
         if end > size {
             return None;
         }
-        let header = &mut out[at..at + AUTH_VAR_HEADER_SIZE];
-        header.fill(0);
-        header[..2].copy_from_slice(&VARIABLE_DATA.to_le_bytes());
-        header[2] = VAR_ADDED;
-        header[4..8].copy_from_slice(&variable.attributes.to_le_bytes());
-        header[0x24..0x28].copy_from_slice(&(name.len() as u32).to_le_bytes());
-        header[0x28..0x2c].copy_from_slice(&u32::try_from(data.len()).ok()?.to_le_bytes());
-        header[0x2c..0x3c].copy_from_slice(&variable.guid);
+        let header = AuthenticatedVariableHeader {
+            start_id: U16::new(VARIABLE_DATA),
+            state: VAR_ADDED,
+            reserved: 0,
+            attributes: U32::new(variable.attributes),
+            monotonic_count: U64::ZERO,
+            timestamp: [0; 16],
+            pubkey_index: U32::ZERO,
+            name_size: U32::new(name.len() as u32),
+            data_size: U32::new(u32::try_from(data.len()).ok()?),
+            vendor_guid: variable.guid,
+        };
+        out[at..at + AUTH_VAR_HEADER_SIZE].copy_from_slice(header.as_bytes());
         let name_at = at + AUTH_VAR_HEADER_SIZE;
         out[name_at..name_at + name.len()].copy_from_slice(&name);
         out[name_at + name.len()..end].copy_from_slice(data);

@@ -109,16 +109,18 @@ impl X86FlashAssembly {
 /// The offset of the FFS's own anchor: the `FSTART01` block whose total
 /// image size and anchor offset fields describe this image.
 fn ffs_anchor_offset(ffs: &[u8]) -> Option<usize> {
-    let field = |offset: usize| {
-        u32::from_le_bytes(ffs[offset..offset + 4].try_into().expect("4 bytes")) as usize
-    };
-    ffs.windows(fstart_core::ffs::LOCATOR_MAGIC.len())
+    use fstart_core::ffs::{LOCATOR_MAGIC, LocatorBlock};
+    use zerocopy::FromBytes;
+
+    ffs.windows(LOCATOR_MAGIC.len())
         .enumerate()
         .find_map(|(offset, window)| {
-            (window == fstart_core::ffs::LOCATOR_MAGIC
-                && offset + 28 <= ffs.len()
-                && field(offset + 20) == ffs.len()
-                && field(offset + 24) == offset)
+            if window != LOCATOR_MAGIC {
+                return None;
+            }
+            let (locator, _) = LocatorBlock::read_from_prefix(&ffs[offset..]).ok()?;
+            (locator.total_image_size.get() as usize == ffs.len()
+                && locator.anchor_offset.get() as usize == offset)
                 .then_some(offset)
         })
 }
