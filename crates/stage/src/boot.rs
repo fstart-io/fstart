@@ -5,8 +5,8 @@
 use fstart_core::services::BootMedia;
 pub use fstart_load::{
     Codec, Event, InPlace, LoadError, Lz4, Measure, Measurement, MemoryPolicy, MemoryWindow,
-    Stored, Unmeasured, VerifiedExecutable, bootstrap_footprint, codec, load_bootstrap,
-    load_bootstrap_into, place, stored_input,
+    ParallelRunner, Stored, Unmeasured, VerifiedExecutable, bootstrap_footprint, codec,
+    load_bootstrap, load_bootstrap_into, place, set_parallel_runner, stored_input,
 };
 
 /// What this build measures into: measured boot (`tcg`), which records

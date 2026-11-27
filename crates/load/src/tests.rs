@@ -460,3 +460,102 @@ fn in_place_bytes_are_measured_only_when_mapped_and_matching() {
     assert!(InPlace::new(&media, 6, 5).is_err());
     assert!(InPlace::new(&medium(b"hello"), 0, 5).is_err());
 }
+
+#[test]
+fn pipelined_read_and_verify_sha256_matches_sequential() {
+    extern crate std;
+
+    static RUNNER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = RUNNER_LOCK.lock().unwrap();
+
+    fn scoped_runner(bsp: &mut dyn FnMut(), ap: &(dyn Fn() + Sync)) -> bool {
+        std::thread::scope(|s| {
+            s.spawn(|| ap());
+            bsp();
+        });
+        true
+    }
+
+    fn declining_runner(_bsp: &mut dyn FnMut(), _ap: &(dyn Fn() + Sync)) -> bool {
+        false
+    }
+
+    struct OwnedMedia {
+        bytes: std::vec::Vec<u8>,
+        fail_at: Option<usize>,
+    }
+    impl BootMedia for OwnedMedia {
+        fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize, ServiceError> {
+            if let Some(limit) = self.fail_at
+                && offset >= limit
+            {
+                return Err(ServiceError::HardwareError);
+            }
+            let end = offset
+                .checked_add(buf.len())
+                .ok_or(ServiceError::InvalidParam)?;
+            buf.copy_from_slice(
+                self.bytes
+                    .get(offset..end)
+                    .ok_or(ServiceError::InvalidParam)?,
+            );
+            Ok(buf.len())
+        }
+        fn size(&self) -> usize {
+            self.bytes.len()
+        }
+    }
+
+    // Multiple sizes: exact 2 chunks, unaligned multi-chunk, and single chunk.
+    for len in [
+        PIPELINE_CHUNK,
+        PIPELINE_CHUNK * 2,
+        PIPELINE_CHUNK * 3 + 12345,
+    ] {
+        let data: std::vec::Vec<u8> = (0..len).map(|i| ((i * 31 + 7) & 0xff) as u8).collect();
+        let expected = hash_sha256(&data);
+        let media = OwnedMedia {
+            bytes: data.clone(),
+            fail_at: None,
+        };
+        let mut dst = std::vec![0u8; len];
+
+        set_parallel_runner(Some(scoped_runner));
+        let verified =
+            read_and_verify_sha256(&media, 0, &mut dst, &expected, LoadError::StoredDigest);
+        set_parallel_runner(None);
+        assert_eq!(verified.unwrap().0, data.as_slice());
+
+        // Digest mismatch must fail cleanly with the requested error.
+        let mut bad = expected;
+        bad[0] ^= 0x01;
+        set_parallel_runner(Some(scoped_runner));
+        let err = read_and_verify_sha256(&media, 0, &mut dst, &bad, LoadError::StoredDigest);
+        set_parallel_runner(None);
+        assert_eq!(err.err(), Some(LoadError::StoredDigest));
+    }
+
+    // Mid-stream I/O error must abort the helper without hanging and return LoadError::Io.
+    let len = PIPELINE_CHUNK * 3 + 77;
+    let data: std::vec::Vec<u8> = (0..len).map(|i| (i & 0xff) as u8).collect();
+    let expected = hash_sha256(&data);
+    let failing = OwnedMedia {
+        bytes: data.clone(),
+        fail_at: Some(PIPELINE_CHUNK * 2),
+    };
+    let mut dst = std::vec![0u8; len];
+    set_parallel_runner(Some(scoped_runner));
+    let err = read_and_verify_sha256(&failing, 0, &mut dst, &expected, LoadError::StoredDigest);
+    set_parallel_runner(None);
+    assert_eq!(err.err(), Some(LoadError::Io));
+
+    // When the runner declines (no AP online), fallback must still succeed.
+    let media = OwnedMedia {
+        bytes: data.clone(),
+        fail_at: None,
+    };
+    set_parallel_runner(Some(declining_runner));
+    let verified = read_and_verify_sha256(&media, 0, &mut dst, &expected, LoadError::StoredDigest);
+    set_parallel_runner(None);
+    assert_eq!(verified.unwrap().0, data.as_slice());
+}

@@ -17,18 +17,49 @@ pub enum DigestError {
     Sha3Mismatch,
 }
 
+/// Streaming SHA-256 hasher for incremental/pipelined verification.
+#[cfg(any(feature = "sha2-digest", test))]
+pub struct Sha256Hasher(sha2::Sha256);
+
+#[cfg(any(feature = "sha2-digest", test))]
+impl Sha256Hasher {
+    /// Start a new SHA-256 state.
+    pub fn new() -> Self {
+        use sha2::Digest;
+        Self(sha2::Sha256::new())
+    }
+
+    /// Feed the next slice of bytes into the digest.
+    pub fn update(&mut self, data: &[u8]) {
+        use sha2::Digest;
+        self.0.update(data);
+    }
+
+    /// Finish the hash and return the 32-byte digest.
+    pub fn finalize(self) -> [u8; 32] {
+        use sha2::Digest;
+        let result = self.0.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&result);
+        out
+    }
+}
+
+#[cfg(any(feature = "sha2-digest", test))]
+impl Default for Sha256Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Compute a SHA-256 digest of `data`.
 ///
 /// Returns a 32-byte digest.
 #[cfg(any(feature = "sha2-digest", test))]
 pub fn hash_sha256(data: &[u8]) -> [u8; 32] {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
+    let mut hasher = Sha256Hasher::new();
     hasher.update(data);
-    let result = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&result);
-    out
+    hasher.finalize()
 }
 
 /// Compute a SHA3-256 digest of `data`.

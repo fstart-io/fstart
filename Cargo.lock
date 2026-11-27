@@ -1675,6 +1675,7 @@ dependencies = [
  "fstart-crypto",
  "fstart-ffs",
  "lzma-rust2",
+ "portable-atomic",
  "ufmt",
 ]
 

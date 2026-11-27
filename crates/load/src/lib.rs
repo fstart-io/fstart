@@ -193,6 +193,164 @@ pub struct Verified<'a>(&'a [u8]);
 #[must_use]
 pub struct Measured<'a>(&'a [u8]);
 
+use core::cell::UnsafeCell;
+use core::ptr::null_mut;
+use portable_atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+
+/// Runs `bsp` on the calling CPU concurrently with `ap` on one helper CPU,
+/// joining the helper CPU before returning. Returns `true` if both ran, or
+/// `false` without invoking either when no helper CPU is online.
+pub type ParallelRunner = fn(&mut dyn FnMut(), &(dyn Fn() + Sync)) -> bool;
+
+static PARALLEL_RUNNER: AtomicPtr<()> = AtomicPtr::new(null_mut());
+
+/// Register or clear the stage's helper-CPU runner for pipelined read+hash.
+///
+/// Platforms with APs online during payload loading register their AP1
+/// launcher after MP init and clear it before parking APs for OS handoff.
+pub fn set_parallel_runner(runner: Option<ParallelRunner>) {
+    let ptr = match runner {
+        Some(f) => f as *const () as *mut (),
+        None => null_mut(),
+    };
+    PARALLEL_RUNNER.store(ptr, Ordering::Release);
+}
+
+fn parallel_runner() -> Option<ParallelRunner> {
+    let ptr = PARALLEL_RUNNER.load(Ordering::Acquire);
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: `PARALLEL_RUNNER` is written exclusively by `set_parallel_runner`
+    // from a valid `ParallelRunner` function pointer or null.
+    Some(unsafe { core::mem::transmute::<*mut (), ParallelRunner>(ptr) })
+}
+
+/// Chunk size for pipelined flash reads + incremental SHA-256.
+///
+/// 64 KiB stays hot inside shared L2 caches while hiding >98% of SHA-256 work
+/// behind multi-MiB SPI flash reads.
+const PIPELINE_CHUNK: usize = 64 * 1024;
+
+struct SendPtr(*mut u8);
+// SAFETY: `read_and_verify_sha256` enforces disjoint temporal access between
+// BSP writes (`[pos..end)` before Release) and AP reads (`[hashed..avail)`
+// after Acquire), and joins the AP before returning.
+unsafe impl Sync for SendPtr {}
+
+impl SendPtr {
+    #[inline]
+    fn as_ptr(&self) -> *mut u8 {
+        self.0
+    }
+}
+
+struct SyncDigest(UnsafeCell<[u8; 32]>);
+// SAFETY: Written exclusively by the AP closure before it returns and is
+// joined by `ParallelRunner`, then read exclusively by the BSP afterwards.
+unsafe impl Sync for SyncDigest {}
+
+impl SyncDigest {
+    #[inline]
+    fn get(&self) -> *mut [u8; 32] {
+        self.0.get()
+    }
+}
+
+/// Read exactly `into.len()` bytes at `offset` and verify their SHA-256
+/// digest against `expected`, pipelining flash reads on the calling CPU with
+/// incremental SHA-256 on a helper CPU when one is registered and the transfer
+/// exceeds one chunk.
+pub fn read_and_verify_sha256<'a>(
+    media: &(impl BootMedia + ?Sized),
+    offset: u64,
+    into: &'a mut [u8],
+    expected: &[u8; 32],
+    error: LoadError,
+) -> Result<Verified<'a>, LoadError> {
+    let total = into.len();
+    if total <= PIPELINE_CHUNK {
+        return read(media, offset, into)?.verify::<Sha256>(expected, error);
+    }
+    let Some(runner) = parallel_runner() else {
+        return read(media, offset, into)?.verify::<Sha256>(expected, error);
+    };
+    let base_offset = usize::try_from(offset).map_err(|_| LoadError::Bounds)?;
+    if base_offset
+        .checked_add(total)
+        .filter(|&end| end <= media.size())
+        .is_none()
+    {
+        return Err(LoadError::Bounds);
+    }
+
+    let base_ptr = SendPtr(into.as_mut_ptr());
+    let ready_bytes = AtomicUsize::new(0);
+    let aborted = AtomicBool::new(false);
+    let digest_cell = SyncDigest(UnsafeCell::new([0u8; 32]));
+    let mut read_err: Option<LoadError> = None;
+
+    let mut bsp_work = || {
+        let mut pos = 0usize;
+        while pos < total {
+            let len = (total - pos).min(PIPELINE_CHUNK);
+            // SAFETY: `[pos..pos+len)` has not been published via `ready_bytes`,
+            // so the helper CPU cannot access it yet; we drop the slice before
+            // publishing `pos + len` with Release ordering.
+            let chunk = unsafe { core::slice::from_raw_parts_mut(base_ptr.as_ptr().add(pos), len) };
+            match media.read_at(base_offset + pos, chunk) {
+                Ok(n) if n == len => {
+                    pos += len;
+                    ready_bytes.store(pos, Ordering::Release);
+                }
+                _ => {
+                    read_err = Some(LoadError::Io);
+                    aborted.store(true, Ordering::Release);
+                    break;
+                }
+            }
+        }
+    };
+
+    let ap_work = || {
+        let mut hasher = fstart_crypto::digest::Sha256Hasher::new();
+        let mut hashed = 0usize;
+        while hashed < total {
+            let avail = ready_bytes.load(Ordering::Acquire);
+            if avail > hashed {
+                // SAFETY: `[hashed..avail)` was completely written by BSP before
+                // its Release store to `ready_bytes`, and BSP never writes it again.
+                let slice = unsafe {
+                    core::slice::from_raw_parts(base_ptr.as_ptr().add(hashed), avail - hashed)
+                };
+                hasher.update(slice);
+                hashed = avail;
+            } else if aborted.load(Ordering::Acquire) {
+                return;
+            } else {
+                core::hint::spin_loop();
+            }
+        }
+        // SAFETY: Exclusive write by AP before returning and joining BSP.
+        unsafe { *digest_cell.get() = hasher.finalize() };
+    };
+
+    if !runner(&mut bsp_work, &ap_work) {
+        return read(media, offset, into)?.verify::<Sha256>(expected, error);
+    }
+    if let Some(err) = read_err {
+        return Err(err);
+    }
+    // SAFETY: `runner` joined the AP before returning, and `read_err` is None so
+    // the AP hashed all `total` bytes and wrote the final digest.
+    let actual = unsafe { *digest_cell.get() };
+    if actual == *expected {
+        Ok(Verified(into))
+    } else {
+        Err(error)
+    }
+}
+
 /// Read exactly `into.len()` bytes at `offset`; short successful device
 /// reads are still failures.
 pub fn read<'a>(
@@ -472,18 +630,28 @@ pub fn load_bootstrap_into(
     match descriptor.compression {
         // The footprint check made the stored and loaded digests one.
         Compression::None => drop(
-            read(media, descriptor.offset, output)?
-                .verify::<Sha256>(&descriptor.stored_digest, LoadError::StoredDigest)?
-                .measure(measurement),
+            read_and_verify_sha256(
+                media,
+                descriptor.offset,
+                output,
+                &descriptor.stored_digest,
+                LoadError::StoredDigest,
+            )?
+            .measure(measurement),
         ),
         // Authenticate and measure precisely the stable bytes passed to the
         // decoder.
         compression => drop(
-            read(media, descriptor.offset, scratch)?
-                .verify::<Sha256>(&descriptor.stored_digest, LoadError::StoredDigest)?
-                .measure(measurement)
-                .decompress(codec, compression, output)?
-                .verify::<Sha256>(&descriptor.loaded_digest, LoadError::LoadedDigest)?,
+            read_and_verify_sha256(
+                media,
+                descriptor.offset,
+                scratch,
+                &descriptor.stored_digest,
+                LoadError::StoredDigest,
+            )?
+            .measure(measurement)
+            .decompress(codec, compression, output)?
+            .verify::<Sha256>(&descriptor.loaded_digest, LoadError::LoadedDigest)?,
         ),
     }
     Ok(())
