@@ -391,6 +391,11 @@ impl Resolved {
         // Bad settings fail before the units build.
         self.plan.options.seed(request.settings)?;
         let build = self.build(root, board, request.release)?;
+        let smm_images: BTreeMap<String, PathBuf> = build
+            .artifacts
+            .iter()
+            .filter_map(|(unit, outputs)| Some((unit.clone(), outputs.get("image")?.clone())))
+            .collect();
         let files = fstart_image_build::files::HostFiles {
             blobs: self.blobs.clone(),
         };
@@ -401,6 +406,7 @@ impl Resolved {
             .join(self.assembly_key(
                 &files,
                 &build.stages,
+                &smm_images,
                 &inputs,
                 request.payload_files,
                 request.signing_key,
@@ -414,6 +420,7 @@ impl Resolved {
                 board_dir: &board.dir,
                 board_name: &board.board,
                 stages: &build.stages,
+                smm_images: &smm_images,
                 output_dir: &directory,
                 inputs: &inputs,
                 payload_files: request.payload_files,
@@ -436,10 +443,12 @@ impl Resolved {
     /// the caller's inputs, payload files, signing key and settings. Two
     /// assemblies share their intermediate files only if they make the
     /// same ones.
+    #[allow(clippy::too_many_arguments)]
     fn assembly_key(
         &self,
         files: &dyn Files,
         stages: &[fstart_image_build::StageBinary],
+        smm_images: &BTreeMap<String, PathBuf>,
         inputs: &BTreeMap<String, PathBuf>,
         payload_files: &[(String, String)],
         signing_key: Option<&Path>,
@@ -476,6 +485,11 @@ impl Resolved {
             field(&mut hash, stage.name.as_bytes());
             field(&mut hash, &read(&stage.path)?);
             field(&mut hash, &read(&stage.run_path)?);
+        }
+        count(&mut hash, smm_images.len());
+        for (unit, path) in smm_images {
+            field(&mut hash, unit.as_bytes());
+            field(&mut hash, &read(path)?);
         }
         count(&mut hash, inputs.len());
         for (name, path) in inputs {

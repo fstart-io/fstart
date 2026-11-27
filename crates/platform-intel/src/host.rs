@@ -186,19 +186,12 @@ pub fn compilation_plan(
         // backend, matching 0.10's force-soft-compact workspace feature.
         let relocation_model = if boot { "pic" } else { "static" };
         let mut bindings = vec![];
-        if ram {
+        if ram && plan.smm.coreboot.emit_header {
             bindings.push(ArtifactBinding {
                 producer: "smm".into(),
-                artifact: "image".into(),
-                environment: "FSTART_SMM_IMAGE".into(),
+                artifact: "header".into(),
+                environment: "FSTART_SMM_COREBOOT_HEADER".into(),
             });
-            if plan.smm.coreboot.emit_header {
-                bindings.push(ArtifactBinding {
-                    producer: "smm".into(),
-                    artifact: "header".into(),
-                    environment: "FSTART_SMM_COREBOOT_HEADER".into(),
-                });
-            }
         }
         units.push(CompilationUnit {
             name: row.role.name().into(), cargo_target: CargoTarget::BoardBinary, target: plan.target(),

@@ -353,6 +353,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         microcode: None,
         data_assets: vec![],
         file_assets: vec![],
+        smm: None,
         full_flash_image: false,
         boot_image_format: BootImageFormat::AllwinnerEgon,
         boot_hart_id: 0,

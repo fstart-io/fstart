@@ -283,12 +283,16 @@ fn export_one(
     let files = MemoryFiles::default();
     let mut binaries = Vec::new();
     let mut stages = result.stages.clone();
+    let mut smm_images = BTreeMap::new();
     for (unit, outputs) in &result.artifacts {
         for (kind, path) in outputs {
             let filename = path.file_name().ok_or("output has no filename")?;
             let logical = Path::new("/units").join(unit).join(filename);
             include(&files, path, &logical)?;
             binaries.push(logical.to_string_lossy().into_owned());
+            if kind == "image" {
+                smm_images.insert(unit.clone(), logical.clone());
+            }
             if let Some(stage) = stages.iter_mut().find(|s| s.name == *unit) {
                 match kind.as_str() {
                     "elf" => stage.path = logical,
@@ -328,6 +332,7 @@ fn export_one(
             board_dir,
             plan: plan.clone(),
             stages,
+            smm_images,
             inputs: inputs.clone(),
             packed_donor,
             bundled_payload: bundled_payload.clone(),

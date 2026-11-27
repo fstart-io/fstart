@@ -167,6 +167,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
         microcode: None,
         data_assets: vec![],
         file_assets: vec![],
+        smm: None,
         full_flash_image: true,
         boot_image_format: BootImageFormat::AspeedSpi,
         boot_hart_id: 0,

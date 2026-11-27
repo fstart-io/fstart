@@ -1,21 +1,11 @@
 //! Build-script shim for fstart-platform-intel.
 //!
-//! Forwards build-selected inputs to firmware compilation: the ramstage SMM
-//! image and the SMBIOS release date shared by RTC and Type 0 metadata.
+//! Forwards the SMBIOS release date shared by RTC and Type 0 metadata.
 
 use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
-    println!("cargo:rustc-check-cfg=cfg(fstart_intel_has_smm_image)");
-
-    println!("cargo:rerun-if-env-changed=FSTART_SMM_IMAGE");
-    if let Ok(smm_image) = env::var("FSTART_SMM_IMAGE") {
-        println!("cargo:rerun-if-changed={smm_image}");
-        println!("cargo:rustc-env=FSTART_SMM_IMAGE={smm_image}");
-        println!("cargo:rustc-cfg=fstart_intel_has_smm_image");
-    }
-
     println!("cargo:rerun-if-env-changed=FSTART_SMBIOS_DATE");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     let date = env::var("FSTART_SMBIOS_DATE").unwrap_or_else(|_| current_smbios_date());

@@ -66,12 +66,13 @@ fn picasso_payload_plan_includes_smm_and_verified_ffs() {
     assert_eq!(unit.name, "stage");
     assert!(unit.release_only);
     assert_eq!(unit.features, ["bundle", "payload-uefi"]);
-    assert_eq!(unit.bindings[0].producer, "smm");
+    assert!(unit.bindings.is_empty());
     let UnitOutput::Executable { expectations, .. } = &unit.output else {
         unreachable!()
     };
     assert_eq!(expectations.entry, Some(picasso::LAYOUT.reset_vector()));
-    assert!(plan.ffs_assembly().is_ok());
+    let ffs = plan.ffs_assembly().unwrap();
+    assert_eq!(ffs.smm.as_ref().unwrap().unit, "smm");
     let mut invalid = selected;
     invalid
         .compiler_files
@@ -181,8 +182,9 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 /// entry cfg, again without the payload cfg, for the AMD reset sections'
 /// rename from `.sp3.*` to `.amd.*` in the linker script, for the one
 /// AMD host plan, for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`, for
-/// expanding the Zeppelin reset image to 3 MiB, and for stage `-Zplt=yes`
-/// + compact soft `sha1`/`sha2`.)
+/// expanding the Zeppelin reset image to 3 MiB, for stage `-Zplt=yes`
+/// with compact soft `sha1`/`sha2`, and for moving `smm.bin` to FFS
+/// without per-board `FSTART_SMM_IMAGE`/`FSTART_MP_MAX_CPUS` unit env.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -197,9 +199,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "4013a7b62dd5eff28d8d689cf1b18779df12d7355c893f9074885514b6294476",
-            "6b90784ecdab6d4742fde255cc1f88a4b774e4b69589cc9795941e4bffa0c23c",
-            "ced50dfbeb54ed038a268a31404517568b276760dec4bd708a800646484235f2",
+            "40b6b25ddda9739964ef92256a137a703f01f8168b5e39fb0248dd07f879ec82",
+            "8e179fbf720cc4c6f0277db0fcf02c146561b1a9602e4a57bd9a706a39314adc",
+            "9c70988c82f0a5c22d193d259ea57c05627824becbad4ad689815e7d67168bb6",
         ]
     );
 }

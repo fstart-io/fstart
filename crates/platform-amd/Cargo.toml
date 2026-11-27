@@ -1433,10 +1433,6 @@ fstart-driver-tpm = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
 zerocopy.workspace = true
 
-# build.rs lays the SMM image out as the installer will (TSEG fit check).
-[build-dependencies]
-fstart-smm = { workspace = true }
-
 [dev-dependencies]
 # The unit tests cover the host plans and SMM too, also in `cargo test --workspace`.
 fstart-platform-amd = { workspace = true, features = ["host", "smm"] }

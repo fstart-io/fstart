@@ -179,11 +179,32 @@ pub struct FfsAssembly {
     /// assets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_assets: Vec<fstart_core::board::FileAsset>,
+    /// Standalone `FSMM` handler image packaged into FFS as `smm.bin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smm: Option<SmmFfsImage>,
     pub full_flash_image: bool,
     pub boot_image_format: BootImageFormat,
     pub boot_hart_id: u32,
     pub build: fstart_core::BoardBuildPolicy,
 }
+/// A standalone `FSMM` image produced by an SMM compilation unit and packed
+/// into the FFS as `smm.bin`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmmFfsImage {
+    /// Name of the `UnitOutput::SmmImage` compilation unit producing `image`.
+    pub unit: String,
+    /// Optional AMD TSEG capacity check validated at image assembly time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amd_tseg_check: Option<AmdTsegCheck>,
+}
+
+/// AMD TSEG capacity parameters verified when packing `smm.bin` into FFS.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AmdTsegCheck {
+    pub tseg_size: u64,
+    pub max_cpus: u16,
+}
+
 /// Existing authenticated-image wire roles, not firmware-family identities.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum BootstrapRole {
@@ -871,6 +892,7 @@ mod tests {
                     microcode: None,
                     data_assets: vec![],
                     file_assets: vec![],
+                    smm: None,
                     full_flash_image: false,
                     boot_image_format: BootImageFormat::None,
                     boot_hart_id: 0,
@@ -1125,6 +1147,7 @@ mod tests {
             microcode: None,
             data_assets: vec![],
             file_assets: vec![],
+            smm: None,
             full_flash_image: false,
             boot_image_format: BootImageFormat::None,
             boot_hart_id: 0,

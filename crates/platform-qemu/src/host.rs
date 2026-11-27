@@ -5,9 +5,8 @@ use crate::facts::{VirtBoardFacts, VirtMachine};
 use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
-        ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit,
-        FfsAssembly as Assembly, ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit,
-        UnitOutput,
+        BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly,
+        ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit, UnitOutput,
     },
     layout::EncodedLayout,
     linker::Xip,
@@ -459,6 +458,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         microcode: None,
         data_assets: vec![],
         file_assets: vec![],
+        smm: None,
         full_flash_image: true,
         boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
@@ -1083,6 +1083,12 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         microcode: None,
         data_assets: vec![],
         file_assets: vec![],
+        smm: machine
+            .is_q35()
+            .then(|| fstart_image_build::build_plan::SmmFfsImage {
+                unit: "smm".into(),
+                amd_tseg_check: None,
+            }),
         full_flash_image: policy.full_flash_image,
         boot_image_format: BootImageFormat::None,
         boot_hart_id: policy.boot_hart_id,
@@ -1174,15 +1180,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             .into(),
         );
     }
-    let stage_bindings = if machine.is_q35() {
-        vec![ArtifactBinding {
-            producer: "smm".into(),
-            artifact: "image".into(),
-            environment: "FSTART_SMM_IMAGE".into(),
-        }]
-    } else {
-        vec![]
-    };
     units.push(CompilationUnit {
         name: "stage".into(),
         cargo_target: CargoTarget::BoardBinary,
@@ -1193,7 +1190,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         release_only: false,
         linker_script: Some(linker_script),
         environment_values: BTreeMap::new(),
-        bindings: stage_bindings,
+        bindings: vec![],
         file_bindings: vec![],
         board_features: vec![],
         output: UnitOutput::Executable {

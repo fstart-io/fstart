@@ -701,15 +701,20 @@ impl<B: IntelBoard> Ramstage<B, Chipset> {
         crate::tpm::TisProbe { family, irq }
     }
 
-    /// Bring up the APs with the CPU driver and, when fbuild embedded an SMM
-    /// image ([`crate::SMM_IMAGE`]), relocate SMBASE, install the handler in
-    /// TSEG and lock SMRAM.
+    /// Bring up the APs with the CPU driver and, when the FFS carries an SMM
+    /// image (`smm.bin`), relocate SMBASE, install the handler in TSEG and
+    /// lock SMRAM.
     pub fn start_cpus(mut self) -> Ramstage<B, Cpus> {
+        let smm_image = match self.load_smm_image() {
+            Ok(image) => image,
+            Err(()) => self.fail("SMM image load"),
+        };
         if init_mp::<B::Platform>(
             &self.northbridge,
             &self.southbridge,
             B::CONFIG.max_cpus(),
             self.resume,
+            smm_image.as_deref(),
         )
         .is_err()
         {
@@ -722,6 +727,36 @@ impl<B: IntelBoard> Ramstage<B, Chipset> {
             self.fail("southbridge post-MP init");
         }
         self.into()
+    }
+
+    fn load_smm_image(&mut self) -> Result<Option<Vec<u8>>, ()> {
+        let Some((media, descriptor, codec)) =
+            fstart_stage::ffs_asset_descriptor(fstart_core::ffs::SMM_IMAGE_ASSET)
+        else {
+            return Ok(None);
+        };
+        let footprint = fstart_resume::blob_footprint(&descriptor).map_err(|_| ())?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(footprint).map_err(|_| ())?;
+        bytes.resize(footprint, 0);
+        let store = self.store.as_mut().unwrap_or_else(|| unreachable!());
+        let (loaded, cached) = fstart_resume::load_blob(
+            &media,
+            fstart_resume::stage_cache::CachedStage::Smm,
+            &descriptor,
+            &mut bytes,
+            store,
+            self.resume,
+            codec,
+            &fstart_core::services::Measurement::NONE,
+        )
+        .map_err(|_| ())?;
+        bytes.truncate(loaded);
+        if !self.resume && !cached {
+            self.northbridge.set_s3_enabled(false);
+            self.southbridge.set_s3_enabled(false);
+        }
+        Ok(Some(bytes))
     }
 }
 
@@ -1094,6 +1129,7 @@ fn init_mp<P: IntelEarlyPlatform>(
     southbridge: &P::Southbridge,
     max_cpus: u16,
     resume: bool,
+    smm_image: Option<&[u8]>,
 ) -> Result<(), ServiceError> {
     // APs must run the same updated microcode as the BSP, whose update
     // happens in pre-CAR assembly; the blob sits in boot flash.
@@ -1121,7 +1157,7 @@ fn init_mp<P: IntelEarlyPlatform>(
         ServiceError::HardwareError
     };
     let mut relocate = |mp: &MpHandle| {
-        relocated = crate::SMM_IMAGE
+        relocated = smm_image
             .map(|image| smm.relocate(mp, image))
             .transpose()
             .map_err(report)?;

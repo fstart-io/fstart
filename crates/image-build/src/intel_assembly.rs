@@ -86,6 +86,10 @@ impl IntelPlan {
             })),
             data_assets: self.data_assets.clone(),
             file_assets: vec![],
+            smm: Some(crate::build_plan::SmmFfsImage {
+                unit: "smm".into(),
+                amd_tseg_check: None,
+            }),
             full_flash_image: true,
             boot_image_format: BootImageFormat::None,
             boot_hart_id: 0,

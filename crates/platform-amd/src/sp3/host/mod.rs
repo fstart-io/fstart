@@ -12,7 +12,7 @@ use crate::sp3::layout::{self, EARLY_REGION, LAYOUT, RESET};
 use crate::sp3::silicon::Generation;
 use fstart_image_build::amd::halved_flash::{FlashPlan, NvramSlot, ResetSlot};
 
-pub use crate::host::{SMM_STACK_SIZE, SMM_UNIT, STAGE_FEATURE, STAGE_UNIT, TSEG_SIZE_ENV};
+pub use crate::host::{SMM_STACK_SIZE, SMM_UNIT, STAGE_FEATURE, STAGE_UNIT};
 
 /// The SP3 generations of the SoCs board `B` lists, in boot ROM order
 /// (Naples below Rome below Milan).
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(plan.stages, [STAGE_UNIT]);
         let unit = plan.unit(STAGE_UNIT).unwrap();
         assert_eq!(unit.features, [STAGE_FEATURE]);
-        assert_eq!(unit.environment_values["FSTART_MP_MAX_CPUS"], "256");
+        assert!(unit.environment_values.is_empty());
         let UnitOutput::Executable {
             expectations,
             load_address,
@@ -298,7 +298,7 @@ mod tests {
         assert!(matches!(smm.cargo_target, CargoTarget::BoardLibrary));
         assert_eq!(smm.features, ["smm", "bundle-smm"]);
         assert!(smm.release_only && smm.rustflags.iter().any(|f| f == "-Cpanic=abort"));
-        assert_eq!(smm.environment_values["FSTART_MP_MAX_CPUS"], "256");
+        assert_eq!(smm.environment_values["FSTART_LOG_LEVEL"], "off");
         let UnitOutput::SmmImage {
             entry_count,
             stack_size,
@@ -319,18 +319,17 @@ mod tests {
                 .rustflags
                 .contains(&"sha2_backend_soft=\"compact\"".into())
         );
-        let [binding] = reset.bindings.as_slice() else {
-            panic!("stage unit takes exactly the SMM image")
-        };
-        assert_eq!(
-            (
-                binding.producer.as_str(),
-                binding.artifact.as_str(),
-                binding.environment.as_str()
-            ),
-            (SMM_UNIT, "image", "FSTART_SMM_IMAGE")
-        );
-        assert_eq!(reset.environment_values[TSEG_SIZE_ENV], "8388608");
+        assert!(reset.bindings.is_empty());
+        assert!(reset.environment_values.is_empty());
+        let smm_ffs = plan
+            .ffs_assembly()
+            .unwrap()
+            .smm
+            .as_ref()
+            .expect("FFS packs the SMM image");
+        assert_eq!(smm_ffs.unit, SMM_UNIT);
+        let check = smm_ffs.amd_tseg_check.expect("AMD TSEG check configured");
+        assert_eq!((check.tseg_size, check.max_cpus), (8_388_608, 256));
         // Only the stage unit is a stage.
         assert_eq!(plan.stages, [STAGE_UNIT]);
     }
