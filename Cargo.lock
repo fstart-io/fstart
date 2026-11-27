@@ -1754,6 +1754,9 @@ dependencies = [
 [[package]]
 name = "fstart-mctp"
 version = "0.1.0"
+dependencies = [
+ "zerocopy",
+]
 
 [[package]]
 name = "fstart-mctp-broker"
@@ -1764,6 +1767,7 @@ dependencies = [
  "fstart-pldm",
  "fstart-pmci",
  "fstart-spdm",
+ "zerocopy",
 ]
 
 [[package]]
@@ -1963,6 +1967,9 @@ dependencies = [
 [[package]]
 name = "fstart-pldm"
 version = "0.1.0"
+dependencies = [
+ "zerocopy",
+]
 
 [[package]]
 name = "fstart-pmci"
@@ -2019,6 +2026,7 @@ dependencies = [
  "hmac",
  "p256",
  "sha2 0.10.9",
+ "zerocopy",
  "zeroize",
 ]
 

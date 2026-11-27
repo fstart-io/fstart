@@ -1,6 +1,32 @@
 //! PLDM Base Messaging Control and Discovery (Type 0, DSP0240).
 
 use crate::{CompletionCode, Error, PldmHeader, PldmType, write_completion};
+use zerocopy::little_endian::U32 as LeU32;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct GetPldmVersionReq {
+    data_transfer_handle: LeU32,
+    transfer_op_flag: u8,
+    pldm_type: u8,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct GetPldmVersionResp {
+    next_transfer_handle: LeU32,
+    transfer_flag: u8,
+    version: [u8; 4],
+    crc32: LeU32,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct GetPldmCommandsReq {
+    pldm_type: u8,
+    version: [u8; 4],
+}
 
 /// PLDM Base command codes (DSP0240 Table 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +76,8 @@ pub fn encode_get_pldm_version_req(
     pldm_type: PldmType,
     out: &mut [u8],
 ) -> Result<usize, Error> {
-    if out.len() < 9 {
+    let total = PldmHeader::LEN + core::mem::size_of::<GetPldmVersionReq>();
+    if out.len() < total {
         return Err(Error::BufferTooSmall);
     }
     let hdr = PldmHeader::request(
@@ -58,11 +85,15 @@ pub fn encode_get_pldm_version_req(
         PldmType::Base,
         BaseCommand::GetPldmVersion as u8,
     );
-    out[..3].copy_from_slice(&hdr.to_bytes());
-    out[3..7].copy_from_slice(&0u32.to_le_bytes()); // data_transfer_handle
-    out[7] = 0x01; // GetFirstPart
-    out[8] = pldm_type as u8;
-    Ok(9)
+    out[..PldmHeader::LEN].copy_from_slice(&hdr.to_bytes());
+    let body = GetPldmVersionReq {
+        data_transfer_handle: LeU32::new(0),
+        transfer_op_flag: 0x01, // GetFirstPart
+        pldm_type: pldm_type as u8,
+    };
+    body.write_to_prefix(&mut out[PldmHeader::LEN..])
+        .map_err(|_| Error::BufferTooSmall)?;
+    Ok(total)
 }
 
 /// Stateful PLDM Base (Type 0) responder.
@@ -137,15 +168,14 @@ impl BaseResponder {
                 Ok(12)
             }
             x if x == BaseCommand::GetPldmVersion as u8 => {
-                if data.len() != 6 {
+                let Ok(req) = GetPldmVersionReq::ref_from_bytes(data) else {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
-                }
-                let op_flag = data[4];
+                };
                 // DSP0240 §8.4: GetFirstPart (0x01) ignores data_transfer_handle.
-                if op_flag != 0x01 {
+                if req.transfer_op_flag != 0x01 {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
                 }
-                let pldm_type = data[5];
+                let pldm_type = req.pldm_type;
                 if (pldm_type as usize) >= 64
                     || (self.supported_types_bitmap[pldm_type as usize / 8]
                         & (1 << (pldm_type as usize % 8)))
@@ -157,24 +187,28 @@ impl BaseResponder {
                         resp,
                     );
                 }
-                if resp.len() < 17 {
+                let total = 4 + core::mem::size_of::<GetPldmVersionResp>();
+                if resp.len() < total {
                     return Err(Error::BufferTooSmall);
                 }
                 write_completion(hdr, CompletionCode::Success as u8, resp)?;
-                resp[4..8].copy_from_slice(&0u32.to_le_bytes()); // next_transfer_handle = 0
-                resp[8] = 0x05; // StartAndEnd
                 // Ver32 for v1.0.0: [alpha=0x00, update=0xF0, minor=0xF0, major=0xF1]
                 let ver: [u8; 4] = [0x00, 0xF0, 0xF0, 0xF1];
-                resp[9..13].copy_from_slice(&ver);
-                let crc = crc32_ieee(&ver);
-                resp[13..17].copy_from_slice(&crc.to_le_bytes());
-                Ok(17)
+                let body = GetPldmVersionResp {
+                    next_transfer_handle: LeU32::new(0),
+                    transfer_flag: 0x05, // StartAndEnd
+                    version: ver,
+                    crc32: LeU32::new(crc32_ieee(&ver)),
+                };
+                body.write_to_prefix(&mut resp[4..])
+                    .map_err(|_| Error::BufferTooSmall)?;
+                Ok(total)
             }
             x if x == BaseCommand::GetPldmCommands as u8 => {
-                if data.len() != 5 {
+                let Ok(req) = GetPldmCommandsReq::ref_from_bytes(data) else {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
-                }
-                let pldm_type = data[0];
+                };
+                let pldm_type = req.pldm_type;
                 if (pldm_type as usize) >= 64
                     || (self.supported_types_bitmap[pldm_type as usize / 8]
                         & (1 << (pldm_type as usize % 8)))
@@ -187,7 +221,7 @@ impl BaseResponder {
                     );
                 }
                 // Only v1.0.0 ([0x00, 0xF0, 0xF0, 0xF1]) is supported.
-                if data[1..5] != [0x00, 0xF0, 0xF0, 0xF1] {
+                if req.version != [0x00, 0xF0, 0xF0, 0xF1] {
                     return write_completion(hdr, 0x84, resp); // INVALID_PLDM_VERSION_IN_REQUEST_DATA
                 }
                 if resp.len() < 36 {

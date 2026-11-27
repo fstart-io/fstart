@@ -5,6 +5,7 @@
 //! 2. Dual-QEMU `ast2500-evb` BMC <-> `fstart-mctp-broker bridge` (Wireshark SLL2 `ETH_P_MCTP`
 //!    `pcapng`) <-> `qemu-q35` Host over Serial (DSP0253)
 
+use crate::pcapng::{ETH_P_MCTP, EpbHeader, IdbBlock, LINKTYPE_LINUX_SLL2, Sll2Header};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
+use zerocopy::FromBytes;
+use zerocopy::little_endian::U32 as LeU32;
 
 struct TempDir(PathBuf);
 
@@ -222,73 +225,79 @@ pub fn verify_pcapng(pcap_path: &Path) -> io::Result<usize> {
     let mut mctp_packets = 0usize;
 
     while off + 12 <= data.len() {
-        let btype = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
-        let blen = u32::from_le_bytes(data[off + 4..off + 8].try_into().unwrap()) as usize;
+        let block_slice = &data[off..];
+        let (btype, _) = LeU32::read_from_prefix(block_slice).unwrap();
+        let (blen_raw, _) = LeU32::read_from_prefix(&block_slice[4..]).unwrap();
+        let blen = blen_raw.get() as usize;
         if blen < 12 || (blen & 3) != 0 || off + blen > data.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("malformed pcapng block at {off} (len={blen})"),
             ));
         }
-        let trailer =
-            u32::from_le_bytes(data[off + blen - 4..off + blen].try_into().unwrap()) as usize;
-        if trailer != blen {
+        let block = &block_slice[..blen];
+        let (trailer, _) = LeU32::read_from_prefix(&block[blen - 4..]).unwrap();
+        if trailer.get() as usize != blen {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("pcapng trailing length mismatch at {off}: {trailer} != {blen}"),
+                format!(
+                    "pcapng trailing length mismatch at {off}: {} != {blen}",
+                    trailer.get()
+                ),
             ));
         }
-        match btype {
+        match btype.get() {
             0x0A0D_0D0A => saw_shb = true,
             0x0000_0001 => {
-                if blen < 20 {
+                let (idb, _) = IdbBlock::ref_from_prefix(block)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "truncated IDB"))?;
+                if idb.link_type.get() != LINKTYPE_LINUX_SLL2 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "truncated pcapng IDB",
-                    ));
-                }
-                let link_type = u16::from_le_bytes(data[off + 8..off + 10].try_into().unwrap());
-                if link_type != 276 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("expected LINKTYPE_LINUX_SLL2 (276), got {link_type}"),
+                        format!(
+                            "expected LINKTYPE_LINUX_SLL2 ({LINKTYPE_LINUX_SLL2}), got {}",
+                            idb.link_type.get()
+                        ),
                     ));
                 }
                 saw_idb = true;
             }
             0x0000_0006 => {
-                if blen < 32 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "truncated pcapng EPB",
-                    ));
-                }
-                let cap_len =
-                    u32::from_le_bytes(data[off + 20..off + 24].try_into().unwrap()) as usize;
-                if 28 + cap_len > blen - 4 {
+                let (epb, rest) = EpbHeader::ref_from_prefix(block)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "truncated EPB"))?;
+                let cap_len = epb.cap_len.get() as usize;
+                if rest.len() < cap_len + 4 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("EPB cap_len {cap_len} exceeds block length {blen}"),
                     ));
                 }
-                let pkt = &data[off + 28..off + 28 + cap_len];
-                if pkt.len() < 24 {
-                    return Err(io::Error::new(
+                let pkt = &rest[..cap_len];
+                let (sll2, mctp) = Sll2Header::ref_from_prefix(pkt).map_err(|_| {
+                    io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("short SLL2+MCTP packet ({}B)", pkt.len()),
-                    ));
-                }
-                let proto = u16::from_be_bytes([pkt[0], pkt[1]]);
-                if proto != 0x00FA {
+                    )
+                })?;
+                if mctp.len() < 4 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("expected ETH_P_MCTP (0x00FA), got {proto:#x}"),
+                        format!("short MCTP packet ({}B)", mctp.len()),
                     ));
                 }
-                if (pkt[20] & 0x0F) != 0x01 {
+                if sll2.protocol_type.get() != ETH_P_MCTP {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("bad MCTP version byte {:#x}", pkt[20]),
+                        format!(
+                            "expected ETH_P_MCTP ({ETH_P_MCTP:#x}), got {:#x}",
+                            sll2.protocol_type.get()
+                        ),
+                    ));
+                }
+                if (mctp[0] & 0x0F) != 0x01 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("bad MCTP version byte {:#x}", mctp[0]),
                     ));
                 }
                 mctp_packets += 1;

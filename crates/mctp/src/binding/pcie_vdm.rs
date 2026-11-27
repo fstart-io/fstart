@@ -9,13 +9,39 @@
 //! - Bytes `16..16 + length_dws*4`: MCTP payload + `pad_len` (0..3) zero bytes.
 
 use crate::{Error, HEADER_LEN};
+use zerocopy::big_endian::U16 as BeU16;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// DMTF PCI-SIG Vendor ID for MCTP VDMs (DSP0238 §6.1).
 pub const DMTF_VENDOR_ID: u16 = 0x1AB4;
 /// PCIe Vendor Defined Message Type 1 code (silent drop if unsupported).
 pub const VDM_TYPE1_MSG_CODE: u8 = 0x7F;
 /// Size of the 4-DW PCIe VDM header (DW0..DW3, including the MCTP header in DW3).
-pub const VDM_HEADER_LEN: usize = 16;
+pub const VDM_HEADER_LEN: usize = core::mem::size_of::<PcieVdmHeader>();
+
+/// 4-DW big-endian PCIe VDM Type 1 TLP header (DSP0238 §6.1).
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct PcieVdmHeader {
+    /// Bits 7:5 = Fmt (`0b011`), bits 4:0 = Type (`0b10_000 | routing`).
+    fmt_type: u8,
+    /// TC / Attr / TH (0 for MCTP VDMs).
+    tc_flags: u8,
+    /// Bit 15 = TD (digest), bits 9:0 = Length in DWs (0 encodes 1024 DWs).
+    td_ep_attr_len: BeU16,
+    /// 16-bit Requester BDF.
+    requester_id: BeU16,
+    /// Bits 5:4 = Pad Len (0..3), bits 3:0 = MCTP VDM Code (0).
+    pad_vdm_code: u8,
+    /// PCIe Message Code (`0x7F` = Vendor Defined Type 1).
+    msg_code: u8,
+    /// 16-bit Target BDF (0 unless `PcieRouting::RouteById`).
+    target_id: BeU16,
+    /// PCI-SIG Vendor ID (`0x1AB4` = DMTF).
+    vendor_id: BeU16,
+    /// DW3: 4-byte MCTP transport header verbatim.
+    mctp_hdr: [u8; HEADER_LEN],
+}
 
 /// PCIe VDM routing mode (low 3 bits of TLP Type field, DSP0238 Table 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,41 +104,31 @@ pub fn encode(
     }
 
     let length_field: u16 = if dws == 1024 { 0 } else { dws as u16 };
-    // DW0: Fmt=011 (bits 31:29), Type=10rrr (bits 28:24), Length (bits 9:0).
-    let dw0_b0 = (0b011 << 5) | (0b10_000 | (routing as u8));
-    out[0] = dw0_b0;
-    out[1] = 0x00;
-    out[2] = ((length_field >> 8) & 0x03) as u8;
-    out[3] = (length_field & 0xFF) as u8;
-
-    // DW1: Requester ID, Pad Len (bits 5:4), MCTP VDM Code=0 (bits 3:0), Msg Code=0x7F.
-    let req_bytes = requester_bdf.to_be_bytes();
-    out[4] = req_bytes[0];
-    out[5] = req_bytes[1];
-    out[6] = ((pad_len as u8) & 0x03) << 4;
-    out[7] = VDM_TYPE1_MSG_CODE;
-
-    // DW2: Target ID (0 unless RouteById), DMTF Vendor ID 0x1AB4.
     let tgt = if routing == PcieRouting::RouteById {
         target_bdf
     } else {
         0
     };
-    let tgt_bytes = tgt.to_be_bytes();
-    let vid_bytes = DMTF_VENDOR_ID.to_be_bytes();
-    out[8] = tgt_bytes[0];
-    out[9] = tgt_bytes[1];
-    out[10] = vid_bytes[0];
-    out[11] = vid_bytes[1];
+    let mut mctp_hdr = [0u8; HEADER_LEN];
+    mctp_hdr.copy_from_slice(&mctp_packet[..HEADER_LEN]);
 
-    // DW3: 4-byte MCTP transport header verbatim.
-    out[12..16].copy_from_slice(&mctp_packet[..HEADER_LEN]);
+    let hdr = PcieVdmHeader {
+        fmt_type: (0b011 << 5) | (0b10_000 | (routing as u8)),
+        tc_flags: 0,
+        td_ep_attr_len: BeU16::new(length_field & 0x03FF),
+        requester_id: BeU16::new(requester_bdf),
+        pad_vdm_code: ((pad_len as u8) & 0x03) << 4,
+        msg_code: VDM_TYPE1_MSG_CODE,
+        target_id: BeU16::new(tgt),
+        vendor_id: BeU16::new(DMTF_VENDOR_ID),
+        mctp_hdr,
+    };
+    hdr.write_to_prefix(out)
+        .map_err(|_| Error::BufferTooSmall)?;
 
     // Payload + zero padding.
-    out[16..16 + payload.len()].copy_from_slice(payload);
-    for b in &mut out[16 + payload.len()..total] {
-        *b = 0;
-    }
+    out[VDM_HEADER_LEN..VDM_HEADER_LEN + payload.len()].copy_from_slice(payload);
+    out[VDM_HEADER_LEN + payload.len()..total].fill(0);
     Ok(total)
 }
 
@@ -123,29 +139,30 @@ pub fn decode(tlp: &[u8]) -> Result<(PcieVdmMeta, &[u8]), Error> {
     if tlp.len() < VDM_HEADER_LEN + 4 || (tlp.len() & 0x03) != 0 {
         return Err(Error::ShortBuffer);
     }
-    let fmt = tlp[0] >> 5;
-    let tlp_type = tlp[0] & 0x1F;
+    let (hdr, _) = PcieVdmHeader::ref_from_prefix(tlp).map_err(|_| Error::ShortBuffer)?;
+    let fmt = hdr.fmt_type >> 5;
+    let tlp_type = hdr.fmt_type & 0x1F;
     if fmt != 0b011 || (tlp_type & 0x18) != 0b10_000 {
         return Err(Error::InvalidFrame);
     }
     let routing = PcieRouting::from_u8(tlp_type).ok_or(Error::InvalidFrame)?;
-    let has_digest = (tlp[2] & 0x80) != 0;
-    let raw_len = u16::from_be_bytes([tlp[2] & 0x03, tlp[3]]) as usize;
+    let td_len = hdr.td_ep_attr_len.get();
+    let has_digest = (td_len & 0x8000) != 0;
+    let raw_len = (td_len & 0x03FF) as usize;
     let dws = if raw_len == 0 { 1024 } else { raw_len };
     let expected_total = VDM_HEADER_LEN + dws * 4 + if has_digest { 4 } else { 0 };
     if tlp.len() != expected_total {
         return Err(Error::InvalidFrame);
     }
 
-    let vdm_code = tlp[6] & 0x0F;
-    let pad_len = ((tlp[6] >> 4) & 0x03) as usize;
-    let msg_code = tlp[7];
-    let vendor_id = u16::from_be_bytes([tlp[10], tlp[11]]);
-    if vdm_code != 0 || msg_code != VDM_TYPE1_MSG_CODE || vendor_id != DMTF_VENDOR_ID {
+    let vdm_code = hdr.pad_vdm_code & 0x0F;
+    let pad_len = ((hdr.pad_vdm_code >> 4) & 0x03) as usize;
+    if vdm_code != 0 || hdr.msg_code != VDM_TYPE1_MSG_CODE || hdr.vendor_id.get() != DMTF_VENDOR_ID
+    {
         return Err(Error::InvalidFrame);
     }
 
-    let eom = (tlp[15] & 0x40) != 0;
+    let eom = (hdr.mctp_hdr[3] & 0x40) != 0;
     if !eom && pad_len != 0 {
         return Err(Error::InvalidFrame);
     }
@@ -156,8 +173,8 @@ pub fn decode(tlp: &[u8]) -> Result<(PcieVdmMeta, &[u8]), Error> {
     }
     let meta = PcieVdmMeta {
         routing,
-        requester_bdf: u16::from_be_bytes([tlp[4], tlp[5]]),
-        target_bdf: u16::from_be_bytes([tlp[8], tlp[9]]),
+        requester_bdf: hdr.requester_id.get(),
+        target_bdf: hdr.target_id.get(),
     };
     let pkt_end = VDM_HEADER_LEN + payload_bytes - pad_len;
     Ok((meta, &tlp[12..pkt_end]))

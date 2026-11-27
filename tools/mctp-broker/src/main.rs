@@ -29,6 +29,16 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use zerocopy::big_endian::U32 as BeU32;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct SpdmEmuHeader {
+    cmd: BeU32,
+    transport_type: BeU32,
+    size: BeU32,
+}
 
 #[derive(Parser)]
 #[command(name = "fstart-mctp-broker")]
@@ -116,16 +126,17 @@ fn handle_spdm_emu_client(mut stream: TcpStream) -> io::Result<()> {
     let mut out_buf = [0u8; 4096];
 
     loop {
-        let mut hdr = [0u8; 12];
-        if let Err(e) = stream.read_exact(&mut hdr) {
+        let mut hdr_bytes = [0u8; core::mem::size_of::<SpdmEmuHeader>()];
+        if let Err(e) = stream.read_exact(&mut hdr_bytes) {
             if e.kind() == io::ErrorKind::UnexpectedEof {
                 return Ok(());
             }
             return Err(e);
         }
-        let cmd = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
-        let transport_type = u32::from_be_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
-        let size = u32::from_be_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]) as usize;
+        let hdr = SpdmEmuHeader::read_from_bytes(&hdr_bytes).unwrap();
+        let cmd = hdr.cmd.get();
+        let transport_type = hdr.transport_type.get();
+        let size = hdr.size.get() as usize;
         if size > 65536 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -220,9 +231,12 @@ fn send_emu_frame(
     transport_type: u32,
     payload: &[u8],
 ) -> io::Result<()> {
-    stream.write_all(&cmd.to_be_bytes())?;
-    stream.write_all(&transport_type.to_be_bytes())?;
-    stream.write_all(&(payload.len() as u32).to_be_bytes())?;
+    let hdr = SpdmEmuHeader {
+        cmd: BeU32::new(cmd),
+        transport_type: BeU32::new(transport_type),
+        size: BeU32::new(payload.len() as u32),
+    };
+    stream.write_all(hdr.as_bytes())?;
     stream.write_all(payload)?;
     stream.flush()
 }

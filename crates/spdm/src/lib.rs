@@ -93,8 +93,13 @@ pub const CAP_HBEAT: u32 = 1 << 13;
 pub const CAP_KEY_UPD: u32 = 1 << 14;
 pub const CAP_HANDSHAKE_IN_THE_CLEAR: u32 = 0;
 
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
 /// Common 4-byte SPDM message header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
 pub struct SpdmHeader {
     pub version: u8,
     pub code: u8,
@@ -103,7 +108,7 @@ pub struct SpdmHeader {
 }
 
 impl SpdmHeader {
-    pub const LEN: usize = 4;
+    pub const LEN: usize = core::mem::size_of::<Self>();
 
     pub const fn new(version: u8, code: SpdmCode, param1: u8, param2: u8) -> Self {
         Self {
@@ -119,18 +124,8 @@ impl SpdmHeader {
     }
 
     pub fn parse(msg: &[u8]) -> Result<(Self, &[u8]), Error> {
-        if msg.len() < Self::LEN {
-            return Err(Error::ShortBuffer);
-        }
-        Ok((
-            Self {
-                version: msg[0],
-                code: msg[1],
-                param1: msg[2],
-                param2: msg[3],
-            },
-            &msg[Self::LEN..],
-        ))
+        let (hdr, rest) = Self::read_from_prefix(msg).map_err(|_| Error::ShortBuffer)?;
+        Ok((hdr, rest))
     }
 }
 

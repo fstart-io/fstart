@@ -12,6 +12,7 @@ fstart-mctp = { workspace = true }
 fstart-pldm = { workspace = true }
 fstart-pmci = { workspace = true }
 fstart-spdm = { workspace = true }
+zerocopy = { workspace = true }
 
 [lints]
 workspace = true

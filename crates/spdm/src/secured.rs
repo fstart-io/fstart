@@ -15,7 +15,34 @@ use crate::crypto::{
     AEAD_IV_LEN, AEAD_KEY_LEN, AEAD_TAG_LEN, HASH_LEN, aes256_gcm_decrypt_in_place,
     aes256_gcm_encrypt_in_place, hkdf_expand_spdm, hkdf_extract_sha256, record_iv,
 };
+use zerocopy::little_endian::{U16 as LeU16, U32 as LeU32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 use zeroize::Zeroize;
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct OpaqueFmt1Prefix {
+    total_elements: u8,
+    reserved: [u8; 3],
+    id: u8,
+    vendor_len: u8,
+    element_len: LeU16,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct MctpSecuredHeader {
+    session_id: LeU32,
+    seq_num: LeU16,
+    length: LeU16,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct DoeSecuredHeader {
+    session_id: LeU32,
+    length: LeU16,
+}
 
 /// DSP0277 §6.1 `OpaqueDataFmt1` SupportedVersion list (advertising DSP0277 1.1)
 /// sent in `KEY_EXCHANGE`.
@@ -43,41 +70,44 @@ pub const OPAQUE_SELECTED_VERSION_1_1: [u8; 12] = [
 
 /// Validate that a `KEY_EXCHANGE` opaque data field advertises DSP0277 1.1 (`0x1100`).
 pub fn opaque_offers_version_1_1(opaque: &[u8]) -> bool {
-    if opaque.len() < 13 || opaque[0] == 0 || opaque[4] != 0x00 || opaque[5] != 0x00 {
+    let Ok((hdr, rest)) = OpaqueFmt1Prefix::ref_from_prefix(opaque) else {
+        return false;
+    };
+    if hdr.total_elements == 0 || hdr.id != 0x00 || hdr.vendor_len != 0 {
         return false;
     }
-    let elem_len = u16::from_le_bytes([opaque[6], opaque[7]]) as usize;
-    if elem_len < 5 || 8 + elem_len > opaque.len() {
+    let elem_len = hdr.element_len.get() as usize;
+    if elem_len < 5 || elem_len > rest.len() {
         return false;
     }
-    let elem = &opaque[8..8 + elem_len];
+    let elem = &rest[..elem_len];
     if elem[0] != 0x01 || elem[1] != 0x01 {
         return false;
     }
     let count = elem[2] as usize;
-    if 3 + count * 2 > elem.len() {
+    let Ok((versions, _)) = <[LeU16]>::ref_from_prefix_with_elems(&elem[3..], count) else {
         return false;
-    }
-    for i in 0..count {
-        let ver = u16::from_le_bytes([elem[3 + i * 2], elem[4 + i * 2]]);
-        if ver == 0x1100 {
-            return true;
-        }
-    }
-    false
+    };
+    versions.iter().any(|v| v.get() == 0x1100)
 }
 
 /// Validate that a `KEY_EXCHANGE_RSP` opaque data field selects DSP0277 1.1 (`0x1100`).
 pub fn opaque_selects_version_1_1(opaque: &[u8]) -> bool {
-    if opaque.len() < 12 || opaque[0] == 0 || opaque[4] != 0x00 || opaque[5] != 0x00 {
+    let Ok((hdr, rest)) = OpaqueFmt1Prefix::ref_from_prefix(opaque) else {
+        return false;
+    };
+    if hdr.total_elements == 0 || hdr.id != 0x00 || hdr.vendor_len != 0 {
         return false;
     }
-    let elem_len = u16::from_le_bytes([opaque[6], opaque[7]]) as usize;
-    if elem_len < 4 || 8 + elem_len > opaque.len() {
+    let elem_len = hdr.element_len.get() as usize;
+    if elem_len < 4 || elem_len > rest.len() {
         return false;
     }
-    let elem = &opaque[8..8 + elem_len];
-    elem[0] == 0x01 && elem[1] == 0x00 && u16::from_le_bytes([elem[2], elem[3]]) == 0x1100
+    let elem = &rest[..elem_len];
+    let Ok((ver, _)) = LeU16::read_from_prefix(&elem[2..]) else {
+        return false;
+    };
+    elem[0] == 0x01 && elem[1] == 0x00 && ver.get() == 0x1100
 }
 
 /// Encapsulation rules that differ between MCTP (DSP0276) and PCIe DOE.
@@ -348,15 +378,26 @@ impl SecuredSession {
         let seq = tx.seq_num;
         tx.seq_num = seq.checked_add(1).ok_or(Error::SequenceOverflow)?;
 
-        out[0..4].copy_from_slice(&session_id.to_le_bytes());
         if transport == SessionTransport::Mctp {
-            out[4..6].copy_from_slice(&(seq as u16).to_le_bytes());
-            out[6..8].copy_from_slice(&(record_len as u16).to_le_bytes());
+            let hdr = MctpSecuredHeader {
+                session_id: LeU32::new(session_id),
+                seq_num: LeU16::new(seq as u16),
+                length: LeU16::new(record_len as u16),
+            };
+            hdr.write_to_prefix(out)
+                .map_err(|_| Error::BufferTooSmall)?;
         } else {
-            out[4..6].copy_from_slice(&(record_len as u16).to_le_bytes());
+            let hdr = DoeSecuredHeader {
+                session_id: LeU32::new(session_id),
+                length: LeU16::new(record_len as u16),
+            };
+            hdr.write_to_prefix(out)
+                .map_err(|_| Error::BufferTooSmall)?;
         }
 
-        out[hdr_len..hdr_len + 2].copy_from_slice(&(app_data.len() as u16).to_le_bytes());
+        LeU16::new(app_data.len() as u16)
+            .write_to_prefix(&mut out[hdr_len..])
+            .map_err(|_| Error::BufferTooSmall)?;
         out[hdr_len + 2..hdr_len + pt_len].copy_from_slice(app_data);
 
         let iv = record_iv(&tx.iv, seq);
@@ -406,20 +447,22 @@ impl SecuredSession {
         if record.len() < hdr_len + 2 + AEAD_TAG_LEN {
             return Err(Error::ShortBuffer);
         }
-        let sid = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
+        let expected_seq = rx.seq_num;
+        let (sid, rec_len) = if transport == SessionTransport::Mctp {
+            let (hdr, _) =
+                MctpSecuredHeader::ref_from_prefix(record).map_err(|_| Error::ShortBuffer)?;
+            if hdr.seq_num.get() != (expected_seq as u16) {
+                return Err(Error::DecryptFailed);
+            }
+            (hdr.session_id.get(), hdr.length.get() as usize)
+        } else {
+            let (hdr, _) =
+                DoeSecuredHeader::ref_from_prefix(record).map_err(|_| Error::ShortBuffer)?;
+            (hdr.session_id.get(), hdr.length.get() as usize)
+        };
         if sid != session_id {
             return Err(Error::InvalidMessage);
         }
-        let expected_seq = rx.seq_num;
-        let rec_len = if transport == SessionTransport::Mctp {
-            let wire_seq = u16::from_le_bytes([record[4], record[5]]);
-            if wire_seq != (expected_seq as u16) {
-                return Err(Error::DecryptFailed);
-            }
-            u16::from_le_bytes([record[6], record[7]]) as usize
-        } else {
-            u16::from_le_bytes([record[4], record[5]]) as usize
-        };
 
         let expected_len = hdr_len + rec_len;
         let len_ok = if transport == SessionTransport::Doe {

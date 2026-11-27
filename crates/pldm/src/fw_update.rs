@@ -5,6 +5,83 @@
 //! the Host can act as UA or FD.
 
 use crate::{CompletionCode, Error, PldmHeader, PldmType, write_completion};
+use zerocopy::little_endian::{U16 as LeU16, U32 as LeU32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct RequestUpdateReqHeader {
+    max_transfer_size: LeU32,
+    num_components: LeU16,
+    max_outstanding: u8,
+    pkg_data_len: LeU16,
+    ver_str_type: u8,
+    ver_str_len: u8,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct PassComponentReqHeader {
+    transfer_flag: u8,
+    classification: LeU16,
+    identifier: LeU16,
+    classification_index: u8,
+    stamp: LeU32,
+    ver_str_type: u8,
+    ver_str_len: u8,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct UpdateComponentReqHeader {
+    classification: LeU16,
+    identifier: LeU16,
+    classification_index: u8,
+    stamp: LeU32,
+    image_size: LeU32,
+    update_option_flags: LeU32,
+    ver_str_type: u8,
+    ver_str_len: u8,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct GetFwParamsResp {
+    capabilities_during_update: LeU32,
+    component_count: LeU16,
+    active_ver_str_type: u8,
+    active_ver_str_len: u8,
+    pending_ver_str_type: u8,
+    pending_ver_str_len: u8,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct UpdateComponentResp {
+    compatibility_response: u8,
+    compatibility_response_code: u8,
+    update_option_flags_enabled: LeU32,
+    estimated_time: LeU16,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct GetStatusResp {
+    current_state: u8,
+    previous_state: u8,
+    aux_state: u8,
+    aux_state_status: u8,
+    progress_percent: u8,
+    reason_code: u8,
+    update_option_flags_enabled: LeU32,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct RequestFwDataReq {
+    offset: LeU32,
+    length: LeU32,
+}
 
 /// PLDM Firmware Update command codes (DSP0267 Table 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +138,8 @@ pub fn encode_request_update_req(
     version_str: &[u8],
     out: &mut [u8],
 ) -> Result<usize, Error> {
-    let total = 3 + 4 + 2 + 1 + 2 + 1 + 1 + version_str.len();
+    let fixed = PldmHeader::LEN + core::mem::size_of::<RequestUpdateReqHeader>();
+    let total = fixed + version_str.len();
     if out.len() < total || version_str.len() > 255 {
         return Err(Error::BufferTooSmall);
     }
@@ -70,14 +148,18 @@ pub fn encode_request_update_req(
         PldmType::FirmwareUpdate,
         FwUpdateCommand::RequestUpdate as u8,
     );
-    out[..3].copy_from_slice(&hdr.to_bytes());
-    out[3..7].copy_from_slice(&max_transfer_size.to_le_bytes());
-    out[7..9].copy_from_slice(&num_components.to_le_bytes());
-    out[9] = max_outstanding;
-    out[10..12].copy_from_slice(&pkg_data_len.to_le_bytes());
-    out[12] = 0x01; // ASCII
-    out[13] = version_str.len() as u8;
-    out[14..total].copy_from_slice(version_str);
+    out[..PldmHeader::LEN].copy_from_slice(&hdr.to_bytes());
+    let body = RequestUpdateReqHeader {
+        max_transfer_size: LeU32::new(max_transfer_size),
+        num_components: LeU16::new(num_components),
+        max_outstanding,
+        pkg_data_len: LeU16::new(pkg_data_len),
+        ver_str_type: 0x01, // ASCII
+        ver_str_len: version_str.len() as u8,
+    };
+    body.write_to_prefix(&mut out[PldmHeader::LEN..])
+        .map_err(|_| Error::BufferTooSmall)?;
+    out[fixed..total].copy_from_slice(version_str);
     Ok(total)
 }
 
@@ -90,7 +172,8 @@ pub fn encode_pass_component_req(
     version_str: &[u8],
     out: &mut [u8],
 ) -> Result<usize, Error> {
-    let total = 3 + 1 + 2 + 2 + 1 + 4 + 1 + 1 + version_str.len();
+    let fixed = PldmHeader::LEN + core::mem::size_of::<PassComponentReqHeader>();
+    let total = fixed + version_str.len();
     if out.len() < total || version_str.len() > 255 {
         return Err(Error::BufferTooSmall);
     }
@@ -99,15 +182,19 @@ pub fn encode_pass_component_req(
         PldmType::FirmwareUpdate,
         FwUpdateCommand::PassComponentTable as u8,
     );
-    out[..3].copy_from_slice(&hdr.to_bytes());
-    out[3] = 0x05; // StartAndEnd
-    out[4..6].copy_from_slice(&classification.to_le_bytes());
-    out[6..8].copy_from_slice(&identifier.to_le_bytes());
-    out[8] = 0; // classification_index
-    out[9..13].copy_from_slice(&stamp.to_le_bytes());
-    out[13] = 0x01; // ASCII
-    out[14] = version_str.len() as u8;
-    out[15..total].copy_from_slice(version_str);
+    out[..PldmHeader::LEN].copy_from_slice(&hdr.to_bytes());
+    let body = PassComponentReqHeader {
+        transfer_flag: 0x05, // StartAndEnd
+        classification: LeU16::new(classification),
+        identifier: LeU16::new(identifier),
+        classification_index: 0,
+        stamp: LeU32::new(stamp),
+        ver_str_type: 0x01, // ASCII
+        ver_str_len: version_str.len() as u8,
+    };
+    body.write_to_prefix(&mut out[PldmHeader::LEN..])
+        .map_err(|_| Error::BufferTooSmall)?;
+    out[fixed..total].copy_from_slice(version_str);
     Ok(total)
 }
 
@@ -121,7 +208,8 @@ pub fn encode_update_component_req(
     version_str: &[u8],
     out: &mut [u8],
 ) -> Result<usize, Error> {
-    let total = 3 + 2 + 2 + 1 + 4 + 4 + 4 + 1 + 1 + version_str.len();
+    let fixed = PldmHeader::LEN + core::mem::size_of::<UpdateComponentReqHeader>();
+    let total = fixed + version_str.len();
     if out.len() < total || version_str.len() > 255 {
         return Err(Error::BufferTooSmall);
     }
@@ -130,16 +218,20 @@ pub fn encode_update_component_req(
         PldmType::FirmwareUpdate,
         FwUpdateCommand::UpdateComponent as u8,
     );
-    out[..3].copy_from_slice(&hdr.to_bytes());
-    out[3..5].copy_from_slice(&classification.to_le_bytes());
-    out[5..7].copy_from_slice(&identifier.to_le_bytes());
-    out[7] = 0; // classification_index
-    out[8..12].copy_from_slice(&stamp.to_le_bytes());
-    out[12..16].copy_from_slice(&image_size.to_le_bytes());
-    out[16..20].copy_from_slice(&0u32.to_le_bytes()); // update_option_flags
-    out[20] = 0x01; // ASCII
-    out[21] = version_str.len() as u8;
-    out[22..total].copy_from_slice(version_str);
+    out[..PldmHeader::LEN].copy_from_slice(&hdr.to_bytes());
+    let body = UpdateComponentReqHeader {
+        classification: LeU16::new(classification),
+        identifier: LeU16::new(identifier),
+        classification_index: 0,
+        stamp: LeU32::new(stamp),
+        image_size: LeU32::new(image_size),
+        update_option_flags: LeU32::new(0),
+        ver_str_type: 0x01, // ASCII
+        ver_str_len: version_str.len() as u8,
+    };
+    body.write_to_prefix(&mut out[PldmHeader::LEN..])
+        .map_err(|_| Error::BufferTooSmall)?;
+    out[fixed..total].copy_from_slice(version_str);
     Ok(total)
 }
 
@@ -256,32 +348,36 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
                 if !data.is_empty() {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
-                // Minimal DSP0267 §10.2 response with 0 component entries and empty version strings:
-                // header(3) + CC(1) + caps(4) + comp_count(2) + active_str_type(1) + active_str_len(1)
-                // + pending_str_type(1) + pending_str_len(1) = 14 bytes.
-                if resp.len() < 14 {
+                let total = 4 + core::mem::size_of::<GetFwParamsResp>();
+                if resp.len() < total {
                     return Err(Error::BufferTooSmall);
                 }
                 write_completion(hdr, CompletionCode::Success as u8, resp)?;
-                resp[4..8].copy_from_slice(&0u32.to_le_bytes()); // capabilities_during_update
-                resp[8..10].copy_from_slice(&0u16.to_le_bytes()); // component_count
-                resp[10] = 0x01; // ASCII
-                resp[11] = 0; // active_comp_image_set_ver_str_len
-                resp[12] = 0x00; // Unknown (no pending image, DSP0267 §10.2)
-                resp[13] = 0; // pending_comp_image_set_ver_str_len
-                Ok(14)
+                let body = GetFwParamsResp {
+                    capabilities_during_update: LeU32::new(0),
+                    component_count: LeU16::new(0),
+                    active_ver_str_type: 0x01, // ASCII
+                    active_ver_str_len: 0,
+                    pending_ver_str_type: 0x00, // Unknown (no pending image, DSP0267 §10.2)
+                    pending_ver_str_len: 0,
+                };
+                body.write_to_prefix(&mut resp[4..])
+                    .map_err(|_| Error::BufferTooSmall)?;
+                Ok(total)
             }
             x if x == FwUpdateCommand::RequestUpdate as u8 => {
                 if self.state != FdState::Idle {
                     return write_completion(hdr, CompletionCode::AlreadyInUpdateMode as u8, resp);
                 }
-                if data.len() < 11 || data.len() != 11 + data[10] as usize {
+                let Ok((req, rest)) = RequestUpdateReqHeader::ref_from_prefix(data) else {
+                    return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
+                };
+                if rest.len() != req.ver_str_len as usize {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
-                let req_max = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                let num_components = u16::from_le_bytes([data[4], data[5]]);
+                let req_max = req.max_transfer_size.get();
                 // Single-component FirmwareDevice contract: require num_components == 1.
-                if req_max < 32 || num_components != 1 {
+                if req_max < 32 || req.num_components.get() != 1 {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
                 }
                 if resp.len() < 7 {
@@ -304,20 +400,20 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
                         resp,
                     );
                 }
-                if data.len() < 12 || data.len() != 12 + data[11] as usize {
+                let Ok((req, rest)) = PassComponentReqHeader::ref_from_prefix(data) else {
+                    return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
+                };
+                if rest.len() != req.ver_str_len as usize {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
-                let transfer_flag = data[0];
-                if !matches!(transfer_flag, 0x01 | 0x02 | 0x04 | 0x05) {
+                if !matches!(req.transfer_flag, 0x01 | 0x02 | 0x04 | 0x05) {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
                 }
                 if resp.len() < 6 {
                     return Err(Error::BufferTooSmall);
                 }
-                let classification = u16::from_le_bytes([data[1], data[2]]);
-                let identifier = u16::from_le_bytes([data[3], data[4]]);
-                self.expected_component = Some((classification, identifier));
-                if transfer_flag == 0x04 || transfer_flag == 0x05 {
+                self.expected_component = Some((req.classification.get(), req.identifier.get()));
+                if req.transfer_flag == 0x04 || req.transfer_flag == 0x05 {
                     self.transition(FdState::ReadyXfer);
                 }
                 write_completion(hdr, CompletionCode::Success as u8, resp)?;
@@ -333,19 +429,22 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
                         resp,
                     );
                 }
-                if data.len() < 19 || data.len() != 19 + data[18] as usize {
+                let Ok((req, rest)) = UpdateComponentReqHeader::ref_from_prefix(data) else {
+                    return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
+                };
+                if rest.len() != req.ver_str_len as usize {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
-                let classification = u16::from_le_bytes([data[0], data[1]]);
-                let identifier = u16::from_le_bytes([data[2], data[3]]);
-                if self.expected_component != Some((classification, identifier)) {
+                if self.expected_component != Some((req.classification.get(), req.identifier.get()))
+                {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
                 }
-                let size = u32::from_le_bytes([data[9], data[10], data[11], data[12]]) as usize;
+                let size = req.image_size.get() as usize;
                 if size == 0 || size > MAX_IMAGE {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
                 }
-                if resp.len() < 12 {
+                let total = 4 + core::mem::size_of::<UpdateComponentResp>();
+                if resp.len() < total {
                     return Err(Error::BufferTooSmall);
                 }
                 self.expected_image_size = size;
@@ -353,11 +452,15 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
                 self.pending_req_len = 0;
                 self.transition(FdState::Download);
                 write_completion(hdr, CompletionCode::Success as u8, resp)?;
-                resp[4] = 0x00;
-                resp[5] = 0x00;
-                resp[6..10].copy_from_slice(&0u32.to_le_bytes());
-                resp[10..12].copy_from_slice(&1u16.to_le_bytes());
-                Ok(12)
+                let body = UpdateComponentResp {
+                    compatibility_response: 0x00,
+                    compatibility_response_code: 0x00,
+                    update_option_flags_enabled: LeU32::new(0),
+                    estimated_time: LeU16::new(1),
+                };
+                body.write_to_prefix(&mut resp[4..])
+                    .map_err(|_| Error::BufferTooSmall)?;
+                Ok(total)
             }
             x if x == FwUpdateCommand::ActivateFirmware as u8 => {
                 if self.state != FdState::ReadyXfer {
@@ -391,30 +494,35 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
                 if !data.is_empty() {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
-                if resp.len() < 14 {
+                let total = 4 + core::mem::size_of::<GetStatusResp>();
+                if resp.len() < total {
                     return Err(Error::BufferTooSmall);
                 }
                 write_completion(hdr, CompletionCode::Success as u8, resp)?;
-                resp[4] = self.state as u8;
-                resp[5] = self.prev_state as u8;
-                // DSP0267 §11.12: AuxState = 3 (Idle/Learn/Ready) when not in Download/Verify/Apply.
-                resp[6] = match self.state {
-                    FdState::Idle | FdState::LearnComponents | FdState::ReadyXfer => 3,
-                    _ => 0,
+                let body = GetStatusResp {
+                    current_state: self.state as u8,
+                    previous_state: self.prev_state as u8,
+                    // DSP0267 §11.12: AuxState = 3 (Idle/Learn/Ready) when not in Download/Verify/Apply.
+                    aux_state: match self.state {
+                        FdState::Idle | FdState::LearnComponents | FdState::ReadyXfer => 3,
+                        _ => 0,
+                    },
+                    aux_state_status: 0,
+                    progress_percent: self
+                        .received_bytes
+                        .saturating_mul(100)
+                        .checked_div(self.expected_image_size)
+                        .map_or(101, |pct| pct.min(100) as u8),
+                    reason_code: if self.state == FdState::Idle {
+                        self.reason_code
+                    } else {
+                        0
+                    },
+                    update_option_flags_enabled: LeU32::new(0),
                 };
-                resp[7] = 0; // aux_state_status
-                resp[8] = self
-                    .received_bytes
-                    .saturating_mul(100)
-                    .checked_div(self.expected_image_size)
-                    .map_or(101, |pct| pct.min(100) as u8);
-                resp[9] = if self.state == FdState::Idle {
-                    self.reason_code
-                } else {
-                    0
-                };
-                resp[10..14].copy_from_slice(&0u32.to_le_bytes());
-                Ok(14)
+                body.write_to_prefix(&mut resp[4..])
+                    .map_err(|_| Error::BufferTooSmall)?;
+                Ok(total)
             }
             x if x == FwUpdateCommand::CancelUpdate as u8 => {
                 if !data.is_empty() {
@@ -451,7 +559,8 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
         if self.state != FdState::Download || self.received_bytes >= self.expected_image_size {
             return Ok(None);
         }
-        if out.len() < 11 {
+        let total = PldmHeader::LEN + core::mem::size_of::<RequestFwDataReq>();
+        if out.len() < total {
             return Err(Error::BufferTooSmall);
         }
         let remaining = self.expected_image_size - self.received_bytes;
@@ -461,11 +570,15 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
             PldmType::FirmwareUpdate,
             FwUpdateCommand::RequestFirmwareData as u8,
         );
-        out[..3].copy_from_slice(&hdr.to_bytes());
-        out[3..7].copy_from_slice(&(self.received_bytes as u32).to_le_bytes());
-        out[7..11].copy_from_slice(&(req_len as u32).to_le_bytes());
+        out[..PldmHeader::LEN].copy_from_slice(&hdr.to_bytes());
+        let body = RequestFwDataReq {
+            offset: LeU32::new(self.received_bytes as u32),
+            length: LeU32::new(req_len as u32),
+        };
+        body.write_to_prefix(&mut out[PldmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
         self.pending_req_len = req_len;
-        Ok(Some((11, req_len)))
+        Ok(Some((total, req_len)))
     }
 
     /// Feed a chunk returned by the UA in response to `RequestFirmwareData`.

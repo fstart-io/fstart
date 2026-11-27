@@ -1,6 +1,17 @@
 //! MCTP transport header, packetization, and multi-packet reassembly (DSP0236).
 
 use crate::{BASELINE_MTU, Error, HEADER_LEN, HEADER_VERSION};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+/// Wire-format 4-byte MCTP transport header (DSP0236 §8.1).
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct RawMctpHeader {
+    hdr_ver: u8,
+    dst_eid: u8,
+    src_eid: u8,
+    flags: u8,
+}
 
 /// Decoded 4-byte MCTP transport header (DSP0236 §8.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,11 +58,9 @@ impl MctpHeader {
 
     /// Parse from the front of a raw MCTP packet slice.
     pub fn parse(packet: &[u8]) -> Result<(Self, &[u8]), Error> {
-        if packet.len() < HEADER_LEN {
-            return Err(Error::ShortBuffer);
-        }
-        let hdr = Self::from_bytes([packet[0], packet[1], packet[2], packet[3]])?;
-        Ok((hdr, &packet[HEADER_LEN..]))
+        let (raw, rest) = RawMctpHeader::ref_from_prefix(packet).map_err(|_| Error::ShortBuffer)?;
+        let hdr = Self::from_bytes([raw.hdr_ver, raw.dst_eid, raw.src_eid, raw.flags])?;
+        Ok((hdr, rest))
     }
 }
 
