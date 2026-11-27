@@ -181,6 +181,8 @@ fn build_isolated_runner(
     let manifest_path = runner_dir.join("Cargo.toml");
     let lock_path = runner_dir.join("Cargo.lock");
     let locked = prepare_lock(root, &manifest_path)?;
+    let target_lock = crate::target_dir_lock(target_dir);
+    let _target_guard = target_lock.lock().unwrap_or_else(|e| e.into_inner());
     let output = Command::new("cargo")
         .current_dir(root)
         .args(["build", "--locked", "--manifest-path"])

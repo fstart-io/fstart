@@ -653,6 +653,72 @@ fn prepare_board_dir(root: &Path, board: &str) -> Result<std::path::PathBuf, Str
     Ok(dir)
 }
 
+enum BoardAcpiResult {
+    Passed(usize),
+    Skipped,
+    Failed,
+}
+
+fn check_one_board(
+    root: &Path,
+    manifests: &[crate::board_manifest::BoardManifest],
+    name: &str,
+) -> BoardAcpiResult {
+    let result = (|| {
+        let board = crate::board_manifest::find_in(manifests, name)?;
+        match crate::host_plan::acpi_baselines(root, &board, BASE)? {
+            AcpiOutcome::NotApplicable { reason } => {
+                println!("SKIP {name}: {reason}");
+                Ok::<_, String>(None)
+            }
+            AcpiOutcome::Images { images } => {
+                validate_scenarios(&images)?;
+                // Serialize checks that share `target/fstart-acpi/<board>` so
+                // repeated board IDs or variants cannot wipe each other's dir.
+                let board_lock =
+                    crate::path_lock(&root.join("target/fstart-acpi").join(&board.board));
+                let _board_guard = board_lock.lock().unwrap_or_else(|e| e.into_inner());
+                let board_dir = prepare_board_dir(root, &board.board)?;
+                let multi = images.len() > 1;
+                let mut scenario_errors = Vec::new();
+                for baseline in &images {
+                    let dir = board_dir.join(&baseline.scenario);
+                    fs::create_dir_all(&dir)
+                        .map_err(|e| format!("create {}: {e}", dir.display()))?;
+                    match validate(&dir, baseline) {
+                        Ok(()) => {
+                            if multi {
+                                println!("PASS {name} ({}): {}", baseline.scenario, dir.display());
+                            } else {
+                                println!("PASS {name}: {}", dir.display());
+                            }
+                        }
+                        Err(e) => {
+                            scenario_errors.push(format!(
+                                "{} ({}): {e}",
+                                baseline.scenario,
+                                dir.display()
+                            ));
+                        }
+                    }
+                }
+                if !scenario_errors.is_empty() {
+                    return Err(scenario_errors.join("; "));
+                }
+                Ok(Some(images.len()))
+            }
+        }
+    })();
+    match result {
+        Ok(Some(count)) => BoardAcpiResult::Passed(count),
+        Ok(None) => BoardAcpiResult::Skipped,
+        Err(err) => {
+            eprintln!("FAIL {name}: {err}");
+            BoardAcpiResult::Failed
+        }
+    }
+}
+
 /// Generate and validate baseline ACPI images for the selected boards/variants,
 /// or every discovered board and variant when `boards` is empty.
 pub fn check(boards: &[String]) -> Result<(), String> {
@@ -670,66 +736,51 @@ pub fn check(boards: &[String]) -> Result<(), String> {
         boards.to_vec()
     };
 
+    let mut outcomes: Vec<Option<BoardAcpiResult>> = (0..selected.len()).map(|_| None).collect();
+    if let Some((first, rest)) = selected.split_first() {
+        outcomes[0] = Some(check_one_board(&root, &manifests, first));
+        let workers = crate::default_parallelism().min(rest.len());
+        if workers <= 1 {
+            for (idx, name) in rest.iter().enumerate() {
+                outcomes[idx + 1] = Some(check_one_board(&root, &manifests, name));
+            }
+        } else {
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let slots: Vec<std::sync::Mutex<Option<BoardAcpiResult>>> = (0..rest.len())
+                .map(|_| std::sync::Mutex::new(None))
+                .collect();
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    scope.spawn(|| {
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= rest.len() {
+                                break;
+                            }
+                            let outcome = check_one_board(&root, &manifests, &rest[i]);
+                            *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+                        }
+                    });
+                }
+            });
+            for (idx, slot) in slots.into_iter().enumerate() {
+                outcomes[idx + 1] = slot.into_inner().unwrap_or_else(|e| e.into_inner());
+            }
+        }
+    }
+
     let mut passed_boards = 0usize;
     let mut passed_images = 0usize;
     let mut skipped_boards = 0usize;
     let mut failed = Vec::new();
-
-    for name in &selected {
-        let result = (|| {
-            let board = crate::board_manifest::find_in(&manifests, name)?;
-            match crate::host_plan::acpi_baselines(&root, &board, BASE)? {
-                AcpiOutcome::NotApplicable { reason } => {
-                    println!("SKIP {name}: {reason}");
-                    Ok::<_, String>(None)
-                }
-                AcpiOutcome::Images { images } => {
-                    validate_scenarios(&images)?;
-                    let board_dir = prepare_board_dir(&root, &board.board)?;
-                    let multi = images.len() > 1;
-                    let mut scenario_errors = Vec::new();
-                    for baseline in &images {
-                        let dir = board_dir.join(&baseline.scenario);
-                        fs::create_dir_all(&dir)
-                            .map_err(|e| format!("create {}: {e}", dir.display()))?;
-                        match validate(&dir, baseline) {
-                            Ok(()) => {
-                                if multi {
-                                    println!(
-                                        "PASS {name} ({}): {}",
-                                        baseline.scenario,
-                                        dir.display()
-                                    );
-                                } else {
-                                    println!("PASS {name}: {}", dir.display());
-                                }
-                            }
-                            Err(e) => {
-                                scenario_errors.push(format!(
-                                    "{} ({}): {e}",
-                                    baseline.scenario,
-                                    dir.display()
-                                ));
-                            }
-                        }
-                    }
-                    if !scenario_errors.is_empty() {
-                        return Err(scenario_errors.join("; "));
-                    }
-                    Ok(Some(images.len()))
-                }
-            }
-        })();
-        match result {
-            Ok(Some(count)) => {
+    for (name, outcome) in selected.iter().zip(outcomes) {
+        match outcome.expect("every selected board was checked") {
+            BoardAcpiResult::Passed(count) => {
                 passed_boards += 1;
                 passed_images += count;
             }
-            Ok(None) => skipped_boards += 1,
-            Err(err) => {
-                eprintln!("FAIL {name}: {err}");
-                failed.push(name.as_str());
-            }
+            BoardAcpiResult::Skipped => skipped_boards += 1,
+            BoardAcpiResult::Failed => failed.push(name.as_str()),
         }
     }
 
