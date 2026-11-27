@@ -2,7 +2,31 @@
 //! Big-endian command marshalling, shared by both command sets.
 
 use crate::{BUFFER_SIZE, Error};
+use zerocopy::big_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 use zeroize::Zeroize;
+
+/// Common big-endian TPM 1.2 / 2.0 command header (10 bytes).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct TpmCommandHeader {
+    pub tag: U16,
+    pub size: U32,
+    pub code: U32,
+}
+
+/// Common big-endian TPM 1.2 / 2.0 response header (10 bytes).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct TpmResponseHeader {
+    pub tag: U16,
+    pub size: U32,
+    pub code: U32,
+}
 
 /// A command under construction: tag, size (patched by [`Command::finish`])
 /// and command code or ordinal, then parameters.
@@ -20,7 +44,11 @@ impl Command {
             len: 0,
             overflow: false,
         };
-        command.u16(tag).u32(0).u32(code);
+        command.write(&TpmCommandHeader {
+            tag: U16::new(tag),
+            size: U32::new(0),
+            code: U32::new(code),
+        });
         command
     }
 
@@ -35,16 +63,20 @@ impl Command {
         self
     }
 
+    pub fn write<T: IntoBytes + Immutable>(&mut self, value: &T) -> &mut Self {
+        self.bytes(value.as_bytes())
+    }
+
     pub fn u8(&mut self, value: u8) -> &mut Self {
         self.bytes(&[value])
     }
 
     pub fn u16(&mut self, value: u16) -> &mut Self {
-        self.bytes(&value.to_be_bytes())
+        self.write(&U16::new(value))
     }
 
     pub fn u32(&mut self, value: u32) -> &mut Self {
-        self.bytes(&value.to_be_bytes())
+        self.write(&U32::new(value))
     }
 
     /// A `TPM2B`: 16-bit size, then the bytes.
@@ -57,8 +89,9 @@ impl Command {
         if self.overflow {
             return Err(Error::Response);
         }
-        let size = (self.len as u32).to_be_bytes();
-        self.buf[2..6].copy_from_slice(&size);
+        let (header, _) = TpmCommandHeader::mut_from_prefix(&mut self.buf[..self.len])
+            .map_err(|_| Error::Response)?;
+        header.size = U32::new(self.len as u32);
         Ok(&self.buf[..self.len])
     }
 }

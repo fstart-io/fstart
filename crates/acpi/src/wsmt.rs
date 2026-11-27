@@ -3,6 +3,13 @@
 
 use acpi_tables::sdt::Sdt;
 use alloc::vec::Vec;
+use zerocopy::{Immutable, IntoBytes, little_endian::U32};
+
+#[derive(IntoBytes, Immutable)]
+#[repr(C)]
+struct WsmtBody {
+    protection_flags: U32,
+}
 
 /// SMM uses only fixed communication buffers it validates.
 pub const FIXED_COMM_BUFFERS: u32 = 1 << 0;
@@ -16,12 +23,18 @@ pub const SYSTEM_RESOURCE_PROTECTION: u32 = 1 << 2;
 pub fn build_wsmt(protections: u32) -> Vec<u8> {
     let mut sdt = Sdt::new(
         *b"WSMT",
-        40,
+        36 + core::mem::size_of::<WsmtBody>() as u32,
         1,
         crate::OEM_ID,
         crate::OEM_TABLE_ID,
         crate::OEM_REVISION,
     );
-    sdt.write_u32(36, protections);
+    sdt.write_bytes(
+        36,
+        WsmtBody {
+            protection_flags: U32::new(protections),
+        }
+        .as_bytes(),
+    );
     crate::serialize(&sdt)
 }

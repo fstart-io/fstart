@@ -4,11 +4,38 @@
 //! detailed timing descriptors, so the on-disk layout and its decoder live here
 //! once and are shared.
 
+use tock_registers::register_bitfields;
 use zerocopy::byteorder::little_endian::U16;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use crate::gma::error::GmaError;
 use crate::gma::mode::{Mode, ModeFlags};
+
+register_bitfields![u8,
+    /// Upper nibbles of active (7:4) and blanking (3:0) pixel/line counts (offset 0x04 / 0x07, 8 bits).
+    ActiveBlankHi [
+        BLANK_HI OFFSET(0) NUMBITS(4) [],
+        ACTIVE_HI OFFSET(4) NUMBITS(4) []
+    ],
+    /// Vertical sync offset (7:4) and width (3:0) low nibbles (offset 0x0a, 8 bits).
+    VsyncOffWidth [
+        VSYNC_WIDTH_LO OFFSET(0) NUMBITS(4) [],
+        VSYNC_OFF_LO OFFSET(4) NUMBITS(4) []
+    ],
+    /// High 2-bit extensions of H/V sync offsets and widths (offset 0x0b, 8 bits).
+    SyncHi [
+        VSYNC_WIDTH_HI OFFSET(0) NUMBITS(2) [],
+        VSYNC_OFF_HI OFFSET(2) NUMBITS(2) [],
+        HSYNC_WIDTH_HI OFFSET(4) NUMBITS(2) [],
+        HSYNC_OFF_HI OFFSET(6) NUMBITS(2) []
+    ],
+    /// EDID detailed-timing feature flags (offset 0x11, 8 bits).
+    DtdFlags [
+        HSYNC_POSITIVE OFFSET(1) NUMBITS(1) [],
+        VSYNC_POSITIVE OFFSET(2) NUMBITS(1) [],
+        INTERLACE OFFSET(7) NUMBITS(1) []
+    ]
+];
 
 /// Length of a detailed timing descriptor.
 pub const DTD_LEN: usize = 18;
@@ -45,16 +72,18 @@ impl DtdRaw {
 
     /// True when the descriptor is a detailed timing rather than a monitor
     /// descriptor (all timing fields non-zero).
-    pub(crate) const fn is_timing(&self) -> bool {
+    pub(crate) fn is_timing(&self) -> bool {
         self.pixel_clock_raw() != 0
-            && (self.hactive_lo != 0 || (self.hactive_hblank_hi & 0xf0) != 0)
-            && (self.hsync_off_lo != 0 || (self.sync_hi & 0xc0) != 0)
-            && (self.hsync_width_lo != 0 || (self.sync_hi & 0x30) != 0)
-            && (self.hblank_lo != 0 || (self.hactive_hblank_hi & 0x0f) != 0)
-            && (self.vactive_lo != 0 || (self.vactive_vblank_hi & 0xf0) != 0)
-            && ((self.vsync_off_width & 0xf0) != 0 || (self.sync_hi & 0x0c) != 0)
-            && ((self.vsync_off_width & 0x0f) != 0 || (self.sync_hi & 0x03) != 0)
-            && (self.vblank_lo != 0 || (self.vactive_vblank_hi & 0x0f) != 0)
+            && (self.hactive_lo != 0 || ActiveBlankHi::ACTIVE_HI.read(self.hactive_hblank_hi) != 0)
+            && (self.hsync_off_lo != 0 || SyncHi::HSYNC_OFF_HI.read(self.sync_hi) != 0)
+            && (self.hsync_width_lo != 0 || SyncHi::HSYNC_WIDTH_HI.read(self.sync_hi) != 0)
+            && (self.hblank_lo != 0 || ActiveBlankHi::BLANK_HI.read(self.hactive_hblank_hi) != 0)
+            && (self.vactive_lo != 0 || ActiveBlankHi::ACTIVE_HI.read(self.vactive_vblank_hi) != 0)
+            && (VsyncOffWidth::VSYNC_OFF_LO.read(self.vsync_off_width) != 0
+                || SyncHi::VSYNC_OFF_HI.read(self.sync_hi) != 0)
+            && (VsyncOffWidth::VSYNC_WIDTH_LO.read(self.vsync_off_width) != 0
+                || SyncHi::VSYNC_WIDTH_HI.read(self.sync_hi) != 0)
+            && (self.vblank_lo != 0 || ActiveBlankHi::BLANK_HI.read(self.vactive_vblank_hi) != 0)
     }
 }
 
@@ -67,25 +96,35 @@ pub(crate) fn dtd_present(dtd: &[u8]) -> bool {
 pub fn mode_from_dtd(dtd: &[u8]) -> Result<Mode, GmaError> {
     let raw = DtdRaw::parse(dtd).ok_or(GmaError::ModeUnavailable)?;
     let pixel_clock_khz = u32::from(raw.pixel_clock_raw()) * 10;
-    let hactive = u16::from(raw.hactive_lo) | (u16::from(raw.hactive_hblank_hi & 0xf0) << 4);
-    let hblank = u16::from(raw.hblank_lo) | (u16::from(raw.hactive_hblank_hi & 0x0f) << 8);
-    let vactive = u16::from(raw.vactive_lo) | (u16::from(raw.vactive_vblank_hi & 0xf0) << 4);
-    let vblank = u16::from(raw.vblank_lo) | (u16::from(raw.vactive_vblank_hi & 0x0f) << 8);
-    let hsync_off = u16::from(raw.hsync_off_lo) | (u16::from(raw.sync_hi & 0xc0) << 2);
-    let hsync_width = u16::from(raw.hsync_width_lo) | (u16::from(raw.sync_hi & 0x30) << 4);
-    let vsync_off =
-        u16::from((raw.vsync_off_width >> 4) & 0x0f) | (u16::from(raw.sync_hi & 0x0c) << 2);
-    let vsync_width = u16::from(raw.vsync_off_width & 0x0f) | (u16::from(raw.sync_hi & 0x03) << 4);
+    let hactive = u16::from(raw.hactive_lo)
+        | (u16::from(ActiveBlankHi::ACTIVE_HI.read(raw.hactive_hblank_hi)) << 8);
+    let hblank = u16::from(raw.hblank_lo)
+        | (u16::from(ActiveBlankHi::BLANK_HI.read(raw.hactive_hblank_hi)) << 8);
+    let vactive = u16::from(raw.vactive_lo)
+        | (u16::from(ActiveBlankHi::ACTIVE_HI.read(raw.vactive_vblank_hi)) << 8);
+    let vblank = u16::from(raw.vblank_lo)
+        | (u16::from(ActiveBlankHi::BLANK_HI.read(raw.vactive_vblank_hi)) << 8);
+    let hsync_off =
+        u16::from(raw.hsync_off_lo) | (u16::from(SyncHi::HSYNC_OFF_HI.read(raw.sync_hi)) << 8);
+    let hsync_width =
+        u16::from(raw.hsync_width_lo) | (u16::from(SyncHi::HSYNC_WIDTH_HI.read(raw.sync_hi)) << 8);
+    let vsync_off = u16::from(VsyncOffWidth::VSYNC_OFF_LO.read(raw.vsync_off_width))
+        | (u16::from(SyncHi::VSYNC_OFF_HI.read(raw.sync_hi)) << 4);
+    let vsync_width = u16::from(VsyncOffWidth::VSYNC_WIDTH_LO.read(raw.vsync_off_width))
+        | (u16::from(SyncHi::VSYNC_WIDTH_HI.read(raw.sync_hi)) << 4);
     // EDID detailed-timing separate-sync polarity bits: bit 1 is horizontal
     // positive, bit 2 is vertical positive (Linux DRM_EDID_PT_HSYNC_POSITIVE /
     // DRM_EDID_PT_VSYNC_POSITIVE). Missing bits mean negative polarity.
-    let mut flags = match raw.flags & 0x06 {
-        0x06 => ModeFlags::PHSYNC | ModeFlags::PVSYNC,
-        0x04 => ModeFlags::NHSYNC | ModeFlags::PVSYNC,
-        0x02 => ModeFlags::PHSYNC | ModeFlags::NVSYNC,
-        _ => ModeFlags::NHSYNC | ModeFlags::NVSYNC,
+    let mut flags = match (
+        DtdFlags::HSYNC_POSITIVE.is_set(raw.flags),
+        DtdFlags::VSYNC_POSITIVE.is_set(raw.flags),
+    ) {
+        (true, true) => ModeFlags::PHSYNC | ModeFlags::PVSYNC,
+        (false, true) => ModeFlags::NHSYNC | ModeFlags::PVSYNC,
+        (true, false) => ModeFlags::PHSYNC | ModeFlags::NVSYNC,
+        (false, false) => ModeFlags::NHSYNC | ModeFlags::NVSYNC,
     };
-    if (raw.flags & 0x80) != 0 {
+    if DtdFlags::INTERLACE.is_set(raw.flags) {
         flags |= ModeFlags::INTERLACE;
     }
     let mode = Mode {

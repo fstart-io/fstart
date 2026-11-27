@@ -28,6 +28,18 @@
 //! wrong value only costs a boot, not for security policy.
 
 use crate::{Meta, Source, SourceError};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use zerocopy::{big_endian::U16 as BeU16, little_endian::U16 as LeU16};
+
+/// Wire prefix of one CMOS option record: tag byte + 16-bit LE FNV-1a key hash.
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct CmosRecordPrefix {
+    tag: u8,
+    hash: LeU16,
+}
+
+const _: () = assert!(core::mem::size_of::<CmosRecordPrefix>() == HEADER);
 
 /// One byte-addressed CMOS RAM bank: index 0..0x7f behind ports 0x70/0x71
 /// on every PC chipset. The first 14 bytes are the clock.
@@ -153,7 +165,8 @@ impl<R: Ram> Cmos<R> {
     /// Whether the stored checksum matches the records.
     pub fn valid(&self) -> bool {
         let at = self.window.last - 1;
-        u16::from_be_bytes([self.ram.read(at), self.ram.read(at + 1)]) == self.sum()
+        let raw = [self.ram.read(at), self.ram.read(at + 1)];
+        BeU16::read_from_bytes(&raw).is_ok_and(|stored| stored.get() == self.sum())
     }
 
     /// Each `(hash, value, offset, len)` record, in order, until `each`
@@ -181,11 +194,13 @@ impl<R: Ram> Cmos<R> {
             if len > VALUE || usize::from(range.end - at) < HEADER + len {
                 return Err(SourceError::Corrupt);
             }
-            let hash = u16::from_le_bytes([self.ram.read(at + 1), self.ram.read(at + 2)]);
+            let raw_prefix = [tag, self.ram.read(at + 1), self.ram.read(at + 2)];
+            let prefix =
+                CmosRecordPrefix::read_from_bytes(&raw_prefix).map_err(|_| SourceError::Corrupt)?;
             let value = (0..len).fold(inline, |v, k| {
                 v | u32::from(self.ram.read(at + (HEADER + k) as u8)) << (8 * k)
             });
-            if !each(hash, value, at, len) {
+            if !each(prefix.hash.get(), value, at, len) {
                 break;
             }
             at += (HEADER + len) as u8;
@@ -221,12 +236,15 @@ impl<R: Ram> Cmos<R> {
                 return false;
             };
             let len = record - HEADER;
-            slot[0] = if len == 0 {
-                INLINE | value as u8
-            } else {
-                len as u8
+            let prefix = CmosRecordPrefix {
+                tag: if len == 0 {
+                    INLINE | value as u8
+                } else {
+                    len as u8
+                },
+                hash: LeU16::new(hash),
             };
-            slot[1..HEADER].copy_from_slice(&hash.to_le_bytes());
+            slot[..HEADER].copy_from_slice(prefix.as_bytes());
             slot[HEADER..].copy_from_slice(&value.to_le_bytes()[..len]);
             *used += record;
             true
@@ -252,9 +270,10 @@ impl<R: Ram> Cmos<R> {
         for (i, at) in self.window.records().enumerate() {
             self.ram.write(at, bytes[i]);
         }
-        let [high, low] = self.sum().to_be_bytes();
-        self.ram.write(self.window.last - 1, high);
-        self.ram.write(self.window.last, low);
+        let sum = BeU16::new(self.sum());
+        let sum_bytes = sum.as_bytes();
+        self.ram.write(self.window.last - 1, sum_bytes[0]);
+        self.ram.write(self.window.last, sum_bytes[1]);
         match self.read(key) {
             Ok(stored) if stored == value => Ok(()),
             _ => Err(WriteError::Readback),

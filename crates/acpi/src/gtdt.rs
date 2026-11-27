@@ -7,44 +7,46 @@
 //! this module fills that gap using the [`Sdt`] generic table type.
 
 use acpi_tables::sdt::Sdt;
+use zerocopy::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 // ---------------------------------------------------------------------------
-// Wire-format structs — #[repr(C, packed)] mirrors the ACPI 6.5 layout.
+// Wire-format structs — alignment-one LE zerocopy mirrors of ACPI 6.5.
 // ---------------------------------------------------------------------------
 
 /// GTDT fixed body after the 36-byte ACPI SDT header (revision 3).
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct GtdtBody {
-    cnt_ctrl_base: u64,
-    _reserved: u32,
-    secure_el1_gsiv: u32,
-    secure_el1_flags: u32,
-    nonsecure_el1_gsiv: u32,
-    nonsecure_el1_flags: u32,
-    virtual_gsiv: u32,
-    virtual_flags: u32,
-    nonsecure_el2_gsiv: u32,
-    nonsecure_el2_flags: u32,
-    cnt_read_base: u64,
-    platform_timer_count: u32,
-    platform_timer_offset: u32,
+    cnt_ctrl_base: U64,
+    _reserved: U32,
+    secure_el1_gsiv: U32,
+    secure_el1_flags: U32,
+    nonsecure_el1_gsiv: U32,
+    nonsecure_el1_flags: U32,
+    virtual_gsiv: U32,
+    virtual_flags: U32,
+    nonsecure_el2_gsiv: U32,
+    nonsecure_el2_flags: U32,
+    cnt_read_base: U64,
+    platform_timer_count: U32,
+    platform_timer_offset: U32,
     /// Revision 3 addition (ACPI 6.3+).
-    virtual_el2_gsiv: u32,
-    virtual_el2_flags: u32,
+    virtual_el2_gsiv: U32,
+    virtual_el2_flags: U32,
 }
 
 /// SBSA Generic Watchdog subtable (type 1, 28 bytes).
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct WatchdogSubtable {
     subtable_type: u8,
-    length: u16,
+    length: U16,
     _reserved: u8,
-    refresh_base: u64,
-    control_base: u64,
-    gsiv: u32,
-    timer_flags: u32,
+    refresh_base: U64,
+    control_base: U64,
+    gsiv: U32,
+    timer_flags: U32,
 }
 
 const ACPI_HDR: usize = 36;
@@ -114,42 +116,42 @@ pub fn build_gtdt(config: &GtdtConfig<'_>) -> Sdt {
         PLATFORM_TIMERS_OFFSET
     };
 
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         ACPI_HDR,
-        &GtdtBody {
-            cnt_ctrl_base: config.cnt_ctrl_base,
-            _reserved: 0,
-            secure_el1_gsiv: config.secure_el1_gsiv,
-            secure_el1_flags: config.timer_flags,
-            nonsecure_el1_gsiv: config.nonsecure_el1_gsiv,
-            nonsecure_el1_flags: config.timer_flags,
-            virtual_gsiv: config.virtual_gsiv,
-            virtual_flags: config.timer_flags,
-            nonsecure_el2_gsiv: config.nonsecure_el2_gsiv,
-            nonsecure_el2_flags: config.timer_flags,
-            cnt_read_base: 0xFFFF_FFFF_FFFF_FFFF, // not used
-            platform_timer_count: config.watchdogs.len() as u32,
-            platform_timer_offset: pt_offset,
-            virtual_el2_gsiv: 0,
-            virtual_el2_flags: 0,
-        },
+        GtdtBody {
+            cnt_ctrl_base: U64::new(config.cnt_ctrl_base),
+            _reserved: U32::ZERO,
+            secure_el1_gsiv: U32::new(config.secure_el1_gsiv),
+            secure_el1_flags: U32::new(config.timer_flags),
+            nonsecure_el1_gsiv: U32::new(config.nonsecure_el1_gsiv),
+            nonsecure_el1_flags: U32::new(config.timer_flags),
+            virtual_gsiv: U32::new(config.virtual_gsiv),
+            virtual_flags: U32::new(config.timer_flags),
+            nonsecure_el2_gsiv: U32::new(config.nonsecure_el2_gsiv),
+            nonsecure_el2_flags: U32::new(config.timer_flags),
+            cnt_read_base: U64::new(0xFFFF_FFFF_FFFF_FFFF), // not used
+            platform_timer_count: U32::new(config.watchdogs.len() as u32),
+            platform_timer_offset: U32::new(pt_offset),
+            virtual_el2_gsiv: U32::ZERO,
+            virtual_el2_flags: U32::ZERO,
+        }
+        .as_bytes(),
     );
 
     // Watchdog subtables.
     for (i, wd) in config.watchdogs.iter().enumerate() {
-        crate::write_struct(
-            &mut sdt,
+        sdt.write_bytes(
             ACPI_HDR + GTDT_BODY_SIZE + i * WATCHDOG_SUBTABLE_SIZE,
-            &WatchdogSubtable {
+            WatchdogSubtable {
                 subtable_type: 1, // SBSA Generic Watchdog
-                length: WATCHDOG_SUBTABLE_SIZE as u16,
+                length: U16::new(WATCHDOG_SUBTABLE_SIZE as u16),
                 _reserved: 0,
-                refresh_base: wd.refresh_base,
-                control_base: wd.control_base,
-                gsiv: wd.gsiv,
-                timer_flags: wd.timer_flags,
-            },
+                refresh_base: U64::new(wd.refresh_base),
+                control_base: U64::new(wd.control_base),
+                gsiv: U32::new(wd.gsiv),
+                timer_flags: U32::new(wd.timer_flags),
+            }
+            .as_bytes(),
         );
     }
 

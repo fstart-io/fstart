@@ -145,12 +145,24 @@ impl Codec for Lzma {
         output: &mut [u8],
     ) -> Result<(), LoadError> {
         use lzma_rust2::{LzmaReader, Read};
+        use zerocopy::little_endian::{U32, U64};
+        use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
+
+        #[repr(C)]
+        #[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+        struct LzmaAloneHeader {
+            _properties: u8,
+            _dict_size: U32,
+            uncompressed_size: U64,
+        }
 
         if !self.supports(compression) {
             return Err(LoadError::Unsupported);
         }
         // The LZMA-Alone header must agree with the authenticated output size.
-        if input.get(5..13) != Some(&(output.len() as u64).to_le_bytes()) {
+        let (header, _) =
+            LzmaAloneHeader::ref_from_prefix(input).map_err(|_| LoadError::Decompression)?;
+        if header.uncompressed_size.get() != output.len() as u64 {
             return Err(LoadError::Decompression);
         }
         let mut reader =

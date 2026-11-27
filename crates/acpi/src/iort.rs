@@ -11,55 +11,57 @@
 //! Without IORT, the OS cannot route PCI MSI/MSI-X through the GIC ITS.
 
 use acpi_tables::sdt::Sdt;
+use zerocopy::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 // ---------------------------------------------------------------------------
-// Wire-format structs — #[repr(C, packed)] mirrors the IORT spec layout.
+// Wire-format structs — alignment-one LE zerocopy mirrors of the IORT spec.
 // ---------------------------------------------------------------------------
 
 /// IORT table fields after the 36-byte ACPI SDT header.
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct IortTableHeader {
-    node_count: u32,
-    node_offset: u32,
-    reserved: u32,
+    node_count: U32,
+    node_offset: U32,
+    reserved: U32,
 }
 
 /// IORT node header — common to all node types.
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct IortNodeHeader {
     node_type: u8,
-    length: u16,
+    length: U16,
     revision: u8,
-    identifier: u32,
-    mapping_count: u32,
-    mapping_offset: u32,
+    identifier: U32,
+    mapping_count: U32,
+    mapping_offset: U32,
 }
 
 /// Root Complex node-specific data (revision 4, 24 bytes).
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct RcNodeData {
-    memory_properties: u64,
-    ats_attribute: u32,
-    pci_segment_number: u32,
+    memory_properties: U64,
+    ats_attribute: U32,
+    pci_segment_number: U32,
     memory_address_limit: u8,
-    pasid_capabilities: u16,
+    pasid_capabilities: U16,
     _reserved: u8,
-    flags: u32,
+    flags: U32,
 }
 
 /// IORT ID mapping entry (20 bytes).
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct IdMapping {
-    input_base: u32,
+    input_base: U32,
     /// Stored as count − 1 per the IORT spec.
-    id_count: u32,
-    output_base: u32,
-    output_reference: u32,
-    flags: u32,
+    id_count: U32,
+    output_base: U32,
+    output_reference: U32,
+    flags: U32,
 }
 
 const ACPI_HDR: usize = 36;
@@ -118,79 +120,79 @@ pub fn build_iort(config: &IortConfig) -> Sdt {
     );
 
     // IORT header (after 36-byte ACPI header).
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         ACPI_HDR,
-        &IortTableHeader {
-            node_count: 2,
-            node_offset: IORT_HEADER_SIZE as u32,
-            reserved: 0,
-        },
+        IortTableHeader {
+            node_count: U32::new(2),
+            node_offset: U32::new(IORT_HEADER_SIZE as u32),
+            reserved: U32::ZERO,
+        }
+        .as_bytes(),
     );
 
     // ITS Group node.
     let its_off = IORT_HEADER_SIZE;
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         its_off,
-        &IortNodeHeader {
+        IortNodeHeader {
             node_type: node_type::ITS_GROUP,
-            length: its_node_size as u16,
+            length: U16::new(its_node_size as u16),
             revision: 1,
-            identifier: 0,
-            mapping_count: 0,
-            mapping_offset: 0,
-        },
+            identifier: U32::ZERO,
+            mapping_count: U32::ZERO,
+            mapping_offset: U32::ZERO,
+        }
+        .as_bytes(),
     );
 
     // ITS Group node data: its_count + identifiers[].
     let its_data_off = its_off + NODE_HEADER_SIZE;
-    sdt.write_u32(its_data_off, its_count as u32);
+    sdt.write_bytes(its_data_off, U32::new(its_count as u32).as_bytes());
     for (i, &id) in config.its_ids.iter().enumerate() {
-        sdt.write_u32(its_data_off + 4 + i * 4, id);
+        sdt.write_bytes(its_data_off + 4 + i * 4, U32::new(id).as_bytes());
     }
 
     // Root Complex node.
     let rc_off = its_off + its_node_size;
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         rc_off,
-        &IortNodeHeader {
+        IortNodeHeader {
             node_type: node_type::ROOT_COMPLEX,
-            length: rc_node_size as u16,
+            length: U16::new(rc_node_size as u16),
             revision: 4,
-            identifier: 1,
-            mapping_count: 1,
-            mapping_offset: (NODE_HEADER_SIZE + RC_DATA_SIZE) as u32,
-        },
+            identifier: U32::new(1),
+            mapping_count: U32::new(1),
+            mapping_offset: U32::new((NODE_HEADER_SIZE + RC_DATA_SIZE) as u32),
+        }
+        .as_bytes(),
     );
 
     // Root Complex node data.
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         rc_off + NODE_HEADER_SIZE,
-        &RcNodeData {
-            memory_properties: 0,
-            ats_attribute: 0,
-            pci_segment_number: config.pci_segment,
+        RcNodeData {
+            memory_properties: U64::ZERO,
+            ats_attribute: U32::ZERO,
+            pci_segment_number: U32::new(config.pci_segment),
             memory_address_limit: config.memory_address_limit,
-            pasid_capabilities: 0,
+            pasid_capabilities: U16::ZERO,
             _reserved: 0,
-            flags: 0,
-        },
+            flags: U32::ZERO,
+        }
+        .as_bytes(),
     );
 
     // ID Mapping: maps all PCI RIDs 1:1 to the ITS Group node.
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         rc_off + NODE_HEADER_SIZE + RC_DATA_SIZE,
-        &IdMapping {
-            input_base: 0,
-            id_count: config.id_count.saturating_sub(1),
-            output_base: 0,
-            output_reference: its_off as u32,
-            flags: 0,
-        },
+        IdMapping {
+            input_base: U32::ZERO,
+            id_count: U32::new(config.id_count.saturating_sub(1)),
+            output_base: U32::ZERO,
+            output_reference: U32::new(its_off as u32),
+            flags: U32::ZERO,
+        }
+        .as_bytes(),
     );
 
     sdt.update_checksum();

@@ -1,6 +1,6 @@
 //! Host-only ACPI baseline check. No firmware or AML methods run on real hardware.
 
-use byteorder::{ByteOrder, LittleEndian as Le};
+use fstart_acpi::wake::{FacsPrefix, FadtV2Prefix, Rsdp, SdtHeader, XsdtEntry};
 use fstart_image_build::acpi::{AcpiBaseline, AcpiOutcome};
 use std::{
     collections::BTreeSet,
@@ -9,6 +9,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use zerocopy::FromBytes;
 
 const BASE: u64 = 0x7f00_0000;
 const SDT_HEADER: usize = 36;
@@ -91,7 +92,15 @@ impl<'a> AcpiImage<'a> {
 
     fn table(&self, address: u64, facs: bool) -> Result<&'a [u8], String> {
         let tail = self.tail(address, if facs { 64 } else { 4 })?;
-        let size = tail.get(4..8).map(Le::read_u32).unwrap_or(0) as usize;
+        let size = if facs {
+            FacsPrefix::ref_from_prefix(tail)
+                .map(|(h, _)| h.length.get() as usize)
+                .unwrap_or(0)
+        } else {
+            SdtHeader::ref_from_prefix(tail)
+                .map(|(h, _)| h.length.get() as usize)
+                .unwrap_or(0)
+        };
         let table = tail
             .get(..size)
             .filter(|t| t.len() >= if facs { 64 } else { SDT_HEADER })
@@ -104,23 +113,25 @@ impl<'a> AcpiImage<'a> {
 
     fn tables(&self) -> Result<Vec<&'a [u8]>, String> {
         let rsdp_tail = self.tail(self.rsdp, 16)?;
-        if rsdp_tail.len() < 36 || !rsdp_tail.starts_with(b"RSD PTR ") || rsdp_tail[15] < 2 {
+        let (rsdp_hdr, _) = Rsdp::ref_from_prefix(rsdp_tail).map_err(|_| "missing ACPI 2+ RSDP")?;
+        if rsdp_hdr.signature != *b"RSD PTR " || rsdp_hdr.revision < 2 {
             return Err("missing ACPI 2+ RSDP".into());
         }
         let rsdp = rsdp_tail
-            .get(..Le::read_u32(&rsdp_tail[20..24]) as usize)
+            .get(..rsdp_hdr.length.get() as usize)
             .filter(|r| r.len() >= 36 && checksum_ok(&r[..20]) && checksum_ok(r))
             .ok_or("invalid RSDP length or checksum")?;
-        let rsdt_addr = Le::read_u32(&rsdp[16..20]);
+        let rsdt_addr = rsdp_hdr.rsdt_addr.get();
         if rsdt_addr != 0 {
             return Err(format!(
                 "non-zero RSDP legacy RSDT address {rsdt_addr:#x} is unsupported"
             ));
         }
-        let xsdt_addr = Le::read_u64(&rsdp[24..32]);
+        let xsdt_addr = rsdp_hdr.xsdt_addr.get();
         let xsdt = self.table(xsdt_addr, false)?;
-        let (entries, trailing) = xsdt[SDT_HEADER..].as_chunks::<8>();
-        if !xsdt.starts_with(b"XSDT") || !trailing.is_empty() {
+        let entries =
+            <[XsdtEntry]>::ref_from_bytes(&xsdt[SDT_HEADER..]).map_err(|_| "invalid XSDT")?;
+        if !xsdt.starts_with(b"XSDT") {
             return Err("invalid XSDT".into());
         }
 
@@ -144,7 +155,7 @@ impl<'a> AcpiImage<'a> {
         let mut tables = vec![xsdt];
 
         for entry in entries {
-            let addr = Le::read_u64(entry);
+            let addr = entry.0.get();
             if !addresses.insert(addr) {
                 return Err(format!("duplicate ACPI table address {addr:#x}"));
             }
@@ -166,18 +177,13 @@ impl<'a> AcpiImage<'a> {
 
         let mut fadts = tables.iter().copied().filter(|t| t.starts_with(b"FACP"));
         let fadt = fadts.next().ok_or("missing FADT")?;
-        if fadt.len() < 148 {
-            return Err(format!("pre-2.0 FADT unsupported (length {})", fadt.len()));
-        }
+        let (fadt_hdr, _) = FadtV2Prefix::ref_from_prefix(fadt)
+            .map_err(|_| format!("pre-2.0 FADT unsupported (length {})", fadt.len()))?;
         if fadts.next().is_some() {
             return Err("duplicate FADT".into());
         }
 
-        let dsdt_addr = fadt_pointer(
-            Le::read_u32(&fadt[40..44]),
-            Le::read_u64(&fadt[140..148]),
-            "DSDT",
-        )?;
+        let dsdt_addr = fadt_pointer(fadt_hdr.prefix.dsdt.get(), fadt_hdr.x_dsdt.get(), "DSDT")?;
         if dsdt_addr == 0 {
             return Err("FADT DSDT address is zero".into());
         }
@@ -197,10 +203,10 @@ impl<'a> AcpiImage<'a> {
         ));
         tables.push(dsdt);
 
-        let hw_reduced = (Le::read_u32(&fadt[112..116]) & FADT_HW_REDUCED_ACPI) != 0;
+        let hw_reduced = (fadt_hdr.prefix.flags.get() & FADT_HW_REDUCED_ACPI) != 0;
         let facs_addr = fadt_pointer(
-            Le::read_u32(&fadt[36..40]),
-            Le::read_u64(&fadt[132..140]),
+            fadt_hdr.prefix.firmware_ctrl.get(),
+            fadt_hdr.prefix.x_firmware_ctrl.get(),
             "FIRMWARE_CTRL",
         )?;
         if facs_addr == 0 {
@@ -741,6 +747,7 @@ pub fn check(boards: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byteorder::{ByteOrder, LittleEndian as Le};
     use fstart_acpi::platform::{FadtConfig, assemble};
 
     fn sample_fadt() -> FadtConfig {

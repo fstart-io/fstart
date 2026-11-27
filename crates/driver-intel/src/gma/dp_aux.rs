@@ -399,6 +399,35 @@ const AUX_CTL_START_CLEAR_MASK: u32 = DP_AUX_CTL_INTERRUPT_ON_DONE
     | DP_AUX_CTL_PRECHARGE_TIME_MASK
     | DP_AUX_CTL_2X_BIT_CLOCK_DIV_MASK;
 
+/// Four-byte DisplayPort AUX request header: 4-bit command + 20-bit address + length - 1.
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct AuxRequestHeader {
+    cmd_addr_hi: u8,
+    addr_mid: u8,
+    addr_lo: u8,
+    len_minus_1: u8,
+}
+
+impl AuxRequestHeader {
+    const fn new(cmd_nibble: u8, address: u32, payload_len: usize) -> Self {
+        Self {
+            cmd_addr_hi: (cmd_nibble << 4) | ((address >> 16) as u8 & 0x0f),
+            addr_mid: (address >> 8) as u8,
+            addr_lo: address as u8,
+            len_minus_1: (payload_len - 1) as u8,
+        }
+    }
+}
+
 /// Build a raw native AUX request into `out` and return the message length.
 pub fn build_native_aux_request(
     command: AuxNativeCommand,
@@ -406,14 +435,13 @@ pub fn build_native_aux_request(
     payload: &[u8],
     out: &mut [u8; AUX_MAX_MESSAGE_LEN],
 ) -> Result<usize, GmaError> {
+    use zerocopy::IntoBytes;
     if address > 0x000f_ffff || payload.is_empty() || payload.len() > AUX_MAX_PAYLOAD_LEN {
         return Err(GmaError::InvalidConfig);
     }
     out.fill(0);
-    out[0] = (command.nibble() << 4) | ((address >> 16) as u8 & 0x0f);
-    out[1] = (address >> 8) as u8;
-    out[2] = address as u8;
-    out[3] = (payload.len() - 1) as u8;
+    let header = AuxRequestHeader::new(command.nibble(), address, payload.len());
+    out[..AUX_HEADER_LEN].copy_from_slice(header.as_bytes());
     if matches!(command, AuxNativeCommand::Write) {
         out[AUX_HEADER_LEN..AUX_HEADER_LEN + payload.len()].copy_from_slice(payload);
         Ok(AUX_HEADER_LEN + payload.len())
@@ -440,14 +468,17 @@ pub fn build_i2c_aux_request(
     mot: bool,
     out: &mut [u8; AUX_MAX_MESSAGE_LEN],
 ) -> Result<usize, GmaError> {
+    use zerocopy::IntoBytes;
     if address > 0x7f || payload.is_empty() || payload.len() > AUX_MAX_PAYLOAD_LEN {
         return Err(GmaError::InvalidConfig);
     }
     out.fill(0);
-    out[0] = (command.nibble() | if_bool_u8(mot, AUX_I2C_MOT)) << 4;
-    out[1] = 0;
-    out[2] = address;
-    out[3] = (payload.len() - 1) as u8;
+    let header = AuxRequestHeader::new(
+        command.nibble() | if_bool_u8(mot, AUX_I2C_MOT),
+        u32::from(address),
+        payload.len(),
+    );
+    out[..AUX_HEADER_LEN].copy_from_slice(header.as_bytes());
     if matches!(command, AuxI2cCommand::Write) {
         out[AUX_HEADER_LEN..AUX_HEADER_LEN + payload.len()].copy_from_slice(payload);
         Ok(AUX_HEADER_LEN + payload.len())
@@ -1306,20 +1337,56 @@ pub struct ReceiverCaps {
     pub aux_rd_interval: u8,
 }
 
+/// Wire layout of the 15-byte DPCD receiver capability block (`0x0000..0x000E`).
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct DpcdReceiverCaps {
+    dpcd_rev: u8,
+    max_link_rate: u8,
+    max_lane_count: u8,
+    max_downspread: u8,
+    _reserved: [u8; 10],
+    training_aux_rd_interval: u8,
+}
+
+tock_registers::register_bitfields![u8,
+    /// DPCD `MAX_LANE_COUNT` (0x0002, 8 bits).
+    MaxLaneCount [
+        COUNT OFFSET(0) NUMBITS(5) [],
+        TPS3_SUPPORTED OFFSET(6) NUMBITS(1) [],
+        ENHANCED_FRAME_CAP OFFSET(7) NUMBITS(1) []
+    ],
+    /// DPCD `MAX_DOWNSPREAD` (0x0003, 8 bits).
+    MaxDownspread [
+        NO_AUX_HANDSHAKE OFFSET(6) NUMBITS(1) []
+    ],
+    /// DPCD `TRAINING_AUX_RD_INTERVAL` (0x000E, 8 bits).
+    TrainingAuxRdInterval [
+        INTERVAL OFFSET(0) NUMBITS(7) []
+    ]
+];
+
 impl ReceiverCaps {
     /// Parse the 15-byte DPCD receiver caps block.
     pub fn parse(bytes: &[u8]) -> Result<Self, GmaError> {
-        if bytes.len() < 15 {
-            return Err(GmaError::InvalidConfig);
-        }
+        use zerocopy::FromBytes;
+        let (wire, _) =
+            DpcdReceiverCaps::ref_from_prefix(bytes).map_err(|_| GmaError::InvalidConfig)?;
         Ok(Self {
-            dpcd_revision: bytes[0],
-            max_link_rate: DpLinkRate::decode(bytes[1]),
-            max_lane_count: bytes[2] & 0x1f,
-            tps3_supported: (bytes[2] & 0x40) != 0,
-            enhanced_framing: (bytes[2] & 0x80) != 0,
-            no_aux_handshake: (bytes[3] & 0x40) != 0,
-            aux_rd_interval: bytes[14] & 0x7f,
+            dpcd_revision: wire.dpcd_rev,
+            max_link_rate: DpLinkRate::decode(wire.max_link_rate),
+            max_lane_count: MaxLaneCount::COUNT.read(wire.max_lane_count),
+            tps3_supported: MaxLaneCount::TPS3_SUPPORTED.is_set(wire.max_lane_count),
+            enhanced_framing: MaxLaneCount::ENHANCED_FRAME_CAP.is_set(wire.max_lane_count),
+            no_aux_handshake: MaxDownspread::NO_AUX_HANDSHAKE.is_set(wire.max_downspread),
+            aux_rd_interval: TrainingAuxRdInterval::INTERVAL.read(wire.training_aux_rd_interval),
         })
     }
 }
@@ -1412,26 +1479,52 @@ impl TrainingPattern {
     }
 }
 
+/// Wire layout of the 6-byte DPCD link status block (`0x0202..0x0207`).
+#[repr(C)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct DpcdLinkStatus {
+    lane_status: [u8; 2],
+    lane_align_status_updated: u8,
+    sink_status: u8,
+    adjust_request: [u8; 2],
+}
+
 /// Parsed six-byte DPCD link status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkStatus {
-    bytes: [u8; 6],
+    wire: DpcdLinkStatus,
 }
 
 impl LinkStatus {
     /// Parse a six-byte link status block from DPCD 0x202.
     pub fn parse(bytes: &[u8]) -> Result<Self, GmaError> {
-        if bytes.len() < 6 {
-            return Err(GmaError::InvalidConfig);
-        }
-        let mut status = [0u8; 6];
-        status.copy_from_slice(&bytes[..6]);
-        Ok(Self { bytes: status })
+        use zerocopy::FromBytes;
+        let (wire, _) =
+            DpcdLinkStatus::read_from_prefix(bytes).map_err(|_| GmaError::InvalidConfig)?;
+        Ok(Self { wire })
     }
 
     /// Raw six-byte DPCD 0x202..0x207 status block.
     pub const fn raw_bytes(self) -> [u8; 6] {
-        self.bytes
+        [
+            self.wire.lane_status[0],
+            self.wire.lane_status[1],
+            self.wire.lane_align_status_updated,
+            self.wire.sink_status,
+            self.wire.adjust_request[0],
+            self.wire.adjust_request[1],
+        ]
     }
 
     /// Return true when all active lanes have clock recovery done.
@@ -1441,13 +1534,13 @@ impl LinkStatus {
 
     /// Return true when all active lanes have channel EQ, symbol lock, and align done.
     pub const fn channel_eq_done(self, lane_count: u8) -> bool {
-        self.lanes_satisfy(lane_count, 0x06) && (self.bytes[2] & 0x01) != 0
+        self.lanes_satisfy(lane_count, 0x06) && (self.wire.lane_align_status_updated & 0x01) != 0
     }
 
     const fn lanes_satisfy(self, lane_count: u8, mask: u8) -> bool {
         let mut lane = 0;
         while lane < lane_count {
-            let byte = self.bytes[(lane / 2) as usize];
+            let byte = self.wire.lane_status[(lane / 2) as usize];
             let shift = (lane % 2) * 4;
             if ((byte >> shift) & mask) != mask {
                 return false;
@@ -1459,7 +1552,7 @@ impl LinkStatus {
 
     /// Decode requested train set for a lane from ADJUST_REQUEST bytes.
     pub const fn requested_train_set(self, lane: u8) -> TrainSet {
-        let byte = self.bytes[4 + (lane / 2) as usize];
+        let byte = self.wire.adjust_request[(lane / 2) as usize];
         let shift = (lane % 2) * 4;
         let nibble = (byte >> shift) & 0x0f;
         TrainSet {

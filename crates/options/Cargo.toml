@@ -14,6 +14,7 @@ varstore = ["dep:crabefi-efi-types"]
 
 [dependencies]
 crabefi-efi-types = { workspace = true, optional = true }
+zerocopy = { workspace = true }
 
 # The tests use the report.
 [dev-dependencies]

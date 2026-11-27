@@ -11,7 +11,8 @@ use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
 
-use crate::{Error, Family, HEADER_SIZE, Transport};
+use crate::{Error, Family, HEADER_SIZE, TpmResponseHeader, Transport};
+use zerocopy::FromBytes;
 
 /// Locality 0 on PC platforms (PTP §6.3.2).
 pub const BASE: usize = 0xFED4_0000;
@@ -395,7 +396,8 @@ impl<D: DelayNs> Tis<D> {
         let mut credit = 0;
         let header = response.get_mut(..HEADER_SIZE).ok_or(Error::Response)?;
         self.receive_into(header, &mut credit)?;
-        let size = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
+        let (hdr, _) = TpmResponseHeader::ref_from_prefix(header).map_err(|_| Error::Response)?;
+        let size = hdr.size.get() as usize;
         if size < HEADER_SIZE {
             return Err(Error::Response);
         }

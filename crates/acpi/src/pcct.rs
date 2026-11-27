@@ -4,6 +4,28 @@
 use acpi_tables::gas::GAS;
 use acpi_tables::sdt::Sdt;
 use alloc::vec::Vec;
+use zerocopy::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+use crate::WireGas;
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct GenericPccSubspace {
+    kind: u8,
+    length: u8,
+    reserved: [u8; 6],
+    base: U64,
+    length_bytes: U64,
+    doorbell: WireGas,
+    doorbell_preserve: U64,
+    doorbell_write: U64,
+    nominal_latency_us: U32,
+    max_periodic_access_rate: U32,
+    min_request_turnaround_us: U16,
+}
+
+const _: () = assert!(core::mem::size_of::<GenericPccSubspace>() == SUBSPACE_LEN as usize);
 
 /// A generic communication subspace (type 0, 62 bytes).
 #[derive(Debug, Clone, Copy)]
@@ -24,31 +46,21 @@ pub struct GenericSubspace {
 const HEADER: u32 = 48;
 const SUBSPACE_LEN: u8 = 62;
 
-fn gas_bytes(g: &GAS) -> [u8; 12] {
-    let mut b = [0u8; 12];
-    b[0] = g.address_space_id as u8;
-    b[1] = g.register_bit_width;
-    b[2] = g.register_bit_offset;
-    b[3] = g.access_size as u8;
-    b[4..].copy_from_slice(&g.address.get().to_le_bytes());
-    b
-}
-
 impl GenericSubspace {
-    fn bytes(&self) -> Vec<u8> {
-        let mut b = Vec::with_capacity(usize::from(SUBSPACE_LEN));
-        b.push(0);
-        b.push(SUBSPACE_LEN);
-        b.extend_from_slice(&[0; 6]);
-        b.extend_from_slice(&self.base.to_le_bytes());
-        b.extend_from_slice(&self.length.to_le_bytes());
-        b.extend_from_slice(&gas_bytes(&self.doorbell));
-        b.extend_from_slice(&self.doorbell_preserve.to_le_bytes());
-        b.extend_from_slice(&self.doorbell_write.to_le_bytes());
-        b.extend_from_slice(&self.nominal_latency_us.to_le_bytes());
-        b.extend_from_slice(&self.max_periodic_access_rate.to_le_bytes());
-        b.extend_from_slice(&self.min_request_turnaround_us.to_le_bytes());
-        b
+    fn wire(&self) -> GenericPccSubspace {
+        GenericPccSubspace {
+            kind: 0,
+            length: SUBSPACE_LEN,
+            reserved: [0; 6],
+            base: U64::new(self.base),
+            length_bytes: U64::new(self.length),
+            doorbell: WireGas::from(&self.doorbell),
+            doorbell_preserve: U64::new(self.doorbell_preserve),
+            doorbell_write: U64::new(self.doorbell_write),
+            nominal_latency_us: U32::new(self.nominal_latency_us),
+            max_periodic_access_rate: U32::new(self.max_periodic_access_rate),
+            min_request_turnaround_us: U16::new(self.min_request_turnaround_us),
+        }
     }
 }
 
@@ -63,7 +75,9 @@ pub fn build_pcct(subspaces: &[GenericSubspace]) -> Vec<u8> {
         crate::OEM_TABLE_ID,
         crate::OEM_REVISION,
     );
-    subspaces.iter().for_each(|s| sdt.append_slice(&s.bytes()));
+    subspaces
+        .iter()
+        .for_each(|s| sdt.append_slice(s.wire().as_bytes()));
     crate::serialize(&sdt)
 }
 

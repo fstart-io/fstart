@@ -5,6 +5,8 @@
 //! detailed/standard/established timing conversion for live DDC callers.
 
 use heapless::Vec;
+use tock_registers::register_bitfields;
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use crate::gma::dtd::{dtd_present, mode_from_dtd};
 use crate::gma::error::GmaError;
@@ -15,18 +17,89 @@ use crate::gma::types::Port;
 pub const EDID_BLOCK_LEN: usize = 128;
 
 const HEADER: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
-const ESTABLISHED_TIMINGS_1: usize = 35;
-const ESTABLISHED_TIMINGS_2: usize = 36;
-const ESTABLISHED_TIMINGS_MFG: usize = 37;
-const STANDARD_TIMINGS: usize = 38;
 const STANDARD_TIMING_COUNT: usize = 8;
-const DESCRIPTOR_1: usize = 54;
 const DESCRIPTOR_LEN: usize = 18;
 const DESCRIPTOR_COUNT: usize = 4;
-const INPUT: usize = 20;
 const INPUT_DIGITAL: u8 = 1 << 7;
-const EXTENSION_COUNT: usize = 126;
 const MAX_PIXEL_CLOCK_SLACK_KHZ: u32 = 5_001;
+
+register_bitfields![u8,
+    /// EDID Standard Timing aspect ratio and refresh byte (offset 0x01, 8 bits).
+    StandardTimingFlags [
+        REFRESH OFFSET(0) NUMBITS(6) [],
+        ASPECT OFFSET(6) NUMBITS(2) []
+    ],
+    /// EDID 1.4 Monitor Range Limits +255 offset flags (offset 0x04, 8 bits).
+    RangeOffsetFlags [
+        MIN_V OFFSET(0) NUMBITS(1) [],
+        MAX_V OFFSET(1) NUMBITS(1) [],
+        MIN_H OFFSET(2) NUMBITS(1) [],
+        MAX_H OFFSET(3) NUMBITS(1) []
+    ]
+];
+
+/// Two-byte EDID Standard Timing entry.
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+struct StandardTimingWire {
+    width_code: u8,
+    aspect_refresh: u8,
+}
+
+/// 128-byte EDID base block wire layout.
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+struct EdidBaseBlock {
+    header: [u8; 8],
+    vendor_product: [u8; 10],
+    version: u8,
+    revision: u8,
+    input: u8,
+    display_params: [u8; 14],
+    established_timings_1: u8,
+    established_timings_2: u8,
+    established_timings_mfg: u8,
+    standard_timings: [StandardTimingWire; STANDARD_TIMING_COUNT],
+    descriptors: [[u8; DESCRIPTOR_LEN]; DESCRIPTOR_COUNT],
+    extension_count: u8,
+    checksum: u8,
+}
+
+/// Common 5-byte prefix of an 18-byte EDID monitor descriptor.
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+struct MonitorDescriptorPrefix {
+    zero: [u8; 3],
+    tag: u8,
+    offset_flags: u8,
+}
+
+/// 18-byte EDID Monitor Range Limits descriptor (tag `0xFD`).
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+struct MonitorRangeWire {
+    prefix: MonitorDescriptorPrefix,
+    min_v: u8,
+    max_v: u8,
+    min_h: u8,
+    max_h: u8,
+    max_pixel_clock: u8,
+    _timing_support: [u8; 8],
+}
+
+/// 4-byte CTA-861 / CEA extension block header.
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+struct CeaExtensionHeader {
+    tag: u8,
+    revision: u8,
+    dtd_start: u8,
+    flags: u8,
+}
+
+const _: () = assert!(core::mem::size_of::<EdidBaseBlock>() == EDID_BLOCK_LEN);
+const _: () = assert!(core::mem::size_of::<MonitorRangeWire>() == DESCRIPTOR_LEN);
+const _: () = assert!(core::mem::size_of::<CeaExtensionHeader>() == 4);
 
 /// Maximum number of EDID base-block modes returned by the EDID helpers.
 pub const MAX_BASE_MODES: usize = 32;
@@ -36,8 +109,24 @@ pub const MAX_EXTENSION_BLOCKS: usize = 4;
 pub const MAX_EDID_MODES: usize = 48;
 
 const CEA_EXTENSION_TAG: u8 = 0x02;
-const CEA_DTD_START: usize = 2;
 const CEA_DATA_BLOCK_START: usize = 4;
+
+#[cfg(test)]
+const ESTABLISHED_TIMINGS_1: usize = 35;
+#[cfg(test)]
+const ESTABLISHED_TIMINGS_2: usize = 36;
+#[cfg(test)]
+const ESTABLISHED_TIMINGS_MFG: usize = 37;
+#[cfg(test)]
+const STANDARD_TIMINGS: usize = 38;
+#[cfg(test)]
+const DESCRIPTOR_1: usize = 54;
+#[cfg(test)]
+const INPUT: usize = 20;
+#[cfg(test)]
+const EXTENSION_COUNT: usize = 126;
+#[cfg(test)]
+const CEA_DTD_START: usize = 2;
 
 /// EDID monitor range limits descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,9 +187,13 @@ impl<'a> Edid<'a> {
         self.raw
     }
 
+    fn base(&self) -> &'a EdidBaseBlock {
+        EdidBaseBlock::ref_from_bytes(self.raw).expect("EDID_BLOCK_LEN bytes")
+    }
+
     /// Return true when the sink reports a digital input.
     pub fn is_digital(&self) -> bool {
-        (self.raw[INPUT] & INPUT_DIGITAL) != 0
+        (self.base().input & INPUT_DIGITAL) != 0
     }
 
     /// Return true when the sink reports an analog input.
@@ -110,7 +203,7 @@ impl<'a> Edid<'a> {
 
     /// Number of EDID extension blocks advertised by the base block.
     pub fn extension_count(&self) -> u8 {
-        self.raw[EXTENSION_COUNT]
+        self.base().extension_count
     }
 
     /// Return true when the EDID input type is compatible with the output port.
@@ -125,11 +218,14 @@ impl<'a> Edid<'a> {
     /// its newline terminator. Like coreboot `decode_edid()`, the last such
     /// descriptor wins; boards key backlight tables on this panel part name.
     pub fn ascii_string(&self) -> Option<&'a [u8]> {
-        (0..DESCRIPTOR_COUNT)
-            .map(|index| descriptor(self.raw, index))
-            .filter(|desc| desc[..3] == [0, 0, 0] && desc[3] == 0xfe)
-            .map(|desc| {
-                let text = &desc[5..];
+        self.base()
+            .descriptors
+            .iter()
+            .filter_map(|desc| {
+                let (prefix, text) = MonitorDescriptorPrefix::ref_from_prefix(desc).ok()?;
+                (prefix.zero == [0, 0, 0] && prefix.tag == 0xfe).then_some(text)
+            })
+            .map(|text| {
                 let end = text.iter().position(|byte| *byte == b'\n');
                 &text[..end.unwrap_or(text.len())]
             })
@@ -138,7 +234,7 @@ impl<'a> Edid<'a> {
 
     /// Return true when descriptor 1 contains a usable detailed timing.
     pub fn has_preferred_mode(&self) -> bool {
-        detailed_timing_present(descriptor(self.raw, 0))
+        detailed_timing_present(&self.base().descriptors[0])
     }
 
     /// Convert descriptor 1 into a display mode.
@@ -146,21 +242,18 @@ impl<'a> Edid<'a> {
         if !self.has_preferred_mode() {
             return Err(GmaError::ModeUnavailable);
         }
-        mode_from_dtd(descriptor(self.raw, 0))
+        mode_from_dtd(&self.base().descriptors[0])
     }
 
     /// Return all valid detailed timing modes from the base block.
     pub fn detailed_modes(&self) -> Vec<Mode, DESCRIPTOR_COUNT> {
         let mut modes = Vec::new();
-        let mut i = 0;
-        while i < DESCRIPTOR_COUNT {
-            let dtd = descriptor(self.raw, i);
+        for dtd in &self.base().descriptors {
             if detailed_timing_present(dtd)
                 && let Ok(mode) = mode_from_dtd(dtd)
             {
                 let _ = modes.push(mode);
             }
-            i += 1;
         }
         modes
     }
@@ -168,9 +261,10 @@ impl<'a> Edid<'a> {
     /// Return modes advertised by the EDID established timing bitmaps.
     pub fn established_modes(&self) -> Vec<Mode, 17> {
         let mut modes = Vec::new();
-        let bits = u32::from(self.raw[ESTABLISHED_TIMINGS_1])
-            | (u32::from(self.raw[ESTABLISHED_TIMINGS_2]) << 8)
-            | (u32::from(self.raw[ESTABLISHED_TIMINGS_MFG] & 0x80) << 9);
+        let base = self.base();
+        let bits = u32::from(base.established_timings_1)
+            | (u32::from(base.established_timings_2) << 8)
+            | (u32::from(base.established_timings_mfg & 0x80) << 9);
         let mut i = 0;
         while i < ESTABLISHED_MODES.len() {
             if (bits & (1 << i)) != 0 {
@@ -189,11 +283,9 @@ impl<'a> Edid<'a> {
     /// deferred.
     pub fn standard_modes(&self) -> Vec<Mode, STANDARD_TIMING_COUNT> {
         let mut modes = Vec::new();
-        for entry in self.raw[STANDARD_TIMINGS..STANDARD_TIMINGS + STANDARD_TIMING_COUNT * 2]
-            .as_chunks::<2>()
-            .0
-        {
-            if let Some(mode) = standard_timing_mode(entry[0], entry[1], self.raw[19]) {
+        let base = self.base();
+        for entry in &base.standard_timings {
+            if let Some(mode) = standard_timing_mode(*entry, base.revision) {
                 let _ = modes.push(mode);
             }
         }
@@ -202,14 +294,10 @@ impl<'a> Edid<'a> {
 
     /// Return the first monitor range limits descriptor in the base block.
     pub fn monitor_range(&self) -> Option<MonitorRange> {
-        let mut i = 0;
-        while i < DESCRIPTOR_COUNT {
-            if let Some(range) = monitor_range_descriptor(descriptor(self.raw, i), self.raw[19]) {
-                return Some(range);
-            }
-            i += 1;
-        }
-        None
+        let base = self.base();
+        base.descriptors
+            .iter()
+            .find_map(|desc| monitor_range_descriptor(desc, base.revision))
     }
 
     /// Return all base-block modes in libgfxinit/Linux priority: detailed,
@@ -320,11 +408,6 @@ fn header_score(raw: &[u8; EDID_BLOCK_LEN]) -> usize {
         .count()
 }
 
-fn descriptor(raw: &[u8; EDID_BLOCK_LEN], index: usize) -> &[u8] {
-    let start = DESCRIPTOR_1 + index * DESCRIPTOR_LEN;
-    &raw[start..start + DESCRIPTOR_LEN]
-}
-
 fn checksum(raw: &[u8; EDID_BLOCK_LEN]) -> u8 {
     fstart_core::checksum::sum8(raw)
 }
@@ -333,7 +416,9 @@ fn detailed_timing_present(dtd: &[u8]) -> bool {
     dtd_present(dtd)
 }
 
-fn standard_timing_mode(width_byte: u8, aspect_refresh: u8, edid_revision: u8) -> Option<Mode> {
+fn standard_timing_mode(entry: StandardTimingWire, edid_revision: u8) -> Option<Mode> {
+    let width_byte = entry.width_code;
+    let aspect_refresh = entry.aspect_refresh;
     if width_byte == 0
         || (width_byte == 0x01 && aspect_refresh == 0x01)
         || (width_byte == 0x20 && aspect_refresh == 0x20)
@@ -341,8 +426,8 @@ fn standard_timing_mode(width_byte: u8, aspect_refresh: u8, edid_revision: u8) -
         return None;
     }
     let mut width = u16::from(width_byte) * 8 + 248;
-    let refresh_hz = u16::from(aspect_refresh & 0x3f) + 60;
-    let aspect = (aspect_refresh >> 6) & 0x3;
+    let refresh_hz = u16::from(StandardTimingFlags::REFRESH.read(aspect_refresh)) + 60;
+    let aspect = StandardTimingFlags::ASPECT.read(aspect_refresh);
     let mut height = match aspect {
         0 if edid_revision < 3 => width,
         0 => width * 10 / 16,
@@ -357,10 +442,13 @@ fn standard_timing_mode(width_byte: u8, aspect_refresh: u8, edid_revision: u8) -
 /// Return modes advertised by a validated EDID extension block.
 pub fn extension_modes(block: &[u8; EDID_BLOCK_LEN]) -> Vec<Mode, 6> {
     let mut modes = Vec::new();
-    if !extension_is_valid(block) || block[0] != CEA_EXTENSION_TAG {
+    let Ok((hdr, _)) = CeaExtensionHeader::ref_from_prefix(block) else {
+        return modes;
+    };
+    if !extension_is_valid(block) || hdr.tag != CEA_EXTENSION_TAG {
         return modes;
     }
-    let dtd_start = block[CEA_DTD_START] as usize;
+    let dtd_start = hdr.dtd_start as usize;
     if !(CEA_DATA_BLOCK_START..EDID_BLOCK_LEN).contains(&dtd_start) {
         return modes;
     }
@@ -383,33 +471,53 @@ pub fn extension_is_valid(block: &[u8; EDID_BLOCK_LEN]) -> bool {
 }
 
 fn monitor_range_descriptor(desc: &[u8], edid_revision: u8) -> Option<MonitorRange> {
-    if desc.len() < DESCRIPTOR_LEN
-        || desc[0] != 0
-        || desc[1] != 0
-        || desc[2] != 0
-        || desc[3] != 0xfd
-    {
+    let (wire, _) = MonitorRangeWire::ref_from_prefix(desc).ok()?;
+    if wire.prefix.zero != [0, 0, 0] || wire.prefix.tag != 0xfd {
         return None;
     }
 
-    let offset = if edid_revision >= 4 { desc[4] } else { 0 };
+    let offset = if edid_revision >= 4 {
+        wire.prefix.offset_flags
+    } else {
+        0
+    };
     // EDID 1.4 uses byte 4 as +255 offset flags for vfreq/hfreq min/max.
     // Other range-type details (GTF2/CVT synthesis, precision pixel clocks)
     // are intentionally not interpreted by this pure data slice.
-    let min_vrefresh_hz = u16::from(desc[5]) + if (offset & 0x01) != 0 { 255 } else { 0 };
-    let max_vrefresh_hz = u16::from(desc[6]) + if (offset & 0x02) != 0 { 255 } else { 0 };
-    let min_hfreq_khz = u16::from(desc[7]) + if (offset & 0x04) != 0 { 255 } else { 0 };
-    let max_hfreq_khz = u16::from(desc[8]) + if (offset & 0x08) != 0 { 255 } else { 0 };
+    let min_vrefresh_hz = u16::from(wire.min_v)
+        + if RangeOffsetFlags::MIN_V.is_set(offset) {
+            255
+        } else {
+            0
+        };
+    let max_vrefresh_hz = u16::from(wire.max_v)
+        + if RangeOffsetFlags::MAX_V.is_set(offset) {
+            255
+        } else {
+            0
+        };
+    let min_hfreq_khz = u16::from(wire.min_h)
+        + if RangeOffsetFlags::MIN_H.is_set(offset) {
+            255
+        } else {
+            0
+        };
+    let max_hfreq_khz = u16::from(wire.max_h)
+        + if RangeOffsetFlags::MAX_H.is_set(offset) {
+            255
+        } else {
+            0
+        };
 
     Some(MonitorRange {
         min_vrefresh_hz,
         max_vrefresh_hz,
         min_hfreq_khz,
         max_hfreq_khz,
-        max_pixel_clock_mhz: if desc[9] == 0 || desc[9] == 255 {
+        max_pixel_clock_mhz: if wire.max_pixel_clock == 0 || wire.max_pixel_clock == 255 {
             None
         } else {
-            Some(u16::from(desc[9]) * 10)
+            Some(u16::from(wire.max_pixel_clock) * 10)
         },
     })
 }

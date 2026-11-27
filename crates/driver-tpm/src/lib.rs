@@ -16,7 +16,9 @@ pub mod tis;
 pub mod tpm12;
 pub mod tpm20;
 
-pub use command::Command;
+pub use command::{Command, TpmCommandHeader, TpmResponseHeader};
+use zerocopy::big_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 /// TPM failures as the firmware sees them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,20 +130,20 @@ pub mod alg {
 pub const BUFFER_SIZE: usize = 1024;
 
 /// Response header: tag, size and response code (both families).
-pub(crate) const HEADER_SIZE: usize = 10;
+pub(crate) const HEADER_SIZE: usize = core::mem::size_of::<TpmResponseHeader>();
 
 /// Check the header of `response` and return the parameter area.
 pub(crate) fn response_body(response: &[u8]) -> Result<&[u8], Error> {
-    let header = response.get(..HEADER_SIZE).ok_or(Error::Response)?;
-    let size = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
-    let code = u32::from_be_bytes([header[6], header[7], header[8], header[9]]);
-    if size != response.len() {
+    let (header, body) =
+        TpmResponseHeader::ref_from_prefix(response).map_err(|_| Error::Response)?;
+    if header.size.get() as usize != response.len() {
         return Err(Error::Response);
     }
+    let code = header.code.get();
     if code != 0 {
         return Err(Error::Code(code));
     }
-    Ok(&response[HEADER_SIZE..])
+    Ok(body)
 }
 
 /// Codes that ask to send the command again later: TPM 2.0
@@ -178,24 +180,23 @@ impl<'a> Reader<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self(bytes)
     }
+    pub(crate) fn read<T: FromBytes + KnownLayout + Immutable + Unaligned>(
+        &mut self,
+    ) -> Result<&'a T, Error> {
+        let (value, rest) = T::ref_from_prefix(self.0).map_err(|_| Error::Response)?;
+        self.0 = rest;
+        Ok(value)
+    }
     pub(crate) fn bytes(&mut self, len: usize) -> Result<&'a [u8], Error> {
-        if self.0.len() < len {
-            return Err(Error::Response);
-        }
-        let (head, tail) = self.0.split_at(len);
+        let (head, tail) = self.0.split_at_checked(len).ok_or(Error::Response)?;
         self.0 = tail;
         Ok(head)
     }
-    pub(crate) fn u8(&mut self) -> Result<u8, Error> {
-        Ok(self.bytes(1)?[0])
-    }
     pub(crate) fn u16(&mut self) -> Result<u16, Error> {
-        let b = self.bytes(2)?;
-        Ok(u16::from_be_bytes([b[0], b[1]]))
+        Ok(self.read::<U16>()?.get())
     }
     pub(crate) fn u32(&mut self) -> Result<u32, Error> {
-        let b = self.bytes(4)?;
-        Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(self.read::<U32>()?.get())
     }
 }
 

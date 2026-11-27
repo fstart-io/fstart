@@ -1,28 +1,47 @@
 use std::path::Path;
+use zerocopy::little_endian::U32;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 const EGON_MAGIC: &[u8; 8] = b"eGON.BT0";
 const CHECKSUM_STAMP: u32 = 0x5F0A6C39;
-const HEADER_LEN: usize = 96;
+const HEADER_LEN: usize = core::mem::size_of::<EgonBootHeader>();
 const SPL_SIGNATURE: &[u8; 4] = b"SPL\x02";
+
+/// Allwinner eGON.BT0 boot header with fstart's loader metadata extension (96 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+pub struct EgonBootHeader {
+    pub branch: [u8; 4],
+    pub magic: [u8; 8],
+    pub checksum: U32,
+    pub length: U32,
+    pub spl_signature: [u8; 4],
+    pub _reserved0: [u8; 0x14],
+    pub next_data_offset: U32,
+    pub next_data_size: U32,
+    pub total_image_size: U32,
+    pub _reserved1: [u8; 0x28],
+}
+
+const _: () = assert!(core::mem::size_of::<EgonBootHeader>() == 96);
 
 /// Whether `head` begins with an Allwinner eGON.BT0 boot header.
 #[must_use]
 pub fn has_magic(head: &[u8]) -> bool {
-    head.get(4..12) == Some(EGON_MAGIC.as_slice())
+    EgonBootHeader::ref_from_prefix(head).is_ok_and(|(hdr, _)| &hdr.magic == EGON_MAGIC)
 }
 
 /// Pad a flat SPL to the eGON 8-KiB granule and fill its length, signature
 /// and checksum. The FFS assembler applies this to the initial stage before
 /// packing; `patch_ffs` later reseals the checksum once the locator is set.
 pub fn prepare_image(data: &mut Vec<u8>) -> Result<(), String> {
-    if data.len() < HEADER_LEN {
-        return Err("binary too small for Allwinner eGON header (< 96 bytes)".to_string());
-    }
-    if &data[4..12] != EGON_MAGIC {
+    let (hdr, _) = EgonBootHeader::ref_from_prefix(data)
+        .map_err(|_| "binary too small for Allwinner eGON header (< 96 bytes)".to_string())?;
+    if &hdr.magic != EGON_MAGIC {
         return Err("eGON.BT0 magic not found at offset 0x04".to_string());
     }
 
-    let stamp = u32::from_le_bytes([data[0x0C], data[0x0D], data[0x0E], data[0x0F]]);
+    let stamp = hdr.checksum.get();
     if stamp != CHECKSUM_STAMP {
         return Err(format!(
             "eGON checksum sentinel not found (got {stamp:#010x}, expected {CHECKSUM_STAMP:#010x})"
@@ -32,11 +51,15 @@ pub fn prepare_image(data: &mut Vec<u8>) -> Result<(), String> {
     let raw_size = data.len();
     let image_size = ((raw_size + 0x1FFF) & !0x1FFF) as u32;
     data.resize(image_size as usize, 0);
-    data[0x10..0x14].copy_from_slice(&image_size.to_le_bytes());
-    data[0x14..0x18].copy_from_slice(SPL_SIGNATURE);
+    {
+        let (hdr, _) = EgonBootHeader::mut_from_prefix(data).expect("resized >= HEADER_LEN");
+        hdr.length = U32::new(image_size);
+        hdr.spl_signature = *SPL_SIGNATURE;
+    }
 
     let checksum = word_sum(data);
-    data[0x0C..0x10].copy_from_slice(&checksum.to_le_bytes());
+    let (hdr, _) = EgonBootHeader::mut_from_prefix(data).expect("resized >= HEADER_LEN");
+    hdr.checksum = U32::new(checksum);
     verify(data)?;
 
     Ok(())
@@ -49,25 +72,24 @@ pub fn patch_file(bin_path: &Path) -> Result<(), String> {
 }
 
 pub fn verify(data: &[u8]) -> Result<(), String> {
-    if data.len() < HEADER_LEN {
-        return Err("verify: binary too small".to_string());
-    }
+    let (hdr, _) = EgonBootHeader::ref_from_prefix(data)
+        .map_err(|_| "verify: binary too small".to_string())?;
 
-    let is_arm_branch = data[3] == 0xEA;
-    let is_riscv_jal = (data[0] & 0x7F) == 0x6F;
+    let is_arm_branch = hdr.branch[3] == 0xEA;
+    let is_riscv_jal = (hdr.branch[0] & 0x7F) == 0x6F;
     if !is_arm_branch && !is_riscv_jal {
         return Err(format!(
             "verify: unrecognized branch instruction (bytes: {:#04x} {:#04x} {:#04x} {:#04x})",
-            data[0], data[1], data[2], data[3]
+            hdr.branch[0], hdr.branch[1], hdr.branch[2], hdr.branch[3]
         ));
     }
 
-    if &data[4..12] != EGON_MAGIC {
+    if &hdr.magic != EGON_MAGIC {
         return Err("verify: eGON.BT0 magic mismatch".to_string());
     }
 
-    let length = u32::from_le_bytes([data[0x10], data[0x11], data[0x12], data[0x13]]);
-    let saved_checksum = u32::from_le_bytes([data[0x0C], data[0x0D], data[0x0E], data[0x0F]]);
+    let length = hdr.length.get();
+    let saved_checksum = hdr.checksum.get();
 
     if length == 0 || (length & 0x1FF) != 0 {
         return Err(format!(
@@ -81,16 +103,11 @@ pub fn verify(data: &[u8]) -> Result<(), String> {
         ));
     }
 
-    let mut verify_sum: u32 = 0;
-    for i in 0..(length as usize / 4) {
-        let off = i * 4;
-        let word = if i == 3 {
-            CHECKSUM_STAMP
-        } else {
-            u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-        };
-        verify_sum = verify_sum.wrapping_add(word);
-    }
+    let words = <[U32]>::ref_from_bytes(&data[..length as usize])
+        .map_err(|_| "verify: length not a multiple of 4".to_string())?;
+    let verify_sum = words.iter().enumerate().fold(0u32, |acc, (i, word)| {
+        acc.wrapping_add(if i == 3 { CHECKSUM_STAMP } else { word.get() })
+    });
 
     if verify_sum != saved_checksum {
         return Err(format!(
@@ -113,29 +130,31 @@ pub fn patch_ffs(ffs_image: &mut [u8], bootblock_size: u32) -> Result<(), String
     if ffs_image.len() < HEADER_LEN {
         return Err("FFS image too small for eGON header".to_string());
     }
-    if &ffs_image[4..12] != EGON_MAGIC {
-        return Err("eGON.BT0 magic not found at start of FFS image".to_string());
+    {
+        let (hdr, _) = EgonBootHeader::mut_from_prefix(ffs_image)
+            .map_err(|_| "FFS image too small for eGON header".to_string())?;
+        if &hdr.magic != EGON_MAGIC {
+            return Err("eGON.BT0 magic not found at start of FFS image".to_string());
+        }
+        hdr.length = U32::new(bootblock_size);
+        hdr.spl_signature = *SPL_SIGNATURE;
+        hdr.checksum = U32::new(CHECKSUM_STAMP);
     }
 
-    ffs_image[0x10..0x14].copy_from_slice(&bootblock_size.to_le_bytes());
-    ffs_image[0x14..0x18].copy_from_slice(SPL_SIGNATURE);
-    ffs_image[0x0C..0x10].copy_from_slice(&CHECKSUM_STAMP.to_le_bytes());
-
     let checksum = word_sum(&ffs_image[..bootblock_size as usize]);
-    ffs_image[0x0C..0x10].copy_from_slice(&checksum.to_le_bytes());
+    let (hdr, _) = EgonBootHeader::mut_from_prefix(ffs_image).expect("checked >= HEADER_LEN");
+    hdr.checksum = U32::new(checksum);
     verify(&ffs_image[..bootblock_size as usize])?;
 
     Ok(())
 }
 
 fn word_sum(data: &[u8]) -> u32 {
-    data.as_chunks::<4>()
-        .0
+    let aligned_len = data.len() & !3;
+    <[U32]>::ref_from_bytes(&data[..aligned_len])
+        .expect("multiple of 4")
         .iter()
-        .fold(0u32, |checksum, chunk| {
-            let word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            checksum.wrapping_add(word)
-        })
+        .fold(0u32, |checksum, word| checksum.wrapping_add(word.get()))
 }
 
 #[cfg(test)]

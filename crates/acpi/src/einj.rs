@@ -4,6 +4,53 @@
 use acpi_tables::gas::{AccessSize, AddressSpace, GAS};
 use acpi_tables::sdt::Sdt;
 use alloc::vec::Vec;
+use zerocopy::little_endian::{U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+use crate::WireGas;
+
+/// Wire layout of one EINJ serialization instruction entry (32 bytes).
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+pub struct EinjInstruction {
+    pub action: u8,
+    pub instruction: u8,
+    pub flags: u8,
+    pub reserved: u8,
+    pub register: WireGas,
+    pub value: U64,
+    pub mask: U64,
+}
+
+/// Wire layout of the 12-byte EINJ injection header after the 36-byte SDT header.
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+pub struct EinjTableBody {
+    pub header_size: U32,
+    pub flags: u8,
+    pub reserved: [u8; 3],
+    pub entry_count: U32,
+}
+
+/// Wire layout of the 16-byte EINJ trigger action table header.
+#[repr(C)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+pub struct EinjTriggerHeader {
+    pub header_size: U32,
+    pub revision: U32,
+    pub table_size: U32,
+    pub entry_count: U32,
+}
+
+const _: () = assert!(core::mem::size_of::<EinjInstruction>() == 32);
+const _: () = assert!(core::mem::size_of::<EinjTableBody>() == 12);
+const _: () = assert!(core::mem::size_of::<EinjTriggerHeader>() == 16);
 
 /// Injection actions (ACPI 6.5 Table 18.25).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,11 +166,7 @@ impl Entry {
         self
     }
 
-    pub fn bytes(&self) -> [u8; 32] {
-        let mut b = [0u8; 32];
-        b[0] = self.action as u8;
-        b[1] = self.instruction as u8;
-        b[2] = self.flags;
+    pub fn wire(&self) -> EinjInstruction {
         let gas = GAS::new(
             self.register.space,
             self.register.bits,
@@ -131,14 +174,21 @@ impl Entry {
             self.access,
             self.register.address,
         );
-        b[4] = gas.address_space_id as u8;
-        b[5] = gas.register_bit_width;
-        b[6] = gas.register_bit_offset;
-        b[7] = gas.access_size as u8;
-        b[8..16].copy_from_slice(&gas.address.get().to_le_bytes());
-        b[16..24].copy_from_slice(&self.value.to_le_bytes());
-        b[24..32].copy_from_slice(&self.mask.to_le_bytes());
-        b
+        EinjInstruction {
+            action: self.action as u8,
+            instruction: self.instruction as u8,
+            flags: self.flags,
+            reserved: 0,
+            register: WireGas::from(&gas),
+            value: U64::new(self.value),
+            mask: U64::new(self.mask),
+        }
+    }
+
+    pub fn bytes(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(self.wire().as_bytes());
+        out
     }
 }
 
@@ -154,10 +204,18 @@ pub fn table(
     let mut sdt = Sdt::new(*b"EINJ", HEADER, 1, oem_id, oem_table_id, oem_revision);
     // Injection header size (from the start of the table to the entries'
     // count), flags and the entry count.
-    sdt.write_u32(36, 12);
-    sdt.write_u32(44, entries.len() as u32);
+    sdt.write_bytes(
+        36,
+        EinjTableBody {
+            header_size: U32::new(core::mem::size_of::<EinjTableBody>() as u32),
+            flags: 0,
+            reserved: [0; 3],
+            entry_count: U32::new(entries.len() as u32),
+        }
+        .as_bytes(),
+    );
     for entry in entries {
-        sdt.append_slice(&entry.bytes());
+        sdt.append_slice(entry.wire().as_bytes());
     }
     sdt.update_checksum();
     let mut bytes = Vec::new();
@@ -167,14 +225,20 @@ pub fn table(
 
 /// The trigger action table an OS gets from GET_TRIGGER_ACTION_TABLE.
 pub fn trigger(entries: &[Entry]) -> Vec<u8> {
-    let size = 16 + 32 * entries.len();
+    let size = core::mem::size_of::<EinjTriggerHeader>()
+        + core::mem::size_of::<EinjInstruction>() * entries.len();
     let mut bytes = Vec::with_capacity(size);
-    bytes.extend_from_slice(&16u32.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes());
-    bytes.extend_from_slice(&(size as u32).to_le_bytes());
-    bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(
+        EinjTriggerHeader {
+            header_size: U32::new(core::mem::size_of::<EinjTriggerHeader>() as u32),
+            revision: U32::ZERO,
+            table_size: U32::new(size as u32),
+            entry_count: U32::new(entries.len() as u32),
+        }
+        .as_bytes(),
+    );
     for entry in entries {
-        bytes.extend_from_slice(&entry.bytes());
+        bytes.extend_from_slice(entry.wire().as_bytes());
     }
     bytes
 }

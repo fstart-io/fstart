@@ -11,8 +11,57 @@
 //! index and event type are both zero (`EV_PREBOOT_CERT` is reserved).
 
 use fstart_crypto::pcr::{MAX_DIGEST_SIZE, digest_size};
+use zerocopy::little_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::event::EV_NO_ACTION;
+
+/// Wire header of a legacy SHA-1 `TCG_PCClientPCREvent` entry (32 bytes).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct PcrEvent {
+    pub pcr_index: U32,
+    pub event_type: U32,
+    pub digest: [u8; 20],
+    pub event_size: U32,
+}
+
+/// Wire prefix of a crypto-agile `TCG_PCR_EVENT2` entry (12 bytes).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct PcrEvent2Prefix {
+    pub pcr_index: U32,
+    pub event_type: U32,
+    pub digest_count: U32,
+}
+
+/// Common 24-byte wire prefix of `TCG_PCClientSpecIdEventStruct` / `TCG_EfiSpecIdEvent`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct SpecIdEventPrefix {
+    pub signature: [u8; 16],
+    pub platform_class: U32,
+    pub spec_version_minor: u8,
+    pub spec_version_major: u8,
+    pub spec_errata: u8,
+    pub uintn_size: u8,
+}
+
+/// Wire entry of `TCG_EfiSpecIdEventAlgorithmSize` (4 bytes).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct AlgorithmSize {
+    pub algorithm_id: U16,
+    pub digest_size: U16,
+}
 
 /// Banks a log can describe.
 pub const MAX_BANKS: usize = 4;
@@ -102,25 +151,35 @@ impl EventLog {
         // signature, platformClass, specVersionMinor 2, specVersionMajor 1,
         // specErrata, reserved (Event00) or uintnSize (Event02),
         // vendorInfoSize 0.
-        let spec_id = |signature: &[u8; 16], errata: u8, fifth: u8| {
-            let mut event = [0u8; 25];
-            event[..16].copy_from_slice(signature);
-            event[16..20].copy_from_slice(&(class as u32).to_le_bytes());
-            event[20..24].copy_from_slice(&[2, 1, errata, fifth]);
-            event
+        #[derive(Clone, Copy, IntoBytes, Immutable)]
+        #[repr(C)]
+        struct Sha1SpecIdEvent {
+            prefix: SpecIdEventPrefix,
+            vendor_info_size: u8,
+        }
+        let spec_id = |signature: &[u8; 16], errata: u8, fifth: u8| Sha1SpecIdEvent {
+            prefix: SpecIdEventPrefix {
+                signature: *signature,
+                platform_class: U32::new(class as u32),
+                spec_version_minor: 2,
+                spec_version_major: 1,
+                spec_errata: errata,
+                uintn_size: fifth,
+            },
+            vendor_info_size: 0,
         };
         log.append_sha1_entry(
             0,
             EV_NO_ACTION,
             &[0; 20],
-            &spec_id(b"Spec ID Event00\0", 1, 0),
+            spec_id(b"Spec ID Event00\0", 1, 0).as_bytes(),
         )?;
         if uefi {
             log.append_sha1_entry(
                 0,
                 EV_NO_ACTION,
                 &[0; 20],
-                &spec_id(b"Spec ID Event02\0", 2, 2),
+                spec_id(b"Spec ID Event02\0", 2, 2).as_bytes(),
             )?;
         }
         Ok(log)
@@ -140,20 +199,40 @@ impl EventLog {
             last: None,
             format: Format::CryptoAgile,
         };
-        let mut spec_id = [0u8; 16 + 4 + 4 + 4 + 4 * MAX_BANKS + 1];
-        spec_id[..16].copy_from_slice(b"Spec ID Event03\0");
-        spec_id[16..20].copy_from_slice(&(class as u32).to_le_bytes());
-        // familyVersionMinor 0, familyVersionMajor 2, specRevision 106,
-        // uintnSize 2 (UINT64).
-        spec_id[20..24].copy_from_slice(&[0, 2, 106, 2]);
         let banks = &banks[..banks.len().min(MAX_BANKS)];
-        spec_id[24..28].copy_from_slice(&(banks.len() as u32).to_le_bytes());
-        let mut at = 28;
+        #[derive(Clone, Copy, IntoBytes, Immutable)]
+        #[repr(C)]
+        struct SpecId03Header {
+            prefix: SpecIdEventPrefix,
+            number_of_algorithms: U32,
+        }
+        let header = SpecId03Header {
+            prefix: SpecIdEventPrefix {
+                signature: *b"Spec ID Event03\0",
+                platform_class: U32::new(class as u32),
+                // familyVersionMinor 0, familyVersionMajor 2, specRevision 106,
+                // uintnSize 2 (UINT64).
+                spec_version_minor: 0,
+                spec_version_major: 2,
+                spec_errata: 106,
+                uintn_size: 2,
+            },
+            number_of_algorithms: U32::new(banks.len() as u32),
+        };
+        let mut spec_id = [0u8; core::mem::size_of::<SpecId03Header>()
+            + core::mem::size_of::<AlgorithmSize>() * MAX_BANKS
+            + 1];
+        let hdr_len = core::mem::size_of::<SpecId03Header>();
+        spec_id[..hdr_len].copy_from_slice(header.as_bytes());
+        let mut at = hdr_len;
         for &alg in banks {
-            let size = digest_size(alg).unwrap_or(0) as u16;
-            spec_id[at..at + 2].copy_from_slice(&alg.to_le_bytes());
-            spec_id[at + 2..at + 4].copy_from_slice(&size.to_le_bytes());
-            at += 4;
+            let entry = AlgorithmSize {
+                algorithm_id: U16::new(alg),
+                digest_size: U16::new(digest_size(alg).unwrap_or(0) as u16),
+            };
+            let entry_bytes = entry.as_bytes();
+            spec_id[at..at + entry_bytes.len()].copy_from_slice(entry_bytes);
+            at += entry_bytes.len();
         }
         // vendorInfoSize 0.
         at += 1;
@@ -212,12 +291,18 @@ impl EventLog {
         digest: &[u8],
         event: &[u8],
     ) -> Result<(), Full> {
-        let entry = self.reserve(32 + event.len())?;
-        entry[0..4].copy_from_slice(&pcr.to_le_bytes());
-        entry[4..8].copy_from_slice(&event_type.to_le_bytes());
-        entry[8..28].copy_from_slice(&digest[..20]);
-        entry[28..32].copy_from_slice(&(event.len() as u32).to_le_bytes());
-        entry[32..].copy_from_slice(event);
+        let mut digest_arr = [0u8; 20];
+        digest_arr.copy_from_slice(&digest[..20]);
+        let header = PcrEvent {
+            pcr_index: U32::new(pcr),
+            event_type: U32::new(event_type),
+            digest: digest_arr,
+            event_size: U32::new(event.len() as u32),
+        };
+        let hdr_len = core::mem::size_of::<PcrEvent>();
+        let entry = self.reserve(hdr_len + event.len())?;
+        entry[..hdr_len].copy_from_slice(header.as_bytes());
+        entry[hdr_len..].copy_from_slice(event);
         Ok(())
     }
 
@@ -239,17 +324,21 @@ impl EventLog {
             }
             Format::CryptoAgile => {
                 let digest_bytes: usize = digests.iter().map(|(_, d)| 2 + d.len()).sum();
-                let entry = self.reserve(12 + digest_bytes + 4 + event.len())?;
-                entry[0..4].copy_from_slice(&pcr.to_le_bytes());
-                entry[4..8].copy_from_slice(&event_type.to_le_bytes());
-                entry[8..12].copy_from_slice(&(digests.count as u32).to_le_bytes());
-                let mut at = 12;
+                let prefix = PcrEvent2Prefix {
+                    pcr_index: U32::new(pcr),
+                    event_type: U32::new(event_type),
+                    digest_count: U32::new(digests.count as u32),
+                };
+                let prefix_len = core::mem::size_of::<PcrEvent2Prefix>();
+                let entry = self.reserve(prefix_len + digest_bytes + 4 + event.len())?;
+                entry[..prefix_len].copy_from_slice(prefix.as_bytes());
+                let mut at = prefix_len;
                 for (alg, digest) in digests.iter() {
-                    entry[at..at + 2].copy_from_slice(&alg.to_le_bytes());
+                    entry[at..at + 2].copy_from_slice(U16::new(alg).as_bytes());
                     entry[at + 2..at + 2 + digest.len()].copy_from_slice(digest);
                     at += 2 + digest.len();
                 }
-                entry[at..at + 4].copy_from_slice(&(event.len() as u32).to_le_bytes());
+                entry[at..at + 4].copy_from_slice(U32::new(event.len() as u32).as_bytes());
                 entry[at + 4..].copy_from_slice(event);
                 Ok(())
             }

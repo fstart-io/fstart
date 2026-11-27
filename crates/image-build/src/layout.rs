@@ -5,7 +5,12 @@
 //! placement/overlap policy belongs to the resolver, not this transport.
 
 use fstart_core::layout::{
-    Error, HEADER_LEN, Layout, MAGIC, MAX_REGIONS, REGION_LEN, Region, VERSION,
+    Error, HEADER_LEN, Header, Layout, MAGIC, MAX_REGIONS, REGION_LEN, Region, RegionRecord,
+    VERSION,
+};
+use zerocopy::{
+    IntoBytes,
+    little_endian::{U16, U64},
 };
 
 /// Immutable wire bytes, ready for linker BYTE emission.
@@ -20,17 +25,27 @@ impl EncodedLayout {
         // The count bound makes allocation and the u16 encoded length safe.
         let len = HEADER_LEN + regions.len() * REGION_LEN;
         let mut bytes = Vec::with_capacity(len);
-        bytes.extend_from_slice(&MAGIC);
-        bytes.extend_from_slice(&VERSION.to_le_bytes());
-        bytes.extend_from_slice(&(len as u16).to_le_bytes());
-        bytes.extend_from_slice(&stage_index.to_le_bytes());
-        bytes.extend_from_slice(&(regions.len() as u16).to_le_bytes());
-        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(
+            Header {
+                magic: MAGIC,
+                version: U16::new(VERSION),
+                len: U16::new(len as u16),
+                stage: U16::new(stage_index),
+                count: U16::new(regions.len() as u16),
+                reserved: [0; 4],
+            }
+            .as_bytes(),
+        );
         for region in regions {
-            bytes.extend_from_slice(&(region.kind as u16).to_le_bytes());
-            bytes.extend_from_slice(&[0; 6]);
-            bytes.extend_from_slice(&region.base.to_le_bytes());
-            bytes.extend_from_slice(&region.size.to_le_bytes());
+            bytes.extend_from_slice(
+                RegionRecord {
+                    kind: U16::new(region.kind as u16),
+                    reserved: [0; 6],
+                    base: U64::new(region.base),
+                    size: U64::new(region.size),
+                }
+                .as_bytes(),
+            );
         }
         Layout::parse(&bytes)?;
         Ok(Self(bytes))

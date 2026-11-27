@@ -8,6 +8,71 @@
 
 use acpi_tables::sdt::Sdt;
 use alloc::vec::Vec;
+use zerocopy::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct MceBankWire {
+    number: u8,
+    clear_status_on_init: u8,
+    status_format: u8,
+    reserved: u8,
+    control: U32,
+    control_data: U64,
+    status: U32,
+    address: U32,
+    misc: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct HestSourcePrefix {
+    kind: U16,
+    source_id: U16,
+    related_source_id: U16,
+    flags: u8,
+    enabled: u8,
+    records_to_preallocate: U32,
+    max_sections_per_record: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct MceBodyWire {
+    global_capability: U64,
+    global_control: U64,
+    num_banks: u8,
+    reserved: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct ErrorNotificationWire {
+    kind: u8,
+    length: u8,
+    config_write_enable: U16,
+    poll_interval_ms: U32,
+    vector: U32,
+    switch_threshold_value: U32,
+    switch_threshold_window: U32,
+    error_threshold_value: U32,
+    error_threshold_window: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct CmcBodyWire {
+    notification: ErrorNotificationWire,
+    num_banks: u8,
+    reserved: [u8; 3],
+}
+
+const _: () = assert!(core::mem::size_of::<MceBankWire>() == 28);
+const _: () = assert!(core::mem::size_of::<HestSourcePrefix>() == 16);
+const _: () = assert!(core::mem::size_of::<MceBodyWire>() == 24);
+const _: () = assert!(core::mem::size_of::<ErrorNotificationWire>() == 28);
+const _: () = assert!(core::mem::size_of::<CmcBodyWire>() == 32);
 
 /// Source flags (ACPI 6.5 table 18.4).
 pub const FIRMWARE_FIRST: u8 = 1 << 0;
@@ -47,17 +112,20 @@ impl Bank {
     }
 
     fn bytes(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&[
-            self.number,
-            self.clear_status_on_init as u8,
-            self.status_format,
-            0,
-        ]);
-        out.extend_from_slice(&self.control.to_le_bytes());
-        out.extend_from_slice(&self.control_data.to_le_bytes());
-        out.extend_from_slice(&self.status.to_le_bytes());
-        out.extend_from_slice(&self.address.to_le_bytes());
-        out.extend_from_slice(&self.misc.to_le_bytes());
+        out.extend_from_slice(
+            MceBankWire {
+                number: self.number,
+                clear_status_on_init: self.clear_status_on_init as u8,
+                status_format: self.status_format,
+                reserved: 0,
+                control: U32::new(self.control),
+                control_data: U64::new(self.control_data),
+                status: U32::new(self.status),
+                address: U32::new(self.address),
+                misc: U32::new(self.misc),
+            }
+            .as_bytes(),
+        );
     }
 }
 
@@ -90,36 +158,58 @@ impl MachineCheck {
                 source_id, flags, ..
             } => (1u16, source_id, flags),
         };
-        out.extend_from_slice(&kind.to_le_bytes());
-        out.extend_from_slice(&source_id.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
         // Enabled; one record preallocated, one section per record.
-        out.extend_from_slice(&[flags, 1]);
-        out.extend_from_slice(&1u32.to_le_bytes());
-        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(
+            HestSourcePrefix {
+                kind: U16::new(kind),
+                source_id: U16::new(source_id),
+                related_source_id: U16::ZERO,
+                flags,
+                enabled: 1,
+                records_to_preallocate: U32::new(1),
+                max_sections_per_record: U32::new(1),
+            }
+            .as_bytes(),
+        );
         match *self {
             Self::Exception {
                 global_capability,
                 global_control,
                 ..
             } => {
-                out.extend_from_slice(&global_capability.to_le_bytes());
-                out.extend_from_slice(&global_control.to_le_bytes());
-                out.push(banks.len() as u8);
-                out.extend_from_slice(&[0; 7]);
+                out.extend_from_slice(
+                    MceBodyWire {
+                        global_capability: U64::new(global_capability),
+                        global_control: U64::new(global_control),
+                        num_banks: banks.len() as u8,
+                        reserved: [0; 7],
+                    }
+                    .as_bytes(),
+                );
             }
             Self::Corrected {
                 poll_ms, threshold, ..
             } => {
                 // Hardware error notification (ACPI 6.5 table 18.14):
                 // polled, 28 bytes, nothing configurable.
-                out.extend_from_slice(&[0, 28]);
-                out.extend_from_slice(&0u16.to_le_bytes());
-                for value in [poll_ms, 0, 0, 0, threshold, 0] {
-                    out.extend_from_slice(&value.to_le_bytes());
-                }
-                out.push(banks.len() as u8);
-                out.extend_from_slice(&[0; 3]);
+                out.extend_from_slice(
+                    CmcBodyWire {
+                        notification: ErrorNotificationWire {
+                            kind: 0,
+                            length: core::mem::size_of::<ErrorNotificationWire>() as u8,
+                            config_write_enable: U16::ZERO,
+                            poll_interval_ms: U32::new(poll_ms),
+                            vector: U32::ZERO,
+                            switch_threshold_value: U32::ZERO,
+                            switch_threshold_window: U32::ZERO,
+                            error_threshold_value: U32::new(threshold),
+                            error_threshold_window: U32::ZERO,
+                        },
+                        num_banks: banks.len() as u8,
+                        reserved: [0; 3],
+                    }
+                    .as_bytes(),
+                );
             }
         }
         banks.iter().for_each(|bank| bank.bytes(out));

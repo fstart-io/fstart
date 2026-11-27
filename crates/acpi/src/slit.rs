@@ -2,6 +2,13 @@
 
 use acpi_tables::sdt::Sdt;
 use alloc::vec::Vec;
+use zerocopy::{Immutable, IntoBytes, little_endian::U64};
+
+#[derive(IntoBytes, Immutable)]
+#[repr(C)]
+struct SlitTablePrefix {
+    locality_count: U64,
+}
 
 /// Distance of a locality to itself.
 pub const LOCAL: u8 = 10;
@@ -21,13 +28,19 @@ pub fn build_slit(n: usize, distance: impl Fn(usize, usize) -> u8) -> Vec<u8> {
         .collect();
     let mut sdt = Sdt::new(
         *b"SLIT",
-        44,
+        36 + core::mem::size_of::<SlitTablePrefix>() as u32,
         1,
         crate::OEM_ID,
         crate::OEM_TABLE_ID,
         crate::OEM_REVISION,
     );
-    sdt.write_u64(36, n as u64);
+    sdt.write_bytes(
+        36,
+        SlitTablePrefix {
+            locality_count: U64::new(n as u64),
+        }
+        .as_bytes(),
+    );
     sdt.append_slice(&matrix);
     crate::serialize(&sdt)
 }

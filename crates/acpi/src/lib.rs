@@ -700,26 +700,57 @@ pub const OEM_TABLE_ID: [u8; 8] = *b"FSTARTFW";
 /// OEM revision for fstart ACPI tables.
 pub const OEM_REVISION: u32 = 1;
 
-/// Write a `#[repr(C, packed)]` struct into an [`Sdt`] at the given byte
-/// offset.
-///
-/// This is the Rust equivalent of `*(struct foo *)(buf + off) = val;` in C.
-/// All ACPI table fields are little-endian; since every fstart target (and
-/// the host x86 test runner) is LE, native `repr(C)` layout produces the
-/// correct wire bytes.
-///
-/// # Safety
-///
-/// `T` must be `#[repr(C, packed)]` with only integer fields (no padding,
-/// no references, no `Drop`).  The caller must ensure `offset + size_of::<T>()`
-/// does not exceed the SDT's allocated length.
-pub fn write_struct<T: Copy>(sdt: &mut sdt::Sdt, offset: usize, val: &T) {
-    // SAFETY: T is repr(C, packed) with integer-only fields per doc contract.
-    let bytes: &[u8] = unsafe {
-        core::slice::from_raw_parts(val as *const T as *const u8, core::mem::size_of::<T>())
-    };
-    for (i, &b) in bytes.iter().enumerate() {
-        sdt.write_u8(offset + i, b);
+/// ACPI Generic Address Structure (GAS, 12 bytes, alignment-one LE wire layout).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+#[repr(C)]
+pub struct WireGas {
+    pub address_space_id: u8,
+    pub register_bit_width: u8,
+    pub register_bit_offset: u8,
+    pub access_size: u8,
+    pub address: zerocopy::little_endian::U64,
+}
+
+const _: () = assert!(core::mem::size_of::<WireGas>() == 12);
+
+impl WireGas {
+    pub const fn new(
+        address_space_id: u8,
+        register_bit_width: u8,
+        register_bit_offset: u8,
+        access_size: u8,
+        address: u64,
+    ) -> Self {
+        Self {
+            address_space_id,
+            register_bit_width,
+            register_bit_offset,
+            access_size,
+            address: zerocopy::little_endian::U64::new(address),
+        }
+    }
+}
+
+impl From<&acpi_tables::gas::GAS> for WireGas {
+    fn from(gas: &acpi_tables::gas::GAS) -> Self {
+        Self::new(
+            gas.address_space_id as u8,
+            gas.register_bit_width,
+            gas.register_bit_offset,
+            gas.access_size as u8,
+            gas.address.get(),
+        )
     }
 }
 

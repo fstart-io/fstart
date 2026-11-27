@@ -548,15 +548,37 @@ fn debug_endpoints(
     Ok(endpoints)
 }
 
+/// USB 2.0 Debug Descriptor (4 bytes).
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct UsbDebugDescriptor {
+    length: u8,
+    descriptor_type: u8,
+    debug_in_endpoint: u8,
+    debug_out_endpoint: u8,
+}
+
 /// The debug descriptor's IN and OUT endpoint numbers.
 fn parse_debug_descriptor(desc: &[u8]) -> Result<(u8, u8), ServiceError> {
-    match *desc {
-        [4, 10, input, output]
-            if input & 0x0f != 0 && output != 0 && input & 0x70 == 0 && output & 0xf0 == 0 =>
-        {
-            Ok((input & 0x0f, output))
-        }
-        _ => Err(ServiceError::NotSupported),
+    let parsed =
+        UsbDebugDescriptor::read_from_bytes(desc).map_err(|_| ServiceError::NotSupported)?;
+    if parsed.length == 4
+        && parsed.descriptor_type == 10
+        && parsed.debug_in_endpoint & 0x0f != 0
+        && parsed.debug_out_endpoint != 0
+        && parsed.debug_in_endpoint & 0x70 == 0
+        && parsed.debug_out_endpoint & 0xf0 == 0
+    {
+        Ok((parsed.debug_in_endpoint & 0x0f, parsed.debug_out_endpoint))
+    } else {
+        Err(ServiceError::NotSupported)
     }
 }
 
@@ -569,18 +591,18 @@ fn accepted(token: u8, pid: u8, reply: u8) -> bool {
 }
 
 fn pack(bytes: &[u8]) -> [u32; 2] {
-    bytes
-        .iter()
-        .enumerate()
-        .fold([0; 2], |mut words, (index, byte)| {
-            words[index / 4] |= u32::from(*byte) << (8 * (index % 4));
-            words
-        })
+    use zerocopy::{FromBytes, little_endian::U32};
+    let mut buf = [0u8; 8];
+    let n = bytes.len().min(8);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    let words = <[U32; 2]>::read_from_bytes(&buf).expect("8 bytes");
+    [words[0].get(), words[1].get()]
 }
 fn unpack(words: [u32; 2], bytes: &mut [u8]) {
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = (words[index / 4] >> (8 * (index % 4))) as u8;
-    }
+    use zerocopy::{IntoBytes, little_endian::U32};
+    let wire = [U32::new(words[0]), U32::new(words[1])];
+    let n = bytes.len().min(8);
+    bytes[..n].copy_from_slice(&wire.as_bytes()[..n]);
 }
 
 pub struct EhciDebug {

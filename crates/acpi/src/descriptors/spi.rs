@@ -11,6 +11,9 @@
 //! [`Aml`]: acpi_tables::Aml
 
 use acpi_tables::{Aml, AmlSink};
+use tock_registers::register_bitfields;
+use zerocopy::little_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Serial Bus Connection Descriptor tag byte.
 const SERIAL_BUS_DESCRIPTOR_TAG: u8 = 0x8E;
@@ -25,6 +28,44 @@ const SPI_SERIAL_BUS_TYPE: u8 = 0x02;
 /// connection_speed(4) + data_bit_length(1) + clock_phase(1)
 /// + clock_polarity(1) + device_selection(2) = 9 bytes.
 const SPI_TYPE_DATA_LENGTH: u16 = 9;
+
+register_bitfields![u8,
+    /// Serial Bus General Flags (offset 0x06, 8 bits).
+    GeneralFlags [
+        SLAVE_MODE OFFSET(0) NUMBITS(1) [],
+        CONSUMER OFFSET(1) NUMBITS(1) []
+    ]
+];
+
+register_bitfields![u16,
+    /// SPI Type-Specific Flags (offset 0x07, 16 bits).
+    SpiTypeFlags [
+        WIRE_MODE OFFSET(0) NUMBITS(1) [],
+        DEVICE_POLARITY OFFSET(1) NUMBITS(1) []
+    ]
+];
+
+/// Common Serial Bus Connection header + SPI type-specific data (21 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct SpiSerialBusHeader {
+    tag: u8,
+    data_length: U16,
+    revision_id: u8,
+    resource_source_index: u8,
+    serial_bus_type: u8,
+    general_flags: u8,
+    type_flags: U16,
+    type_revision_id: u8,
+    type_data_length: U16,
+    connection_speed: U32,
+    data_bit_length: u8,
+    clock_phase: u8,
+    clock_polarity: u8,
+    device_selection: U16,
+}
+
+const _: () = assert!(core::mem::size_of::<SpiSerialBusHeader>() == 21);
 
 /// SPI clock phase (CPHA).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,35 +152,35 @@ impl Aml for SpiSerialBus<'_> {
         let resource_source_size = self.resource_source.len() + 1;
         let data_length = 9 + SPI_TYPE_DATA_LENGTH as usize + resource_source_size;
 
-        let general_flags: u8 = if self.consumer { 0x02 } else { 0x00 };
+        let general_flags = if self.consumer {
+            GeneralFlags::CONSUMER::SET.value
+        } else {
+            0
+        };
+        let type_flags = (SpiTypeFlags::WIRE_MODE.val(self.wire_mode as u16)
+            + SpiTypeFlags::DEVICE_POLARITY.val(self.device_polarity as u16))
+        .value;
 
-        // Type-Specific Flags:
-        //   Bit 0: Wire Mode (0=4-wire, 1=3-wire)
-        //   Bit 1: Device Polarity (0=active-low, 1=active-high)
-        let type_flags: u16 = (self.wire_mode as u16) | ((self.device_polarity as u16) << 1);
-
-        // Common header
-        sink.byte(SERIAL_BUS_DESCRIPTOR_TAG);
-        sink.word(data_length as u16);
-        sink.byte(SERIAL_BUS_REVISION_ID);
-        sink.byte(0x00); // Resource Source Index
-        sink.byte(SPI_SERIAL_BUS_TYPE);
-        sink.byte(general_flags);
-        sink.word(type_flags);
-        sink.byte(0x01); // Type-Specific Revision ID
-        sink.word(SPI_TYPE_DATA_LENGTH);
-
-        // Type-specific data: SPI
-        sink.dword(self.connection_speed);
-        sink.byte(self.data_bit_length);
-        sink.byte(self.clock_phase as u8);
-        sink.byte(self.clock_polarity as u8);
-        sink.word(self.device_selection);
+        let header = SpiSerialBusHeader {
+            tag: SERIAL_BUS_DESCRIPTOR_TAG,
+            data_length: U16::new(data_length as u16),
+            revision_id: SERIAL_BUS_REVISION_ID,
+            resource_source_index: 0,
+            serial_bus_type: SPI_SERIAL_BUS_TYPE,
+            general_flags,
+            type_flags: U16::new(type_flags),
+            type_revision_id: 0x01,
+            type_data_length: U16::new(SPI_TYPE_DATA_LENGTH),
+            connection_speed: U32::new(self.connection_speed),
+            data_bit_length: self.data_bit_length,
+            clock_phase: self.clock_phase as u8,
+            clock_polarity: self.clock_polarity as u8,
+            device_selection: U16::new(self.device_selection),
+        };
+        sink.vec(header.as_bytes());
 
         // Resource Source Name (null-terminated ASCII)
-        for &b in self.resource_source.as_bytes() {
-            sink.byte(b);
-        }
+        sink.vec(self.resource_source.as_bytes());
         sink.byte(0);
     }
 }

@@ -11,7 +11,7 @@ pub use events::EventMasks;
 use fstart_core::services::Timer;
 use zerocopy::{
     FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
-    byteorder::{LittleEndian, U16, U32},
+    byteorder::{LittleEndian, LittleEndian as LE, U16, U32},
 };
 const PACKET: u16 = 0x800;
 const STATUS: u16 = 0x204;
@@ -207,8 +207,14 @@ impl<I: Io> Ec<I> {
         events: u32,
         delay_us: impl FnMut(u32),
     ) -> Result<(), Error> {
-        self.short_command::<12>(mask as u16, 0, &events.to_le_bytes(), &mut [0; 4], delay_us)
-            .map(|_| ())
+        self.short_command::<12>(
+            mask as u16,
+            0,
+            U32::<LE>::new(events).as_bytes(),
+            &mut [0; 4],
+            delay_us,
+        )
+        .map(|_| ())
     }
 
     /// EC_CMD_USB_CHARGE_SET_MODE, mode DISABLED, no inhibit flag.
@@ -341,14 +347,31 @@ impl<I: Io> Ec<I> {
         output: &mut [u8],
         mut ready: impl FnMut(&mut I, bool) -> Result<(), Error>,
     ) -> Result<usize, Error> {
+        #[repr(C)]
+        #[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+        struct Protocol2Prefix {
+            flags: u8,
+            version: u8,
+            length: u8,
+            checksum: u8,
+        }
+
         let cmd = u8::try_from(command).map_err(|_| Error::UnsupportedProtocol)?;
         ready(&mut self.io, true)?;
         let len = input.len() as u8;
-        let sum = checksum(&[cmd, 1, version, len]).wrapping_add(checksum(input));
+        let mut req = Protocol2Prefix {
+            flags: 1,
+            version,
+            length: len,
+            checksum: 0,
+        };
+        req.checksum = cmd
+            .wrapping_add(checksum(req.as_bytes()))
+            .wrapping_add(checksum(input));
         for (i, &b) in input.iter().enumerate() {
             self.io.write8(PACKET + 4 + i as u16, b);
         }
-        for (i, b) in [1, version, len, sum].into_iter().enumerate() {
+        for (i, &b) in req.as_bytes().iter().enumerate() {
             self.io.write8(PACKET + i as u16, b);
         }
         self.poisoned = true;
@@ -356,18 +379,22 @@ impl<I: Io> Ec<I> {
         self.io.write8(STATUS, cmd);
         ready(&mut self.io, false)?;
         self.command_status()?;
-        let [flags, ver, len, sum] = core::array::from_fn(|i| self.io.read8(PACKET + i as u16));
-        if flags & 2 == 0 {
+        let raw_hdr: [u8; 4] = core::array::from_fn(|i| self.io.read8(PACKET + i as u16));
+        let resp = Protocol2Prefix::read_from_bytes(&raw_hdr).map_err(|_| Error::Header)?;
+        if resp.flags & 2 == 0 {
             return Err(Error::Header);
         }
         let mut data = [0u8; RX];
-        let n = usize::from(len);
+        let n = usize::from(resp.length);
         let data = data.get_mut(..n).ok_or(Error::Length)?;
         let output = output.get_mut(..n).ok_or(Error::Length)?;
         for (i, b) in data.iter_mut().enumerate() {
             *b = self.io.read8(PACKET + 4 + i as u16);
         }
-        if checksum(&[cmd, flags, ver, len]).wrapping_add(checksum(data)) != sum {
+        let expected_sum = cmd
+            .wrapping_add(checksum(&raw_hdr[..3]))
+            .wrapping_add(checksum(data));
+        if expected_sum != resp.checksum {
             return Err(Error::Checksum);
         }
         for (dst, src) in output.iter_mut().zip(data) {
@@ -411,7 +438,9 @@ impl<I: Io> Ec<I> {
         if self.command(0x0006, 0, &[], &mut data, timer)? != 2 {
             return Err(Error::Length);
         }
-        Ok(u16::from_le_bytes(data))
+        Ok(U16::<LE>::read_from_bytes(&data)
+            .map_err(|_| Error::Length)?
+            .get())
     }
     pub fn cbi_u32(&mut self, tag: CbiTag, timer: &impl Timer) -> Result<u32, Error> {
         let request = CbiRequest {
@@ -425,7 +454,9 @@ impl<I: Io> Ec<I> {
         if length == 0 {
             return Err(Error::Length);
         }
-        Ok(u32::from_le_bytes(data))
+        Ok(U32::<LE>::read_from_bytes(&data)
+            .map_err(|_| Error::Length)?
+            .get())
     }
     pub fn set_mask(
         &mut self,
@@ -434,8 +465,14 @@ impl<I: Io> Ec<I> {
         timer: &impl Timer,
     ) -> Result<(), Error> {
         // Older LPC handlers may return the mask, or no payload, for SET.
-        self.command(kind as u16, 0, &events.to_le_bytes(), &mut [0; 4], timer)
-            .map(|_| ())
+        self.command(
+            kind as u16,
+            0,
+            U32::<LE>::new(events).as_bytes(),
+            &mut [0; 4],
+            timer,
+        )
+        .map(|_| ())
     }
 
     /// The host events that raise the EC's SCI (`HOST_EVENT_SET_SCI_MASK`),

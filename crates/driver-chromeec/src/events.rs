@@ -3,6 +3,29 @@
 //! independent of the LPC packet protocol (some ECs advertise only the bit).
 use super::{Ec, Error, Io, LegacyMask};
 use fstart_core::services::Timer;
+use zerocopy::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+struct FeaturesResponse {
+    flags: [U32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+struct CmdVersionsResponse {
+    version_mask: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+struct HostEventMaskRequest {
+    action: u8,
+    mask_type: u8,
+    reserved: [u8; 2],
+    mask: U64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventMasks {
@@ -17,15 +40,28 @@ impl EventMasks {
         let mut features = [0; 8];
         match command(0x0d, 0, &[], &mut features) {
             Err(Error::Rejected(1)) => return Ok(Self::Legacy),
-            Ok(8) if features[4] & 1 == 0 => return Ok(Self::Legacy),
-            Ok(8) => (),
+            Ok(8) => {
+                let parsed =
+                    FeaturesResponse::read_from_bytes(&features).map_err(|_| Error::Length)?;
+                if parsed.flags[1].get() & 1 == 0 {
+                    return Ok(Self::Legacy);
+                }
+            }
             Ok(_) => return Err(Error::Length),
             Err(e) => return Err(e),
         }
         let mut versions = [0; 4];
-        match command(8, 1, &0xa4u16.to_le_bytes(), &mut versions) {
-            Ok(4) if versions[0] & 1 != 0 => Ok(Self::Unified),
-            Ok(4) | Err(Error::Rejected(1 | 3 | 6)) => Ok(Self::Legacy),
+        match command(8, 1, U16::new(0xa4).as_bytes(), &mut versions) {
+            Ok(4) => {
+                let parsed =
+                    CmdVersionsResponse::read_from_bytes(&versions).map_err(|_| Error::Length)?;
+                if parsed.version_mask.get() & 1 != 0 {
+                    Ok(Self::Unified)
+                } else {
+                    Ok(Self::Legacy)
+                }
+            }
+            Err(Error::Rejected(1 | 3 | 6)) => Ok(Self::Legacy),
             Ok(_) => Err(Error::Length),
             Err(e) => Err(e),
         }
@@ -34,9 +70,13 @@ impl EventMasks {
     pub fn detect<I: Io>(ec: &mut Ec<I>, timer: &impl Timer) -> Result<Self, Error> {
         Self::probe(|c, v, i, o| ec.command(c, v, i, o, timer))
     }
-    fn unified(mask: u8, events: u32) -> [u8; 12] {
-        let [a, b, c, d] = events.to_le_bytes();
-        [1, mask, 0, 0, a, b, c, d, 0, 0, 0, 0] // SET, type, reserved, little-endian u64
+    fn unified(mask: u8, events: u32) -> HostEventMaskRequest {
+        HostEventMaskRequest {
+            action: 1, // SET
+            mask_type: mask,
+            reserved: [0; 2],
+            mask: U64::new(u64::from(events)),
+        }
     }
     fn kind(mask: LegacyMask) -> u8 {
         match mask {
@@ -58,7 +98,7 @@ impl EventMasks {
                 .command(
                     0xa4,
                     0,
-                    &Self::unified(Self::kind(mask), events),
+                    Self::unified(Self::kind(mask), events).as_bytes(),
                     &mut [0; 8],
                     timer,
                 )
@@ -78,7 +118,7 @@ impl EventMasks {
                 .short_command::<16>(
                     0xa4,
                     0,
-                    &Self::unified(Self::kind(mask), events),
+                    Self::unified(Self::kind(mask), events).as_bytes(),
                     &mut [0; 8],
                     delay,
                 )
@@ -98,8 +138,14 @@ impl EventMasks {
             return [Ok(()); 2];
         }
         [(8, s5), (7, s3)].map(|(kind, mask)| {
-            ec.command(0xa4, 0, &Self::unified(kind, mask), &mut [0; 8], timer)
-                .map(|_| ())
+            ec.command(
+                0xa4,
+                0,
+                Self::unified(kind, mask).as_bytes(),
+                &mut [0; 8],
+                timer,
+            )
+            .map(|_| ())
         })
     }
 }

@@ -1182,8 +1182,9 @@ where
     F: Fn(&[u8]) -> Result<Signature, String>,
     P: FnOnce(&mut [u8], &Root) -> Result<(), String>,
 {
-    let anchor =
-        unsafe { core::ptr::read_unaligned(built.anchor_bytes.as_ptr().cast::<LocatorBlock>()) };
+    let anchor = zerocopy::FromBytes::read_from_bytes(&built.anchor_bytes)
+        .map_err(|_| "invalid locator block".to_string())?;
+    let anchor: LocatorBlock = anchor;
     let root_start = anchor.root_offset.get() as usize;
     let mut root = Root::parse(
         built

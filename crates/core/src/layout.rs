@@ -18,7 +18,7 @@
 //! after memory discovery. The wire parser checks structure, not those policies.
 
 use zerocopy::byteorder::{LE, U16, U64};
-use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub const MAGIC: [u8; 4] = *b"FSLY";
 pub const VERSION: u16 = 1;
@@ -27,24 +27,24 @@ pub const REGION_LEN: usize = 24;
 pub const MAX_REGIONS: usize = 32;
 pub const MAX_ENCODED_LEN: usize = HEADER_LEN + MAX_REGIONS * REGION_LEN;
 
-#[derive(Debug, FromBytes, Immutable, KnownLayout, Unaligned)]
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
-struct Header {
-    magic: [u8; 4],
-    version: U16<LE>,
-    len: U16<LE>,
-    stage: U16<LE>,
-    count: U16<LE>,
-    reserved: [u8; 4],
+pub struct Header {
+    pub magic: [u8; 4],
+    pub version: U16<LE>,
+    pub len: U16<LE>,
+    pub stage: U16<LE>,
+    pub count: U16<LE>,
+    pub reserved: [u8; 4],
 }
 
-#[derive(Debug, FromBytes, Immutable, KnownLayout, Unaligned)]
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
-struct RegionRecord {
-    kind: U16<LE>,
-    reserved: [u8; 6],
-    base: U64<LE>,
-    size: U64<LE>,
+pub struct RegionRecord {
+    pub kind: U16<LE>,
+    pub reserved: [u8; 6],
+    pub base: U64<LE>,
+    pub size: U64<LE>,
 }
 
 const _: () = assert!(core::mem::size_of::<Header>() == HEADER_LEN);

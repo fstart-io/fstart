@@ -136,8 +136,30 @@ pub const ABL_EVENT: [u8; 16] = cper::guid(
     [0xb0, 0x03, 0x6f, 0xb4, 0x40, 0x86, 0xc0, 0x0e],
 );
 
+/// Wire layout of [`ABL_EVENT`] (16 bytes, little-endian).
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::IntoBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct AblEventSection {
+    event: zerocopy::little_endian::U32,
+    data_a: zerocopy::little_endian::U32,
+    data_b: zerocopy::little_endian::U32,
+    place: [u8; 3],
+    reserved: u8,
+}
+
+const _: () = assert!(core::mem::size_of::<AblEventSection>() == 16);
+
 /// The [`ABL_EVENT`] section of `error`.
 fn abl_event(error: &AblError) -> Vec<u8> {
+    use zerocopy::{IntoBytes, little_endian::U32};
     let (event, data_a, data_b, place) = match *error {
         AblError::Dimm {
             event,
@@ -163,13 +185,15 @@ fn abl_event(error: &AblError) -> Vec<u8> {
             ..
         } => (event, data_a, data_b, [socket, channel, dimm]),
     };
-    let mut out = Vec::with_capacity(16);
-    for word in [event, data_a, data_b] {
-        out.extend_from_slice(&word.to_le_bytes());
+    AblEventSection {
+        event: U32::new(event),
+        data_a: U32::new(data_a),
+        data_b: U32::new(data_b),
+        place,
+        reserved: 0,
     }
-    out.extend_from_slice(&place);
-    out.push(0);
-    out
+    .as_bytes()
+    .to_vec()
 }
 
 /// The FRU text of an ABL error: `S<socket> C<channel> D<dimm> <what>`.

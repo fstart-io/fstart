@@ -5,6 +5,42 @@
 //! only provides an SBI (RISC-V) constructor.
 
 use acpi_tables::sdt::Sdt;
+use zerocopy::little_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+use crate::WireGas;
+
+/// SPCR revision 4 body after the 36-byte ACPI SDT header (52 bytes) + 2-byte ".\0" namespace.
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct SpcrBody {
+    interface_type: u8,
+    reserved: [u8; 3],
+    base_address: WireGas,
+    interrupt_type: u8,
+    irq: u8,
+    global_system_interrupt: U32,
+    baud_rate: u8,
+    parity: u8,
+    stop_bits: u8,
+    flow_control: u8,
+    terminal_type: u8,
+    language: u8,
+    pci_device_id: U16,
+    pci_vendor_id: U16,
+    pci_bus: u8,
+    pci_device: u8,
+    pci_function: u8,
+    pci_flags: U32,
+    pci_segment: u8,
+    clock_frequency: U32,
+    precise_baud_rate: U32,
+    namespace_string_length: U16,
+    namespace_string_offset: U16,
+    namespace: [u8; 2],
+}
+
+const _: () = assert!(core::mem::size_of::<SpcrBody>() == 54);
 
 /// SPCR interface subtypes (ACPI DBG2 / SPCR spec).
 #[allow(dead_code)]
@@ -47,20 +83,59 @@ pub fn build_spcr_16550_io(port: u16, irq: u8) -> Sdt {
 /// Generic 16550 MMIO, 32-bit registers at four-byte stride, polling.
 /// Used by AMD's AMDI0020 UART; this is not the port-I/O 16550 subtype.
 pub fn build_spcr_16550_mmio32(base: u64, clock: u32) -> Sdt {
-    let mut table = build(0x12, (0, base), (0, 0, 0));
-    table.write_u8(41, 32);
-    table.write_u8(43, 3);
-    table.write_u32(76, clock);
-    table.write_u32(80, 115200);
-    table.update_checksum();
-    table
+    build_body(SpcrBody {
+        interface_type: 0x12,
+        base_address: WireGas::new(0, 32, 0, 3, base),
+        clock_frequency: U32::new(clock),
+        precise_baud_rate: U32::new(115200),
+        ..SpcrBody::default_for(0x12, (0, base), (0, 0, 0))
+    })
+}
+
+impl SpcrBody {
+    const fn default_for(
+        interface: u8,
+        (space, address): (u8, u64),
+        (kind, irq, gsi): (u8, u8, u32),
+    ) -> Self {
+        Self {
+            interface_type: interface,
+            reserved: [0; 3],
+            base_address: WireGas::new(space, 8, 0, 1, address),
+            interrupt_type: kind,
+            irq,
+            global_system_interrupt: U32::new(gsi),
+            baud_rate: baud::B115200,
+            parity: 0,
+            stop_bits: 1,
+            flow_control: 0,
+            terminal_type: 0,
+            language: 0,
+            pci_device_id: U16::new(0xFFFF),
+            pci_vendor_id: U16::new(0xFFFF),
+            pci_bus: 0,
+            pci_device: 0,
+            pci_function: 0,
+            pci_flags: U32::ZERO,
+            pci_segment: 0,
+            clock_frequency: U32::ZERO,
+            precise_baud_rate: U32::ZERO,
+            namespace_string_length: U16::new(2),
+            namespace_string_offset: U16::new(52),
+            namespace: [b'.', 0],
+        }
+    }
 }
 
 /// `(address space, address)` of the registers, `(interrupt type, IRQ,
 /// GSI)`.
-fn build(interface: u8, (space, address): (u8, u64), (kind, irq, gsi): (u8, u8, u32)) -> Sdt {
+fn build(interface: u8, gas: (u8, u64), irq: (u8, u8, u32)) -> Sdt {
+    build_body(SpcrBody::default_for(interface, gas, irq))
+}
+
+fn build_body(body: SpcrBody) -> Sdt {
     // Layout: 36-byte header + 52-byte serial port info + 2-byte namespace.
-    let total_size: u32 = 36 + 52 + 2;
+    let total_size: u32 = 36 + core::mem::size_of::<SpcrBody>() as u32;
 
     let mut sdt = Sdt::new(
         *b"SPCR",
@@ -70,46 +145,7 @@ fn build(interface: u8, (space, address): (u8, u64), (kind, irq, gsi): (u8, u8, 
         crate::OEM_TABLE_ID,
         crate::OEM_REVISION,
     );
-
-    // Serial Port Info fields (offset 36..88).
-    sdt.write_u8(36, interface); // Interface Type
-    // 37..39: Reserved (already zero)
-
-    // Generic Address Structure for base address (12 bytes at offset 40).
-    sdt.write_u8(40, space); // AddressSpaceId
-    sdt.write_u8(41, 8); // RegisterBitWidth
-    sdt.write_u8(42, 0); // RegisterBitOffset
-    sdt.write_u8(43, 1); // AccessSize: Byte
-    sdt.write_u64(44, address);
-
-    // Interrupt configuration.
-    sdt.write_u8(52, kind); // InterruptType
-    sdt.write_u8(53, irq); // IRQ
-    sdt.write_u32(54, gsi); // GlobalSystemInterrupt
-
-    // Serial parameters.
-    sdt.write_u8(58, baud::B115200); // BaudRate
-    sdt.write_u8(59, 0); // Parity: None
-    sdt.write_u8(60, 1); // StopBits: 1
-    sdt.write_u8(61, 0); // FlowControl: None
-    sdt.write_u8(62, 0); // TerminalType: VT100
-    sdt.write_u8(63, 0); // Language
-
-    // PCI identification (0xFFFF = not PCI).
-    sdt.write_u16(64, 0xFFFF); // PciDeviceId
-    sdt.write_u16(66, 0xFFFF); // PciVendorId
-    // 68..70: PciBus/Device/Function (zero)
-    // 71..74: PciFlags (zero)
-    // 75: PciSegment (zero)
-    // 76..79: ClockFrequency (zero, not specified)
-    // 80..83: PreciseBaudRate (zero, not specified)
-
-    // Namespace string: ".\0" (minimal, meaning root namespace).
-    sdt.write_u16(84, 2); // NamespaceStringLength
-    sdt.write_u16(86, 52); // NamespaceStringOffset (from info start)
-    sdt.write_u8(88, b'.'); // Namespace string
-    // 89: NUL terminator (already zero)
-
+    sdt.write_bytes(36, body.as_bytes());
     sdt.update_checksum();
     sdt
 }

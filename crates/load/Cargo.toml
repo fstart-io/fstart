@@ -13,6 +13,7 @@ ufmt = { workspace = true }
 fstart-core = { workspace = true }
 fstart-crypto = { workspace = true, features = ["sha2-digest"] }
 fstart-ffs = { workspace = true }
+zerocopy = { workspace = true }
 
 [lints]
 workspace = true

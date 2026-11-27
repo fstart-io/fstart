@@ -339,11 +339,19 @@ pub fn assemble(
                     let offset = placeholders[0];
                     initial[offset..offset + 160].copy_from_slice(&descriptor.encode());
                     let next = next_location.as_ref().ok_or("next stage data missing")?;
-                    initial[0x2c..0x30].copy_from_slice(&next.data_offset.to_le_bytes());
-                    initial[0x30..0x34].copy_from_slice(&next.data_size.to_le_bytes());
+                    let (hdr, _) = zerocopy::FromBytes::mut_from_prefix(initial)
+                        .map_err(|_| "initial stage too small for eGON header")?;
+                    let hdr: &mut crate::image::egon::EgonBootHeader = hdr;
+                    hdr.next_data_offset = zerocopy::little_endian::U32::new(next.data_offset);
+                    hdr.next_data_size = zerocopy::little_endian::U32::new(next.data_size);
                 }
-                initial[0x34..0x38].copy_from_slice(&total_size.to_le_bytes());
-                let bootblock_size = u32::from_le_bytes(initial[0x10..0x14].try_into().unwrap());
+                let bootblock_size = {
+                    let (hdr, _) = zerocopy::FromBytes::mut_from_prefix(initial)
+                        .map_err(|_| "initial stage too small for eGON header")?;
+                    let hdr: &mut crate::image::egon::EgonBootHeader = hdr;
+                    hdr.total_image_size = zerocopy::little_endian::U32::new(total_size);
+                    hdr.length.get()
+                };
                 crate::image::egon::patch_ffs(initial, bootblock_size)
             },
             &sign,

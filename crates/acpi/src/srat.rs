@@ -32,7 +32,14 @@ const HOT_PLUGGABLE: u32 = 1 << 1;
 const NON_VOLATILE: u32 = 1 << 2;
 
 #[derive(IntoBytes, Immutable)]
-#[repr(C, packed)]
+#[repr(C)]
+struct SratTablePrefix {
+    reserved1: U32,
+    reserved2: U64,
+}
+
+#[derive(IntoBytes, Immutable)]
+#[repr(C)]
 struct LocalApicAffinity {
     kind: u8,
     length: u8,
@@ -45,7 +52,7 @@ struct LocalApicAffinity {
 }
 
 #[derive(IntoBytes, Immutable)]
-#[repr(C, packed)]
+#[repr(C)]
 struct MemoryAffinity {
     kind: u8,
     length: u8,
@@ -59,7 +66,7 @@ struct MemoryAffinity {
 }
 
 #[derive(IntoBytes, Immutable)]
-#[repr(C, packed)]
+#[repr(C)]
 struct X2ApicAffinity {
     kind: u8,
     length: u8,
@@ -129,14 +136,21 @@ fn entry(e: &SratEntry) -> Vec<u8> {
 pub fn build_srat(entries: &[SratEntry]) -> Vec<u8> {
     let mut sdt = Sdt::new(
         *b"SRAT",
-        48,
+        36 + core::mem::size_of::<SratTablePrefix>() as u32,
         3,
         crate::OEM_ID,
         crate::OEM_TABLE_ID,
         crate::OEM_REVISION,
     );
     // Reserved, must be 1 for backward compatibility.
-    sdt.write_u32(36, 1);
+    sdt.write_bytes(
+        36,
+        SratTablePrefix {
+            reserved1: U32::new(1),
+            reserved2: U64::ZERO,
+        }
+        .as_bytes(),
+    );
     entries.iter().for_each(|e| sdt.append_slice(&entry(e)));
     crate::serialize(&sdt)
 }

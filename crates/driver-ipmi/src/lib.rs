@@ -7,7 +7,7 @@ pub mod fru;
 pub mod kcs;
 
 use zerocopy::{
-    Immutable, IntoBytes, KnownLayout,
+    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
     little_endian::{U16, U32},
 };
 
@@ -248,6 +248,12 @@ where
     /// Get FRU Inventory Area Info (IPMI 2.0 §34.1): returns `(area_size_bytes,
     /// word_access)`.
     pub fn fru_inventory_area_info(&mut self, fru_id: u8) -> Result<(u16, bool), Error> {
+        #[repr(C)]
+        #[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+        struct FruAreaInfoResponse {
+            area_size: U16,
+            flags: u8,
+        }
         let mut buffer = [0u8; 8];
         let data = self.request(
             NETFN_STORAGE,
@@ -255,10 +261,8 @@ where
             &[fru_id],
             &mut buffer,
         )?;
-        match *data {
-            [lo, hi, flags, ..] => Ok((u16::from_le_bytes([lo, hi]), (flags & 1) != 0)),
-            _ => Err(Error::Short),
-        }
+        let (resp, _) = FruAreaInfoResponse::ref_from_prefix(data).map_err(|_| Error::Short)?;
+        Ok((resp.area_size.get(), (resp.flags & 1) != 0))
     }
 
     /// Read FRU Data (IPMI 2.0 §34.2) starting at byte offset `start` into
@@ -271,6 +275,13 @@ where
         word_access: bool,
         out: &mut [u8],
     ) -> Result<usize, Error> {
+        #[repr(C)]
+        #[derive(Clone, Copy, IntoBytes, Immutable)]
+        struct ReadFruRequest {
+            fru_id: u8,
+            offset: U16,
+            count: u8,
+        }
         const CHUNK_BYTES: usize = 16;
         const BUSY_RETRIES: u8 = 3;
         const FRU_BUSY: u8 = 0x81;
@@ -295,15 +306,14 @@ where
             } else {
                 (byte_off, chunk as u8)
             };
-            let [off_lo, off_hi] = req_off.to_le_bytes();
+            let req = ReadFruRequest {
+                fru_id,
+                offset: U16::new(req_off),
+                count: req_cnt,
+            };
             let mut attempt = 0u8;
             let data = loop {
-                match self.request(
-                    NETFN_STORAGE,
-                    READ_FRU_DATA,
-                    &[fru_id, off_lo, off_hi, req_cnt],
-                    &mut buffer,
-                ) {
+                match self.request(NETFN_STORAGE, READ_FRU_DATA, req.as_bytes(), &mut buffer) {
                     Err(Error::Completion(FRU_BUSY)) if attempt < BUSY_RETRIES => {
                         attempt += 1;
                     }
@@ -338,20 +348,32 @@ where
     /// SEL takes no Add SEL Entry (Netflix OpenBMC on the S8040: completion
     /// C1h) take events this way.
     pub fn platform_event(&mut self, record: &SelRecord) -> Result<(), Error> {
+        #[repr(C)]
+        #[derive(Clone, Copy, IntoBytes, Immutable)]
+        struct PlatformEventRequest {
+            generator_id: u8,
+            evm_rev: u8,
+            sensor_type: u8,
+            sensor_number: u8,
+            event_dir_type: u8,
+            event_data: [u8; 3],
+        }
         let mut buffer = [0; 8];
-        let [data1, data2, data3] = record.event_data;
-        let request = [
-            record.generator_id.get() as u8,
-            record.event_message_revision,
-            record.sensor_type,
-            record.sensor_number,
-            record.event_dir_type,
-            data1,
-            data2,
-            data3,
-        ];
-        self.request(NETFN_SENSOR_EVENT, PLATFORM_EVENT, &request, &mut buffer)
-            .map(drop)
+        let request = PlatformEventRequest {
+            generator_id: record.generator_id.get() as u8,
+            evm_rev: record.event_message_revision,
+            sensor_type: record.sensor_type,
+            sensor_number: record.sensor_number,
+            event_dir_type: record.event_dir_type,
+            event_data: record.event_data,
+        };
+        self.request(
+            NETFN_SENSOR_EVENT,
+            PLATFORM_EVENT,
+            request.as_bytes(),
+            &mut buffer,
+        )
+        .map(drop)
     }
 
     /// Add an OEM non-timestamped entry. Unsupported BMCs return a completion
@@ -363,9 +385,7 @@ where
     fn add_sel_bytes(&mut self, record: &[u8]) -> Result<u16, Error> {
         let mut buffer = [0; 8];
         let data = self.request(NETFN_STORAGE, ADD_SEL_ENTRY, record, &mut buffer)?;
-        match *data {
-            [low, high, ..] => Ok(u16::from_le_bytes([low, high])),
-            _ => Err(Error::Short),
-        }
+        let (record_id, _) = U16::ref_from_prefix(data).map_err(|_| Error::Short)?;
+        Ok(record_id.get())
     }
 }

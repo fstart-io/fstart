@@ -3,6 +3,8 @@
 //! PC Client TSC ordinals).
 
 use crate::{BUFFER_SIZE, Command, Error, Reader, Transport, execute};
+use zerocopy::big_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 const TAG_RQU_COMMAND: u16 = 0x00C1;
 
@@ -92,6 +94,48 @@ pub fn self_test_full<T: Transport + ?Sized>(tpm: &mut T) -> Result<(), Error> {
     run(tpm, &mut Command::new(TAG_RQU_COMMAND, ORD_SELF_TEST_FULL))
 }
 
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+#[repr(C)]
+struct ExtendRequest {
+    pcr: U32,
+    digest: [u8; 20],
+}
+
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+#[repr(C)]
+struct GetCapabilityRequest {
+    cap_area: U32,
+    sub_cap_size: U32,
+    sub_cap: U32,
+}
+
+/// Wire prefix of `TPM_PERMANENT_FLAGS` (TPM 1.2 Main Part 2 §7.1).
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct PermanentFlagsWire {
+    tag: U16,
+    disable: u8,
+    ownership: u8,
+    deactivated: u8,
+    read_pubek: u8,
+    disable_owner_clear: u8,
+    allow_maintenance: u8,
+    physical_presence_lifetime_lock: u8,
+    physical_presence_hw_enable: u8,
+    physical_presence_cmd_enable: u8,
+}
+
+/// Wire prefix of `TPM_STCLEAR_FLAGS` (TPM 1.2 Main Part 2 §7.2).
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct VolatileFlagsWire {
+    tag: U16,
+    deactivated: u8,
+    disable_force_clear: u8,
+    physical_presence: u8,
+    physical_presence_lock: u8,
+}
+
 /// `TPM_Extend` of `pcr` with a SHA-1 digest.
 pub fn extend<T: Transport + ?Sized>(
     tpm: &mut T,
@@ -100,9 +144,10 @@ pub fn extend<T: Transport + ?Sized>(
 ) -> Result<(), Error> {
     run(
         tpm,
-        Command::new(TAG_RQU_COMMAND, ORD_EXTEND)
-            .u32(pcr)
-            .bytes(digest),
+        Command::new(TAG_RQU_COMMAND, ORD_EXTEND).write(&ExtendRequest {
+            pcr: U32::new(pcr),
+            digest: *digest,
+        }),
     )
 }
 
@@ -151,50 +196,50 @@ pub fn set_owner_install<T: Transport + ?Sized>(tpm: &mut T, allow: bool) -> Res
 fn flags<T: Transport + ?Sized, R>(
     tpm: &mut T,
     sub: u32,
-    tag: u16,
     parse: impl FnOnce(&mut Reader<'_>) -> Result<R, Error>,
 ) -> Result<R, Error> {
     let mut command = Command::new(TAG_RQU_COMMAND, ORD_GET_CAPABILITY);
-    command.u32(CAP_FLAG).u32(4).u32(sub);
+    command.write(&GetCapabilityRequest {
+        cap_area: U32::new(CAP_FLAG),
+        sub_cap_size: U32::new(4),
+        sub_cap: U32::new(sub),
+    });
     let mut response = [0; BUFFER_SIZE];
     let mut body = Reader::new(execute(tpm, command.finish()?, &mut response)?);
     let size = body.u32()? as usize;
     let mut data = Reader::new(body.bytes(size)?);
-    if data.u16()? != tag {
-        return Err(Error::Response);
-    }
     parse(&mut data)
 }
 
 /// `TPM_GetCapability(TPM_CAP_FLAG_PERMANENT)`.
 pub fn permanent_flags<T: Transport + ?Sized>(tpm: &mut T) -> Result<PermanentFlags, Error> {
-    flags(tpm, CAP_FLAG_PERMANENT, 0x001F, |data| {
-        let mut b = [false; 9];
-        for flag in &mut b {
-            *flag = data.u8()? != 0;
+    flags(tpm, CAP_FLAG_PERMANENT, |data| {
+        let wire = data.read::<PermanentFlagsWire>()?;
+        if wire.tag.get() != 0x001F {
+            return Err(Error::Response);
         }
         Ok(PermanentFlags {
-            disable: b[0],
-            ownership: b[1],
-            deactivated: b[2],
-            physical_presence_lifetime_lock: b[6],
-            physical_presence_hw_enable: b[7],
-            physical_presence_cmd_enable: b[8],
+            disable: wire.disable != 0,
+            ownership: wire.ownership != 0,
+            deactivated: wire.deactivated != 0,
+            physical_presence_lifetime_lock: wire.physical_presence_lifetime_lock != 0,
+            physical_presence_hw_enable: wire.physical_presence_hw_enable != 0,
+            physical_presence_cmd_enable: wire.physical_presence_cmd_enable != 0,
         })
     })
 }
 
 /// `TPM_GetCapability(TPM_CAP_FLAG_VOLATILE)`.
 pub fn volatile_flags<T: Transport + ?Sized>(tpm: &mut T) -> Result<VolatileFlags, Error> {
-    flags(tpm, CAP_FLAG_VOLATILE, 0x0020, |data| {
-        let mut b = [false; 4];
-        for flag in &mut b {
-            *flag = data.u8()? != 0;
+    flags(tpm, CAP_FLAG_VOLATILE, |data| {
+        let wire = data.read::<VolatileFlagsWire>()?;
+        if wire.tag.get() != 0x0020 {
+            return Err(Error::Response);
         }
         Ok(VolatileFlags {
-            deactivated: b[0],
-            physical_presence: b[2],
-            physical_presence_lock: b[3],
+            deactivated: wire.deactivated != 0,
+            physical_presence: wire.physical_presence != 0,
+            physical_presence_lock: wire.physical_presence_lock != 0,
         })
     })
 }

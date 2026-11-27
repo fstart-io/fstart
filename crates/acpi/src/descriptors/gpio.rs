@@ -14,6 +14,9 @@
 //! [`Aml`]: acpi_tables::Aml
 
 use acpi_tables::{Aml, AmlSink};
+use tock_registers::register_bitfields;
+use zerocopy::little_endian::U16;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// GPIO Connection Descriptor tag byte.
 const GPIO_DESCRIPTOR_TAG: u8 = 0x8C;
@@ -23,7 +26,46 @@ const GPIO_REVISION_ID: u8 = 0x01;
 
 /// Byte offset of the Pin Table from the descriptor start: the 23-byte
 /// header (ACPI 6.5 Table 6.255).
-const GPIO_PIN_TABLE_OFFSET: u16 = 23;
+const GPIO_PIN_TABLE_OFFSET: u16 = core::mem::size_of::<GpioDescriptorHeader>() as u16;
+
+register_bitfields![u16,
+    /// GPIO Connection Descriptor General Flags (offset 0x05, 16 bits).
+    GeneralFlags [
+        CONSUMER OFFSET(0) NUMBITS(1) []
+    ],
+    /// GPIO Interrupt Connection Flags (offset 0x07, 16 bits).
+    IntFlags [
+        MODE OFFSET(0) NUMBITS(1) [],
+        POLARITY OFFSET(1) NUMBITS(2) [],
+        SHARED OFFSET(3) NUMBITS(1) []
+    ],
+    /// GPIO I/O Connection Flags (offset 0x07, 16 bits).
+    IoFlags [
+        IO_RESTRICTION OFFSET(0) NUMBITS(2) []
+    ]
+];
+
+/// Fixed 23-byte header of an ACPI 6.5 GPIO Connection Descriptor (Type 0x8C).
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct GpioDescriptorHeader {
+    tag: u8,
+    data_length: U16,
+    revision_id: u8,
+    connection_type: u8,
+    general_flags: U16,
+    type_flags: U16,
+    pin_config: u8,
+    drive_strength: U16,
+    debounce: U16,
+    pin_table_offset: U16,
+    resource_source_index: u8,
+    resource_source_offset: U16,
+    vendor_data_offset: U16,
+    vendor_data_length: U16,
+}
+
+const _: () = assert!(core::mem::size_of::<GpioDescriptorHeader>() == 23);
 
 /// GPIO interrupt trigger mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,42 +164,41 @@ impl Aml for GpioInt<'_> {
         // Length = total descriptor size - 3 (tag + 2-byte length)
         let data_length = vendor_data_offset - 3;
 
-        // General Flags: bit 0 = consumer/producer
-        let general_flags: u16 = if self.consumer { 1 } else { 0 };
+        let general_flags = if self.consumer {
+            GeneralFlags::CONSUMER::SET.value
+        } else {
+            0
+        };
+        let int_flags = (IntFlags::MODE.val(self.mode as u16)
+            + IntFlags::POLARITY.val(self.polarity as u16)
+            + IntFlags::SHARED.val(u16::from(self.shared)))
+        .value;
 
-        // Interrupt and I/O flags:
-        //   Bit 0: Mode (level/edge)
-        //   Bits 1-2: Polarity
-        //   Bit 3: Sharing
-        let int_flags: u16 = (self.mode as u16)
-            | ((self.polarity as u16) << 1)
-            | (if self.shared { 1 << 3 } else { 0 });
-
-        // Header
-        sink.byte(GPIO_DESCRIPTOR_TAG);
-        sink.word(data_length);
-        sink.byte(GPIO_REVISION_ID);
-        sink.byte(0x00); // Connection Type: Interrupt
-        sink.word(general_flags);
-        sink.word(int_flags);
-        sink.byte(self.pin_config as u8);
-        sink.word(0); // Output Drive Strength (N/A for interrupt)
-        sink.word(self.debounce);
-        sink.word(GPIO_PIN_TABLE_OFFSET);
-        sink.byte(0); // Resource Source Index
-        sink.word(resource_source_offset);
-        sink.word(vendor_data_offset);
-        sink.word(0); // Vendor Data Length
+        let header = GpioDescriptorHeader {
+            tag: GPIO_DESCRIPTOR_TAG,
+            data_length: U16::new(data_length),
+            revision_id: GPIO_REVISION_ID,
+            connection_type: 0x00, // Interrupt
+            general_flags: U16::new(general_flags),
+            type_flags: U16::new(int_flags),
+            pin_config: self.pin_config as u8,
+            drive_strength: U16::ZERO, // N/A for interrupt
+            debounce: U16::new(self.debounce),
+            pin_table_offset: U16::new(GPIO_PIN_TABLE_OFFSET),
+            resource_source_index: 0,
+            resource_source_offset: U16::new(resource_source_offset),
+            vendor_data_offset: U16::new(vendor_data_offset),
+            vendor_data_length: U16::ZERO,
+        };
+        sink.vec(header.as_bytes());
 
         // Pin Table
         for &pin in self.pins {
-            sink.word(pin);
+            sink.vec(U16::new(pin).as_bytes());
         }
 
         // Resource Source Name (null-terminated ASCII)
-        for &b in self.resource_source.as_bytes() {
-            sink.byte(b);
-        }
+        sink.vec(self.resource_source.as_bytes());
         sink.byte(0);
     }
 }
@@ -208,33 +249,38 @@ impl Aml for GpioIo<'_> {
         let vendor_data_offset = resource_source_offset + resource_source_size;
         let data_length = vendor_data_offset - 3;
 
-        let general_flags: u16 = if self.consumer { 1 } else { 0 };
+        let general_flags = if self.consumer {
+            GeneralFlags::CONSUMER::SET.value
+        } else {
+            0
+        };
+        let io_flags = IoFlags::IO_RESTRICTION
+            .val(self.io_restriction as u16)
+            .value;
 
-        // I/O flags: bits 0-1 = IO restriction
-        let io_flags: u16 = self.io_restriction as u16;
-
-        sink.byte(GPIO_DESCRIPTOR_TAG);
-        sink.word(data_length);
-        sink.byte(GPIO_REVISION_ID);
-        sink.byte(0x01); // Connection Type: I/O
-        sink.word(general_flags);
-        sink.word(io_flags);
-        sink.byte(self.pin_config as u8);
-        sink.word(self.drive_strength);
-        sink.word(self.debounce);
-        sink.word(GPIO_PIN_TABLE_OFFSET);
-        sink.byte(0); // Resource Source Index
-        sink.word(resource_source_offset);
-        sink.word(vendor_data_offset);
-        sink.word(0); // Vendor Data Length
+        let header = GpioDescriptorHeader {
+            tag: GPIO_DESCRIPTOR_TAG,
+            data_length: U16::new(data_length),
+            revision_id: GPIO_REVISION_ID,
+            connection_type: 0x01, // I/O
+            general_flags: U16::new(general_flags),
+            type_flags: U16::new(io_flags),
+            pin_config: self.pin_config as u8,
+            drive_strength: U16::new(self.drive_strength),
+            debounce: U16::new(self.debounce),
+            pin_table_offset: U16::new(GPIO_PIN_TABLE_OFFSET),
+            resource_source_index: 0,
+            resource_source_offset: U16::new(resource_source_offset),
+            vendor_data_offset: U16::new(vendor_data_offset),
+            vendor_data_length: U16::ZERO,
+        };
+        sink.vec(header.as_bytes());
 
         for &pin in self.pins {
-            sink.word(pin);
+            sink.vec(U16::new(pin).as_bytes());
         }
 
-        for &b in self.resource_source.as_bytes() {
-            sink.byte(b);
-        }
+        sink.vec(self.resource_source.as_bytes());
         sink.byte(0);
     }
 }

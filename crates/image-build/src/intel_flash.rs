@@ -4,7 +4,17 @@ use crate::bundle::sha256;
 use fstart_core::{IntelIfdFlashLayout, IntelIfdRegion as Kind, memory::IfdVersion};
 use serde::Serialize;
 use std::ops::Range;
-use zerocopy::{FromBytes, little_endian::U32};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, little_endian::U32};
+
+/// Intel Flash Descriptor signature + FLMAP0..FLMAP2 prefix (16 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, Immutable, KnownLayout, Unaligned)]
+struct IfdMapPrefix {
+    signature: U32,
+    flmap0: U32,
+    flmap1: U32,
+    flmap2: U32,
+}
 
 #[derive(Serialize)]
 pub(crate) struct ImportedRegion {
@@ -41,23 +51,31 @@ pub(crate) fn validate(layout: &IntelIfdFlashLayout, rom: &[u8]) -> Result<Range
         Ok(value.get())
     };
     const SIGNATURE: u32 = 0x0ff0_a55a;
-    let header = match (word(0)? == SIGNATURE, word(16)? == SIGNATURE) {
-        (true, false) => 0,
-        (false, true) => 16,
+    let map_at = |offset: usize| {
+        IfdMapPrefix::ref_from_prefix(fd.get(offset..)?)
+            .ok()
+            .map(|(m, _)| m)
+    };
+    let (header, ifd_map) = match (
+        map_at(0).filter(|m| m.signature.get() == SIGNATURE),
+        map_at(16).filter(|m| m.signature.get() == SIGNATURE),
+    ) {
+        (Some(m), None) => (0, m),
+        (None, Some(m)) => (16, m),
         _ => {
             return Err(
                 "expected one Intel descriptor signature at 0 or 0x10 in a raw flash image".into(),
             );
         }
     };
-    let map = word(header + 4)?;
+    let map = ifd_map.flmap0.get();
     let nc = (map >> 8) & 3;
     if nc > 1 {
         return Err("unsupported IFD component count".into());
     }
     let fcba = ((map & 0xff) << 4) as usize;
     let frba = (((map >> 16) & 0xff) << 4) as usize;
-    let map1 = word(header + 8)?;
+    let map1 = ifd_map.flmap1.get();
     let fmba = ((map1 & 0xff) << 4) as usize;
     let straps = (((map1 >> 16) & 0xff) << 4) as usize;
     // The component, master, region and strap sections need not be in

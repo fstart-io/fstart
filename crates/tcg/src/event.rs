@@ -4,6 +4,28 @@
 
 pub use fstart_core::services::measure::kind::*;
 pub use fstart_core::services::measure::post_code;
+use zerocopy::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+/// `UEFI_PLATFORM_FIRMWARE_BLOB` base and length (16 bytes).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct FirmwareBlobRange {
+    pub base: U64,
+    pub length: U64,
+}
+
+/// `TCG_PCClientTaggedEvent` prefix: tag and data size (8 bytes).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct TaggedEventPrefix {
+    pub tag: U32,
+    pub data_size: U32,
+}
 
 /// Largest event data this crate builds on the stack.
 pub const MAX_EVENT_DATA: usize = 256;
@@ -37,30 +59,42 @@ impl EventData {
     /// `UEFI_PLATFORM_FIRMWARE_BLOB2` (PFP §10.2.5): a sized description,
     /// then base and length.
     pub fn blob2(description: &str, base: u64, length: u64) -> Self {
-        let description = &description.as_bytes()[..description.len().min(MAX_EVENT_DATA - 17)];
+        let range = FirmwareBlobRange {
+            base: U64::new(base),
+            length: U64::new(length),
+        };
+        let description = &description.as_bytes()[..description
+            .len()
+            .min(MAX_EVENT_DATA - 1 - core::mem::size_of::<FirmwareBlobRange>())];
         let mut data = Self::new();
         data.push(&[description.len() as u8])
             .push(description)
-            .push(&base.to_le_bytes())
-            .push(&length.to_le_bytes());
+            .push(range.as_bytes());
         data
     }
 
     /// `UEFI_PLATFORM_FIRMWARE_BLOB` (TCG EFI Platform 1.22): base and length.
     pub fn blob(base: u64, length: u64) -> Self {
+        let range = FirmwareBlobRange {
+            base: U64::new(base),
+            length: U64::new(length),
+        };
         let mut data = Self::new();
-        data.push(&base.to_le_bytes()).push(&length.to_le_bytes());
+        data.push(range.as_bytes());
         data
     }
 
     /// `TCG_PCClientTaggedEvent`: tag, data size, data.
     pub fn tagged(tag: u32, data: &[u8]) -> Self {
-        let data = &data[..data.len().min(MAX_EVENT_DATA - 8)];
+        let data = &data[..data
+            .len()
+            .min(MAX_EVENT_DATA - core::mem::size_of::<TaggedEventPrefix>())];
+        let prefix = TaggedEventPrefix {
+            tag: U32::new(tag),
+            data_size: U32::new(data.len() as u32),
+        };
         let mut event = Self::new();
-        event
-            .push(&tag.to_le_bytes())
-            .push(&(data.len() as u32).to_le_bytes())
-            .push(data);
+        event.push(prefix.as_bytes()).push(data);
         event
     }
 
@@ -68,7 +102,7 @@ impl EventData {
     pub fn ucs2(text: &str) -> Self {
         let mut data = Self::new();
         for unit in text.encode_utf16() {
-            data.push(&unit.to_le_bytes());
+            data.push(U16::new(unit).as_bytes());
         }
         data.push(&[0, 0]);
         data
