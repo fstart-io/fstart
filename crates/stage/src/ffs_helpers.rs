@@ -260,6 +260,56 @@ pub(crate) fn find_ffs_file_data_with_scratch<'a>(
     Some(bytes)
 }
 
+/// Whether the mounted FFS contains a `FileType::Data` asset named `name`.
+#[must_use]
+pub fn has_ffs_asset(name: &str) -> bool {
+    use fstart_core::services::boot_media::MemoryMapped;
+
+    let Some(ctx) = fstart_core::services::ffs_context::memory_mapped() else {
+        return false;
+    };
+    let Ok(size) = usize::try_from(ctx.image_size) else {
+        return false;
+    };
+    // SAFETY: the boot-media provider published this window for the stage.
+    let media = unsafe { MemoryMapped::from_raw_addr(ctx.image_base, size) };
+    let Ok(directory) = crate::directory::view(&media) else {
+        return false;
+    };
+    directory
+        .find_file_by_name(name)
+        .ok()
+        .and_then(|file| file.file_type().ok())
+        == Some(FileType::Data)
+}
+
+/// Authenticated media view, descriptor, and codec for a `FileType::Data`
+/// asset in the mounted FFS, for callers that also maintain an S3 cache slot.
+#[must_use]
+pub fn ffs_asset_descriptor(
+    name: &str,
+) -> Option<(
+    fstart_core::services::boot_media::MemoryMapped,
+    BootstrapDescriptor,
+    &'static dyn fstart_load::Codec,
+)> {
+    use fstart_core::services::boot_media::MemoryMapped;
+
+    let ctx = fstart_core::services::ffs_context::memory_mapped()?;
+    let size = usize::try_from(ctx.image_size).ok()?;
+    // SAFETY: the boot-media provider published this window for the stage.
+    let media = unsafe { MemoryMapped::from_raw_addr(ctx.image_base, size) };
+    let directory = crate::directory::view(&media).ok()?;
+    let file = directory.find_file_by_name(name).ok()?;
+    if file.file_type().ok()? != FileType::Data {
+        return None;
+    }
+    let mut desc = descriptor(&file)?;
+    desc.load_addr = 0;
+    let codec = crate::directory::codec()?;
+    Some((media, desc, codec))
+}
+
 /// Named driver assets are allocated once per request and retained immutably.
 /// This path ignores signed load addresses: it owns its heap destination.
 pub(crate) fn read_asset(media: &(impl BootMedia + ?Sized), name: &str) -> Option<&'static [u8]> {

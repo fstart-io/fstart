@@ -59,6 +59,7 @@
     clippy::missing_transmute_annotations,
     clippy::needless_range_loop
 )]
+#![cfg_attr(not(any(feature = "alloc", test)), allow(dead_code))]
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering, fence};
@@ -357,11 +358,6 @@ impl ApMailbox {
     }
 }
 
-// Build-time CPU storage budget selected by the board/platform plan.
-// The SIPI stack arena and mailboxes use the same generated capacity.
-include!(concat!(env!("OUT_DIR"), "/mp_capacity.rs"));
-const MAX_APS: usize = MAX_CPUS - 1;
-
 /// Architectural default SMBASE used before SMM relocation.
 pub const SMM_DEFAULT_SMBASE: u64 = 0x30000;
 /// Architectural SMM entry address for the default SMBASE.
@@ -374,20 +370,66 @@ pub const SMM_DEFAULT_ENTRY_STACK_TOP: u64 = SMM_DEFAULT_SMBASE + 0x7000;
 /// that re-runs MP/SMM init, including an S3 resume.
 pub const SMM_DEFAULT_ASEG: (u64, u64) = (SMM_DEFAULT_SMBASE, SMM_DEFAULT_SMBASE + 0x1_0000);
 
-/// Static mailbox array.  One slot per AP (index 0 = AP #1, etc.).
-/// Placed in BSS (zero-init = idle).
-static MAILBOXES: [ApMailbox; MAX_APS] = {
-    // const-init workaround: can't use array::from_fn in const
-    const MB: ApMailbox = ApMailbox::new();
-    [MB; MAX_APS]
-};
+/// Heap-allocated AP mailbox slice, published once MP init sizes it for the
+/// current platform. One slot per AP (index 0 = AP #1, etc.).
+static MAILBOX_PTR: AtomicPtr<ApMailbox> = AtomicPtr::new(core::ptr::null_mut());
+static MAILBOX_LEN: AtomicUsize = AtomicUsize::new(0);
+
+fn mailboxes() -> &'static [ApMailbox] {
+    let len = MAILBOX_LEN.load(Ordering::Acquire);
+    if len == 0 {
+        return &[];
+    }
+    let ptr = MAILBOX_PTR.load(Ordering::Acquire);
+    // SAFETY: `ensure_ap_storage` writes `MAILBOX_PTR` with a leaked slice of
+    // at least `len` initialized `ApMailbox` entries before publishing `len`.
+    unsafe { core::slice::from_raw_parts(ptr, len) }
+}
 
 const AP_STACK_SIZE: usize = 4 * 1024;
 
 #[repr(C, align(16))]
-struct ApStacks([[u8; AP_STACK_SIZE]; MAX_APS]);
+#[allow(dead_code)]
+struct ApStack([u8; AP_STACK_SIZE]);
 
-static mut AP_STACKS: ApStacks = ApStacks([[0; AP_STACK_SIZE]; MAX_APS]);
+static AP_STACKS_PTR: AtomicPtr<ApStack> = AtomicPtr::new(core::ptr::null_mut());
+static AP_STACKS_LEN: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(any(feature = "alloc", test))]
+fn ensure_ap_storage(max_aps: usize) -> Result<(), MpError> {
+    if max_aps == 0 {
+        return Ok(());
+    }
+    if MAILBOX_LEN.load(Ordering::Acquire) < max_aps {
+        let mut mbs = alloc::vec::Vec::with_capacity(max_aps);
+        for _ in 0..max_aps {
+            mbs.push(ApMailbox::new());
+        }
+        let leaked = alloc::boxed::Box::leak(mbs.into_boxed_slice());
+        MAILBOX_PTR.store(leaked.as_mut_ptr(), Ordering::Release);
+        MAILBOX_LEN.store(leaked.len(), Ordering::Release);
+    } else {
+        for mb in &mailboxes()[..max_aps] {
+            mb.func.store(MB_IDLE, Ordering::Release);
+            mb.data.store(0, Ordering::Relaxed);
+            mb.cpu_index.store(0, Ordering::Release);
+        }
+    }
+    if AP_STACKS_LEN.load(Ordering::Acquire) < max_aps {
+        let layout = alloc::alloc::Layout::array::<ApStack>(max_aps)
+            .map_err(|_| MpError::TrampolinePlacementFailed)?;
+        // SAFETY: `max_aps > 0` and `ApStack` is non-zero-sized; `alloc_zeroed`
+        // allocates 16-byte-aligned zeroed stack memory without touching the
+        // BSP stack. The allocation lives for the lifetime of the stage.
+        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) as *mut ApStack };
+        if ptr.is_null() {
+            return Err(MpError::TrampolinePlacementFailed);
+        }
+        AP_STACKS_PTR.store(ptr, Ordering::Release);
+        AP_STACKS_LEN.store(max_aps, Ordering::Release);
+    }
+    Ok(())
+}
 
 /// Atomic counter: number of APs that have checked in.
 static AP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -552,11 +594,12 @@ fn ap_mailbox_loop() {
     // (Each AP atomically claimed an index during bringup.)
     // We find our mailbox by reading the cpu_index stored in each slot.
     let my_index = current_cpu_index();
-    if my_index == 0 || my_index as usize > MAX_APS {
+    let mbs = mailboxes();
+    if my_index == 0 || my_index as usize > mbs.len() {
         // BSP or invalid — shouldn't be in the mailbox loop.
         return;
     }
-    let mb = &MAILBOXES[my_index as usize - 1]; // AP indices are 1-based
+    let mb = &mbs[my_index as usize - 1]; // AP indices are 1-based
 
     loop {
         let func_ptr = mb.func.load(Ordering::Acquire);
@@ -593,8 +636,8 @@ pub fn current_cpu_index() -> u32 {
     if Lapic::is_bsp() {
         return 0;
     }
-    for i in 0..MAX_APS {
-        if MAILBOXES[i].cpu_index.load(Ordering::Relaxed) == id as usize {
+    for (i, mb) in mailboxes().iter().enumerate() {
+        if mb.cpu_index.load(Ordering::Relaxed) == id as usize {
             return (i + 1) as u32; // 1-based AP index
         }
     }
@@ -634,10 +677,8 @@ pub extern "C" fn fstart_ap_entry(index: u32) -> ! {
 
     // Store our LAPIC ID in the mailbox so BSP can identify us.
     let ap_slot = index as usize;
-    if ap_slot < MAX_APS {
-        MAILBOXES[ap_slot]
-            .cpu_index
-            .store(lapic.id() as usize, Ordering::Release);
+    if let Some(mb) = mailboxes().get(ap_slot) {
+        mb.cpu_index.store(lapic.id() as usize, Ordering::Release);
     }
 
     // Increment the global AP counter — BSP is waiting for this.
@@ -679,9 +720,10 @@ pub fn online_cpus() -> u16 {
 /// recorded at check-in and need not be contiguous (e.g. 0, 1, 4, 5).
 /// Use these IDs, not logical ordinals, when publishing OS CPU topology.
 pub fn online_apic_ids() -> impl Iterator<Item = u32> + Clone {
-    let aps = usize::from(online_cpus()).saturating_sub(1).min(MAX_APS);
+    let mbs = mailboxes();
+    let aps = usize::from(online_cpus()).saturating_sub(1).min(mbs.len());
     core::iter::once(BSP_APIC_ID.load(Ordering::Acquire) as u32).chain(
-        MAILBOXES[..aps]
+        mbs[..aps]
             .iter()
             .map(|mailbox| mailbox.cpu_index.load(Ordering::Acquire) as u32),
     )
@@ -692,6 +734,7 @@ pub fn online_apic_ids() -> impl Iterator<Item = u32> + Clone {
 /// The trampoline resets the machine on a responder beyond `max_aps` before it
 /// can index the stack arena, and this function rejects the machine if one
 /// claimed an ordinal before the count is read.
+#[cfg(any(feature = "alloc", test))]
 fn start_aps(
     max_aps: u16,
     lapic: &Lapic,
@@ -787,12 +830,14 @@ fn complete_ap_bringup(final_count: u16, max_aps: u16) -> Result<u16, MpError> {
 
 /// Initialize all CPUs, run CPU-model initialization, and leave APs in the
 /// scoped-work mailbox loop. Chipset SMM setup is deliberately post-MP code.
+#[cfg(any(feature = "alloc", test))]
 pub fn mp_init(config: &MpConfig<'_>) -> Result<MpHandle, MpError> {
     mp_init_inner(config, None, true, None)
 }
 
 /// Run a platform step with every CPU checked in and patched, before model
 /// initialization. Select `bsp_lint0` only on systems not routing ExtINT via GSI0.
+#[cfg(any(feature = "alloc", test))]
 pub fn mp_init_with_setup(
     config: &MpConfig<'_>,
     bsp_lint0: bool,
@@ -805,6 +850,7 @@ pub fn mp_init_with_setup(
 /// INIT/SIPI (e.g. the AMD SMU releasing them from reset). The launcher gets
 /// the number of APs to release once the trampoline at
 /// [`AP_BOOTSTRAP_ADDRESS`] is ready; the platform routes them there.
+#[cfg(any(feature = "alloc", test))]
 pub fn mp_init_with_launcher(
     config: &MpConfig<'_>,
     launch: &mut dyn FnMut(u16) -> Result<(), u32>,
@@ -812,8 +858,10 @@ pub fn mp_init_with_launcher(
     mp_init_inner(config, Some(launch), true, None)
 }
 
+#[cfg(any(feature = "alloc", test))]
 type PlatformSetup<'a> = &'a mut dyn FnMut(&MpHandle) -> Result<(), MpError>;
 
+#[cfg(any(feature = "alloc", test))]
 fn mp_init_inner(
     config: &MpConfig<'_>,
     launch: Option<&mut dyn FnMut(u16) -> Result<(), u32>>,
@@ -823,6 +871,7 @@ fn mp_init_inner(
     validate_cpu_capacity(config.max_cpus)?;
     let num_cpus = checked_logical_cpu_count(config.num_cpus, config.max_cpus)?;
     let max_aps = num_cpus.saturating_sub(1);
+    ensure_ap_storage(usize::from(max_aps))?;
 
     fstart_log::info!(
         "mp: initializing {} CPUs (max_cpus bound {})",
@@ -882,6 +931,7 @@ fn mp_init_inner(
     Ok(handle)
 }
 
+#[cfg(any(feature = "alloc", test))]
 fn finish_model_setup(
     handle: &MpHandle,
     config: &MpConfig<'_>,
@@ -907,6 +957,7 @@ fn finish_model_setup(
 }
 
 /// Start the APs and walk the CPU-only flight plan on the BSP side.
+#[cfg(any(feature = "alloc", test))]
 fn fly(
     _config: &MpConfig<'_>,
     max_aps: u16,
@@ -1054,19 +1105,22 @@ unsafe fn verify_sipi_page(base: *const u8, expected: &[u8]) -> Result<(), MpErr
     Ok(())
 }
 
+#[cfg(any(feature = "alloc", test))]
 fn install_sipi_trampoline(
     max_aps: u16,
     _lapic: &Lapic,
     msrs: &[crate::x86::mtrr::MsrEntry],
     unlock: Option<SipiUnlock>,
 ) -> Result<(), MpError> {
-    if max_aps as usize > MAX_APS || sipi_blob::TRAMPOLINE.len() > 4096 {
+    let stacks_len = AP_STACKS_LEN.load(Ordering::Acquire);
+    let stack_ptr = AP_STACKS_PTR.load(Ordering::Acquire);
+    if max_aps as usize > stacks_len || stack_ptr.is_null() || sipi_blob::TRAMPOLINE.len() > 4096 {
         return Err(MpError::TrampolinePlacementFailed);
     }
     let dst = SIPI_VECTOR_ADDR as *mut u8;
-    // SAFETY: we only expose the raw stack arena address to AP startup code;
+    // We only expose the raw stack arena address to AP startup code;
     // Rust never creates references to individual AP stacks while they run.
-    let stack_base = unsafe { core::ptr::addr_of_mut!(AP_STACKS.0) as u64 };
+    let stack_base = stack_ptr as u64;
     // Patch an owned staging page first: an ineffective physical copy must
     // not become both the write target and its own expected readback data.
     let mut expected = [0u8; 4096];
@@ -1200,17 +1254,18 @@ impl MpHandle {
     /// After this call, APs will not respond to mailbox dispatch.
     /// Call this before jumping to the payload/OS.
     pub fn park_aps(&self) {
+        let mbs = mailboxes();
+        let num_aps = (self.num_aps as usize).min(mbs.len());
         // Dispatch HLT to every AP.
-        for i in 0..self.num_aps as usize {
-            let mb = &MAILBOXES[i];
+        for mb in &mbs[..num_aps] {
             mb.data.store(0, Ordering::Relaxed);
             mb.func
                 .store(park_cpu as *const () as usize, Ordering::Release);
         }
-        if wait_for_aps_parked(self.num_aps as usize) {
-            fstart_log::info!("mp: {} APs parked", self.num_aps);
+        if wait_for_aps_parked(num_aps) {
+            fstart_log::info!("mp: {} APs parked", num_aps as u32);
         } else {
-            fstart_log::error!("mp: timed out parking {} APs", self.num_aps);
+            fstart_log::error!("mp: timed out parking {} APs", num_aps as u32);
         }
     }
 }
@@ -1223,13 +1278,13 @@ impl MpHandle {
 /// final payload jump.
 #[must_use]
 pub fn park_aps_for_payload() -> bool {
-    let num_aps = AP_COUNT.load(Ordering::Acquire).min(MAX_APS);
+    let mbs = mailboxes();
+    let num_aps = AP_COUNT.load(Ordering::Acquire).min(mbs.len());
     if num_aps == 0 {
         return true;
     }
 
-    for i in 0..num_aps {
-        let mb = &MAILBOXES[i];
+    for mb in &mbs[..num_aps] {
         mb.data.store(0, Ordering::Relaxed);
         mb.func
             .store(park_cpu as *const () as usize, Ordering::Release);
@@ -1262,7 +1317,7 @@ fn park_cpu(_data: *const (), cpu: u32) {
     // Wait-for-SIPI and never return to the mailbox loop.
     if let Some(mb) = cpu
         .checked_sub(1)
-        .and_then(|index| MAILBOXES.get(index as usize))
+        .and_then(|index| mailboxes().get(index as usize))
     {
         mb.func.store(MB_IDLE, Ordering::Release);
     }
@@ -1280,9 +1335,11 @@ fn park_cpu(_data: *const (), cpu: u32) {
 
 fn wait_for_aps_parked(num_aps: usize) -> bool {
     const TIMEOUT_US: usize = 100_000;
+    let mbs = mailboxes();
+    let count = num_aps.min(mbs.len());
 
     for _ in 0..TIMEOUT_US {
-        if MAILBOXES[..num_aps]
+        if mbs[..count]
             .iter()
             .all(|mb| mb.func.load(Ordering::Acquire) == MB_IDLE)
         {
@@ -1385,7 +1442,7 @@ impl<'scope, 'env> Scope<'scope, 'env> {
         if ap == 0 || ap > self.handle.num_aps {
             return;
         }
-        let mb = &MAILBOXES[ap as usize - 1];
+        let mb = &mailboxes()[ap as usize - 1];
         mb.data.store(f as *const F as usize, Ordering::Relaxed);
         fence(Ordering::Release);
         mb.func.store(
@@ -1406,13 +1463,12 @@ impl<'scope, 'env> Scope<'scope, 'env> {
     }
 
     fn start_all(&self, trampoline: fn(*const (), u32), data: usize) {
-        for i in 0..self.handle.num_aps as usize {
-            let mb = &MAILBOXES[i];
+        let mbs = mailboxes();
+        for mb in &mbs[..self.handle.num_aps as usize] {
             mb.data.store(data, Ordering::Relaxed);
         }
         fence(Ordering::Release);
-        for i in 0..self.handle.num_aps as usize {
-            let mb = &MAILBOXES[i];
+        for mb in &mbs[..self.handle.num_aps as usize] {
             mb.func
                 .store(trampoline as *const () as usize, Ordering::Release);
         }
@@ -1420,8 +1476,9 @@ impl<'scope, 'env> Scope<'scope, 'env> {
 
     /// Wait for all APs to return to idle.
     fn wait_all(&self) {
-        for i in 0..self.handle.num_aps as usize {
-            while MAILBOXES[i].func.load(Ordering::Acquire) != MB_IDLE {
+        let mbs = mailboxes();
+        for mb in &mbs[..self.handle.num_aps as usize] {
+            while mb.func.load(Ordering::Acquire) != MB_IDLE {
                 core::hint::spin_loop();
             }
         }
@@ -1452,19 +1509,16 @@ fn trampoline_indexed<F: Fn(u32)>(data: *const (), cpu: u32) {
 // Delay helper
 // ---------------------------------------------------------------------------
 
+#[cfg(any(feature = "alloc", test))]
 fn validate_cpu_capacity(max_cpus: u16) -> Result<(), MpError> {
     if max_cpus == 0 {
         Err(MpError::NoCpus)
-    } else if usize::from(max_cpus) > MAX_CPUS {
-        Err(MpError::TooManyCpus {
-            requested: max_cpus,
-            supported: MAX_CPUS as u16,
-        })
     } else {
         Ok(())
     }
 }
 
+#[cfg(any(feature = "alloc", test))]
 fn checked_logical_cpu_count(count: u16, max_cpus: u16) -> Result<u16, MpError> {
     if count == 0 {
         Err(MpError::NoCpus)
@@ -1488,19 +1542,18 @@ mod tests {
 
     #[test]
     fn os_topology_uses_sparse_hardware_ids_not_cpu_ordinals() {
-        if MAX_APS < 3 {
-            return;
-        }
+        ensure_ap_storage(3).unwrap();
+        let mbs = mailboxes();
         let old_bsp = BSP_APIC_ID.swap(0, Ordering::AcqRel);
         let mut old_ids = [0; 3];
-        for ((mailbox, old), id) in MAILBOXES.iter().zip(old_ids.iter_mut()).zip([1, 4, 5]) {
+        for ((mailbox, old), id) in mbs.iter().zip(old_ids.iter_mut()).zip([1, 4, 5]) {
             *old = mailbox.cpu_index.swap(id, Ordering::AcqRel);
         }
         let old_count = ONLINE_CPUS.swap(4, Ordering::AcqRel);
         let ids: heapless::Vec<u32, 4> = online_apic_ids().collect();
         ONLINE_CPUS.store(old_count, Ordering::Release);
         BSP_APIC_ID.store(old_bsp, Ordering::Release);
-        for (mailbox, id) in MAILBOXES.iter().zip(old_ids) {
+        for (mailbox, id) in mbs.iter().zip(old_ids) {
             mailbox.cpu_index.store(id, Ordering::Release);
         }
         assert_eq!(ids.as_slice(), &[0, 1, 4, 5]);
@@ -1559,16 +1612,8 @@ mod tests {
 
     #[test]
     fn total_cpu_capacity_includes_the_bsp() {
-        assert!(validate_cpu_capacity(MAX_CPUS as u16).is_ok());
-        if let Some(over_capacity) = (MAX_CPUS as u16).checked_add(1) {
-            assert!(matches!(
-                validate_cpu_capacity(over_capacity),
-                Err(MpError::TooManyCpus { requested, supported })
-                    if requested == over_capacity && supported == MAX_CPUS as u16
-            ));
-        }
-        assert_eq!(MAX_APS + 1, MAX_CPUS);
-
+        assert!(validate_cpu_capacity(1).is_ok());
+        assert!(validate_cpu_capacity(256).is_ok());
         assert!(matches!(validate_cpu_capacity(0), Err(MpError::NoCpus)));
         assert!(matches!(
             checked_logical_cpu_count(0, 4),

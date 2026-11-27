@@ -73,6 +73,9 @@ pub struct Manifest {
     pub plan: BuildPlan,
     /// The plan's stage binaries, at their paths in the bundle.
     pub stages: Vec<StageBinary>,
+    /// Standalone `FSMM` images keyed by unit name, at their paths in the bundle.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub smm_images: BTreeMap<String, PathBuf>,
     /// Kernel/runtime firmware inputs intentionally not redistributed here.
     pub inputs: Vec<InputFile>,
     pub packed_donor: Option<PackedDonor>,
@@ -317,6 +320,7 @@ impl Bundle {
                 board_dir: &manifest.board_dir,
                 board_name: &manifest.board,
                 stages: &manifest.stages,
+                smm_images: &manifest.smm_images,
                 output_dir,
                 inputs: &bound,
                 payload_files: &payload_files,

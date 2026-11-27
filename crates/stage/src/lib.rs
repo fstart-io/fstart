@@ -67,9 +67,11 @@ mod ram_locator_tests;
 #[cfg(feature = "ffs")]
 mod ffs_helpers;
 #[cfg(feature = "ffs")]
-pub(crate) use ffs_helpers::{load_ffs_file_by_name, load_file_segments_from_media};
+pub use ffs_helpers::{
+    ffs_asset_descriptor, has_ffs_asset, load_ffs_file_measured, microcode_blob,
+};
 #[cfg(feature = "ffs")]
-pub use ffs_helpers::{load_ffs_file_measured, microcode_blob};
+pub(crate) use ffs_helpers::{load_ffs_file_by_name, load_file_segments_from_media};
 
 pub mod anchor;
 pub use anchor::{fstart_trust_bytes, locator_bytes};

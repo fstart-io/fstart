@@ -91,6 +91,26 @@ fn store_then_load_round_trip() {
     let entry = load(&slot, CachedStage::Mainstage, &descriptor, &mut output);
     assert_eq!(entry, Some(output.as_ptr() as u64));
     assert_eq!(&output, BODY);
+
+    // `CachedStage::Smm` round-trips through `load_into_slot` into an owned buffer.
+    let mut smm_slot = [0u8; 64];
+    store(
+        &mut smm_slot,
+        CachedStage::Smm,
+        &SliceMedia(BODY),
+        &descriptor,
+    )
+    .unwrap();
+    let mut smm_out = [0u8; 5];
+    let loaded = load_into_slot(
+        &SliceMedia(&smm_slot),
+        CachedStage::Smm,
+        &descriptor,
+        &mut smm_out,
+        &fstart_load::Lz4,
+    );
+    assert_eq!(loaded, Some(BODY.len()));
+    assert_eq!(&smm_out, BODY);
 }
 
 #[test]

@@ -22,6 +22,8 @@ pub struct ImageContext<'a> {
     pub board_dir: &'a Path,
     pub board_name: &'a str,
     pub stages: &'a [StageBinary],
+    /// Standalone `FSMM` handler images keyed by compilation unit name.
+    pub smm_images: &'a BTreeMap<String, PathBuf>,
     pub output_dir: &'a Path,
     /// External files bound by name (`--input NAME=PATH`), as declared by
     /// the plan's `inputs`.
@@ -126,6 +128,21 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
             .transpose()?;
         let artifact = match &step.operation {
             ImageOperation::Ffs(image) => {
+                let smm_bytes = match &image.smm {
+                    Some(smm) => {
+                        let path = ctx.smm_images.get(&smm.unit).ok_or_else(|| {
+                            format!("SMM unit '{}' produced no image artifact", smm.unit)
+                        })?;
+                        let bytes = ctx.files.read(path).map_err(|e| {
+                            format!("failed to read SMM image {}: {e}", path.display())
+                        })?;
+                        if let Some(check) = smm.amd_tseg_check {
+                            validate_amd_smm_tseg(&bytes, check.tseg_size, check.max_cpus)?;
+                        }
+                        Some(bytes)
+                    }
+                    None => None,
+                };
                 let config = image.config(ctx.board_name)?;
                 crate::assemble::assemble(
                     ctx.files,
@@ -142,6 +159,7 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
                     Some(&image.bootstrap),
                     image.boot_image_format,
                     ctx.signing_key,
+                    smm_bytes.as_deref(),
                 )?
             }
             ImageOperation::AmdEfs(operation) => amd_efs(
@@ -175,6 +193,56 @@ pub fn execute(plan: &BuildPlan, ctx: &ImageContext<'_>) -> Result<ImageOutputs,
 fn ffs_artifact(ffs: Option<&Path>, format: &str) -> Result<PathBuf, String> {
     ffs.map(Path::to_path_buf)
         .ok_or_else(|| format!("{format} step names no FFS step"))
+}
+
+/// Lay out an AMD `FSMM` image as the runtime installer will for `max_cpus`
+/// threads in `tseg_size` bytes so an oversized image fails at assembly time.
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_amd_smm_tseg(image: &[u8], tseg_size: u64, max_cpus: u16) -> Result<(), String> {
+    use fstart_smm::{CpuSmmLayout, SMM_IDENTITY_TABLE_SIZE, SmmImageHeader, SmramLayout};
+
+    const AMD_SAVE_STATE_SIZE: u32 = 0x400;
+    let header = SmmImageHeader::parse(image).map_err(|e| format!("SMM image: {e:?}"))?;
+    if header.entry_count < max_cpus {
+        return Err(format!(
+            "SMM image has {} entry stubs for {max_cpus} CPUs",
+            header.entry_count
+        ));
+    }
+    let stub = (0..max_cpus)
+        .map(|i| header.entry(image, i).map(|e| e.stub_size))
+        .try_fold(0, |max, size| size.map(|s| max.max(s)))
+        .map_err(|e| format!("SMM image: {e:?}"))?;
+    let layout = SmramLayout {
+        smram_base: 1 << 31,
+        smram_size: tseg_size,
+        entry_count: max_cpus,
+        save_state_size: AMD_SAVE_STATE_SIZE,
+        stack_size: header.stack_size,
+        entry_stub_size: stub,
+        handler_mem_size: header.handler_mem_size,
+        page_table_size: SMM_IDENTITY_TABLE_SIZE,
+    };
+    let zero = CpuSmmLayout {
+        smbase: 0,
+        entry_addr: 0,
+        save_state_base: 0,
+        save_state_top: 0,
+        stack_bottom: 0,
+        stack_top: 0,
+    };
+    let mut cpus = vec![zero; usize::from(max_cpus)];
+    fstart_smm::compute_cpu_layout(&layout, &mut cpus).map_err(|e| {
+        format!("SMM image does not fit {tseg_size:#x}-byte TSEG for {max_cpus} CPUs: {e:?}")
+    })?;
+    Ok(())
+}
+
+/// Browser (wasm32) bundle composition receives a pre-validated SMM binary
+/// from the host build and does not link `fstart-smm`.
+#[cfg(target_arch = "wasm32")]
+fn validate_amd_smm_tseg(_image: &[u8], _tseg_size: u64, _max_cpus: u16) -> Result<(), String> {
+    Ok(())
 }
 
 /// Compose the consumed FFS artefact and the linked stage into an x86

@@ -31,6 +31,7 @@ pub fn assemble(
     bootstrap: Option<&[(String, crate::build_plan::BootstrapRole)]>,
     boot_format: crate::build_plan::BootImageFormat,
     signing_key: Option<&Path>,
+    smm_image: Option<&[u8]>,
 ) -> Result<PathBuf, String> {
     let (signing_key, verification_key) = load_signing_key(files, signing_key, config)?;
 
@@ -152,6 +153,12 @@ pub fn assemble(
             .read_named(workspace_root, path)
             .map_err(|e| format!("failed to read data asset {}: {e}", path.display()))?;
         data_file(asset.name.as_str().to_string(), data);
+    }
+    if let Some(bytes) = smm_image {
+        data_file(
+            fstart_core::ffs::SMM_IMAGE_ASSET.to_string(),
+            bytes.to_vec(),
+        );
     }
 
     let coreboot = config

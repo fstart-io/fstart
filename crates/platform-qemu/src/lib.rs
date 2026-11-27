@@ -215,13 +215,12 @@ mod stage {
     use crate::q35::Q35HostBridge;
     use crate::{QEMU_Q35_ACPI_BUFFER_SIZE, QEMU_Q35_PLATFORM_NODE, QemuQ35Config};
 
-    /// Native SMM handler image built by fbuild, embedded when the stage was
-    /// built with `FSTART_SMM_IMAGE` set. `None` without an SMM image; MP
-    /// setup then skips SMM relocation and SMRAM stays unlocked.
-    #[cfg(fstart_qemu_has_smm_image)]
-    pub const SMM_IMAGE: Option<&'static [u8]> = Some(include_bytes!(env!("FSTART_SMM_IMAGE")));
-    #[cfg(not(fstart_qemu_has_smm_image))]
-    pub const SMM_IMAGE: Option<&'static [u8]> = None;
+    /// The board's verified `FSMM` handler image (`smm.bin`) from FFS, when
+    /// present. `None` without an SMM image; MP setup then skips SMM
+    /// relocation and SMRAM stays unlocked.
+    fn smm_image() -> Option<&'static [u8]> {
+        fstart_core::services::ffs_context::read_verified_asset(fstart_core::ffs::SMM_IMAGE_ASSET)
+    }
 
     // The table loader's ALLOCATE alignments (64 for the tables blob, 16 for
     // the RSDP) are applied to offsets in this buffer, so the buffer itself
@@ -391,7 +390,8 @@ mod stage {
         fn init_mp_smm(&self) -> Result<(), ServiceError> {
             let cpu = fstart_arch::x86::mp::GenericX86CpuDriver;
             let drivers: [&dyn fstart_arch::x86::mp::CpuDriver; 1] = [&cpu];
-            if SMM_IMAGE.is_some() {
+            let smm_image = smm_image();
+            if smm_image.is_some() {
                 // Locking SMM hides TSEG from non-SMM access. Firmware
                 // statics live below the plan-time reservation by
                 // construction; halt loudly instead of corrupting the
@@ -414,10 +414,10 @@ mod stage {
                     return Err(ServiceError::InvalidParam);
                 }
             }
-            // Only an embedded SMM image constrains MP bring-up by its entry
+            // Only an SMM image constrains MP bring-up by its entry
             // count. Do not impose an SMM-specific limit on non-SMM builds.
             let num_cpus = self.fw_cfg.cpu_count();
-            let max_cpus = if let Some(image) = SMM_IMAGE {
+            let max_cpus = if let Some(image) = smm_image {
                 let header = fstart_smm::header::SmmImageHeader::parse(image)
                     .map_err(|_| ServiceError::InvalidParam)?;
                 header.entry_count
@@ -431,7 +431,7 @@ mod stage {
                 max_cpus,
             })
             .map_err(|_| ServiceError::HardwareError)?;
-            if let Some(image) = SMM_IMAGE {
+            if let Some(image) = smm_image {
                 #[cfg(feature = "tpm")]
                 fstart_tcg::measure_blob(
                     0,

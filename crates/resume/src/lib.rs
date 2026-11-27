@@ -119,6 +119,95 @@ pub unsafe fn load_stage(
     Ok(verified)
 }
 
+/// Scratch buffer size (in bytes) required by [`load_blob`] for `descriptor`.
+pub fn blob_footprint(descriptor: &BootstrapDescriptor) -> Result<usize, Error> {
+    let footprint = fstart_load::bootstrap_footprint(descriptor).map_err(Error::Load)?;
+    usize::try_from(footprint).map_err(|_| Error::Load(fstart_load::LoadError::Bounds))
+}
+
+/// Load a verified data blob (such as `smm.bin`) into `output` and keep its
+/// S3 cache entry coherent.
+///
+/// Cold boot: verify the blob from `media` into `output`, then copy its
+/// verified stored bytes into a store entry; returns `(loaded_len, cached)`.
+/// Resume: load and re-authenticate the blob from that store entry without
+/// reading flash; returns `Err(Error::NotCached)` if missing or corrupt.
+#[allow(clippy::too_many_arguments)] // the loader's, plus the store and the path
+pub fn load_blob(
+    media: &(impl BootMedia + ?Sized),
+    stage: CachedStage,
+    descriptor: &BootstrapDescriptor,
+    output: &mut [u8],
+    store: &mut Store,
+    resume: bool,
+    codec: &dyn Codec,
+    measurement: &Measurement<'_>,
+) -> Result<(usize, bool), Error> {
+    if resume {
+        let loaded = store.find(stage.tag()).and_then(|entry| {
+            stage_cache::load_into_slot(
+                &entry_media(store, &entry),
+                stage,
+                descriptor,
+                output,
+                codec,
+            )
+        });
+        return match loaded {
+            Some(len) => {
+                fstart_log::info!("stage cache: {} loaded from store", stage.name());
+                Ok((len, true))
+            }
+            None => {
+                fstart_log::error!("stage cache: no valid {} entry on resume", stage.name());
+                Err(Error::NotCached)
+            }
+        };
+    }
+
+    let mut local = *descriptor;
+    local.load_addr = 0;
+    fstart_load::load_bootstrap_into(media, &local, output, codec, measurement)
+        .map_err(Error::Load)?;
+    let loaded = usize::try_from(descriptor.loaded_size)
+        .map_err(|_| Error::Load(fstart_load::LoadError::Bounds))?;
+    let stored = usize::try_from(descriptor.stored_size)
+        .map_err(|_| Error::Load(fstart_load::LoadError::Bounds))?;
+    // For uncompressed blobs `output[..stored]` already holds the exact
+    // verified stored bytes in RAM, avoiding a second flash read.
+    let cached = store
+        .add(stage.tag(), STAGE_CACHE_HEADER_LEN + stored, 3)
+        .ok()
+        .and_then(|entry| {
+            // SAFETY: a fresh entry nothing else references.
+            let slot = unsafe { store.bytes_mut(&entry) };
+            if descriptor.compression == fstart_core::ffs::Compression::None
+                && stored <= output.len()
+            {
+                // SAFETY: `output[..stored]` is live verified RAM for this call.
+                let in_ram = unsafe { MemoryMapped::from_raw_addr(output.as_ptr() as u64, stored) };
+                let in_ram_desc = BootstrapDescriptor {
+                    offset: 0,
+                    ..*descriptor
+                };
+                stage_cache::store(slot, stage, &in_ram, &in_ram_desc).ok()
+            } else {
+                stage_cache::store(slot, stage, media, descriptor).ok()
+            }
+        })
+        .is_some();
+    if cached {
+        fstart_log::info!("stage cache: {} stored", stage.name());
+    } else {
+        fstart_log::error!(
+            "stage cache: cannot store {} bytes of {}; S3 withheld",
+            stored as u32,
+            stage.name()
+        );
+    }
+    Ok((loaded, cached))
+}
+
 /// Whether the store holds a complete cold-boot copy of every one of
 /// `stages`: what gates S3 advertisement. A resume still authenticates the
 /// whole cached body.

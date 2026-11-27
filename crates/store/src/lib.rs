@@ -119,6 +119,8 @@ pub mod tag {
     pub const ACPI_BARS: Tag = Tag::vendor(0x00a);
     /// Cold TPM identity and IRQ routing for S3 resume consistency checks.
     pub const TPM_STATE: Tag = Tag::vendor(0x00b);
+    /// S3 copy of the stored SMM handler image (`smm.bin`).
+    pub const STAGE_CACHE_SMM: Tag = Tag::vendor(0x00c);
 }
 
 /// Location of one entry's data within its store.

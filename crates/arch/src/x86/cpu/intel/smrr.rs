@@ -78,6 +78,7 @@ impl SmrrPair {
 
     /// Whether the current CPU advertises SMRR hardware support. A model
     /// may include older revisions that do not implement its SMRR pair.
+    #[cfg_attr(not(any(feature = "alloc", test)), allow(dead_code))]
     pub(super) fn supported_on_current_cpu(self) -> bool {
         mtrr_cap_has_smrr()
     }
@@ -85,6 +86,7 @@ impl SmrrPair {
     /// Whether the current CPU can program this pair: `IA32_MTRR_CAP`
     /// advertises SMRR and, for the Core 2 pair, `IA32_FEATURE_CONTROL` is
     /// locked with SMRR enabled. Mirrors coreboot's gen1 `smmrelocate.c`.
+    #[cfg_attr(not(any(feature = "alloc", test)), allow(dead_code))]
     pub(super) fn usable_on_current_cpu(self) -> bool {
         if !self.supported_on_current_cpu() {
             return false;

@@ -28,15 +28,16 @@ fn main() -> ! {
     let mut rs = rs.memory_map().scan_bus(&[]).init_chipset();
     let resume = rs.is_resume();
     let tpm = rs.init_tis_tpm();
+    let has_smm = fstart_platform_intel::has_smm_image();
     // Transfer EC event ownership before enabling SMIs; the BSP and SMM
     // must not issue overlapping ACPI queries or host commands.
-    let routing = slippy::init_ec(resume).filter(|_| fstart_platform_intel::SMM_IMAGE.is_some());
+    let routing = slippy::init_ec(resume).filter(|_| has_smm);
     if routing.is_none() {
         rs.southbridge_mut().set_s3_enabled(false);
     }
     let serial_io = rs.southbridge().serial_io_populated();
     let rs = rs.start_cpus();
-    if fstart_platform_intel::SMM_IMAGE.is_some() {
+    if has_smm {
         slippy::handoff_ec(routing);
     }
     let rs = rs.verify_boot_media().init_display();

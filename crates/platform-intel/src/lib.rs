@@ -156,15 +156,12 @@ pub use fstart_driver_intel::{
     BootPath, IntelEcamConfig, IntelNorthbridgeDriver, IntelSouthbridgeDriver,
 };
 
-/// Native SMM handler image built by fbuild, embedded into stages whose build
-/// had `FSTART_SMM_IMAGE` set (the DRAM mainstage of SMM-capable boards).
-///
-/// `None` in stages built without an SMM image (bootblocks, non-SMM boards);
-/// MP setup then skips SMM relocation and SMRAM stays unlocked.
-#[cfg(all(feature = "stage", fstart_intel_has_smm_image))]
-pub const SMM_IMAGE: Option<&'static [u8]> = Some(include_bytes!(env!("FSTART_SMM_IMAGE")));
-#[cfg(all(feature = "stage", not(fstart_intel_has_smm_image)))]
-pub const SMM_IMAGE: Option<&'static [u8]> = None;
+/// Whether the mounted FFS carries a standalone `FSMM` handler image (`smm.bin`).
+#[cfg(feature = "ramstage")]
+#[must_use]
+pub fn has_smm_image() -> bool {
+    fstart_stage::has_ffs_asset(fstart_core::ffs::SMM_IMAGE_ASSET)
+}
 
 // ---------------------------------------------------------------------------
 // Chipset and board contracts

@@ -29,8 +29,8 @@ use fstart_core::{
     PayloadConfig, Platform, StageBuildConfig, StageLayout, hstr,
 };
 use fstart_image_build::build_plan::{
-    ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly,
-    InputFile, SmmRelocation, SmmUnit, UnitOutput,
+    BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly, InputFile,
+    SmmRelocation, SmmUnit, UnitOutput,
 };
 use fstart_image_build::plan::{
     BuildSelection, HostPlan, PlanError, ResolvedPlan, X86LinuxOptions,
@@ -45,15 +45,11 @@ use std::{format, vec};
 pub const STAGE_UNIT: &str = "stage";
 /// Platform feature that bundles the stage runtime.
 pub const STAGE_FEATURE: &str = "bundle";
-/// The SMM image unit; the stage unit is its only consumer.
+/// The SMM image unit; packed into FFS as `smm.bin`.
 pub const SMM_UNIT: &str = "smm";
 /// Platform features of the SMM unit: the handler and its binding macro
 /// with the SMM panic handler.
 pub const SMM_FEATURES: [&str; 2] = ["smm", "bundle-smm"];
-/// Stage-unit environment carrying the SMM image path (`build.rs`).
-pub const SMM_IMAGE_ENV: &str = "FSTART_SMM_IMAGE";
-/// Stage-unit environment carrying the TSEG size the image must fit.
-pub const TSEG_SIZE_ENV: &str = "FSTART_SMM_TSEG_SIZE";
 /// Per-thread SMM stack: the linked handler's deepest static call path
 /// (it has no indirect calls) needs about 1 KiB; 128 threads take 1 MiB of
 /// the 8 MiB TSEG.
@@ -223,12 +219,6 @@ impl Payload {
     }
 }
 
-/// `FSTART_MP_MAX_CPUS` for both units: the MP code's bound and the SMM
-/// image's entry count agree.
-fn mp_capacity(host: &Host) -> BTreeMap<String, String> {
-    BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), host.max_cpus.to_string())])
-}
-
 /// The SMM image unit: the board library with its handler, linked position
 /// independent (the installer copies it to the top of TSEG) with one entry
 /// stub per CPU the board allows.
@@ -246,10 +236,7 @@ fn smm_unit(host: &Host) -> CompilationUnit {
         relocation: SmmRelocation::Pie,
         // No console in SMM: the log macros compile out (and with them
         // their formatting panics, which the image builder rejects).
-        environment_values: mp_capacity(host)
-            .into_iter()
-            .chain([("FSTART_LOG_LEVEL".into(), "off".into())])
-            .collect(),
+        environment_values: BTreeMap::from([("FSTART_LOG_LEVEL".into(), "off".into())]),
         image: ImageOptions {
             entry_count: host.max_cpus,
             stack_size: SMM_STACK_SIZE,
@@ -293,15 +280,8 @@ fn stage_unit(host: &Host, payload: Payload) -> Result<CompilationUnit, String> 
         .map(String::from)
         .to_vec(),
         linker_script: Some(layout.linker_script()?),
-        environment_values: mp_capacity(host)
-            .into_iter()
-            .chain([(TSEG_SIZE_ENV.into(), host.tseg_size.to_string())])
-            .collect(),
-        bindings: vec![ArtifactBinding {
-            producer: SMM_UNIT.into(),
-            artifact: "image".into(),
-            environment: SMM_IMAGE_ENV.into(),
-        }],
+        environment_values: BTreeMap::new(),
+        bindings: vec![],
         file_bindings: vec![],
         board_features: vec![],
         output: UnitOutput::Executable {
@@ -316,13 +296,14 @@ fn stage_unit(host: &Host, payload: Payload) -> Result<CompilationUnit, String> 
 /// only in the PSP's reset image; otherwise the FFS holds a copy of it as
 /// well (the dual-half composer copies the unit's trust policy from it).
 fn ffs(
-    layout: &Layout,
+    host: &Host,
     window: Region,
     payload: Payload,
     config: Option<PayloadConfig>,
     microcode: Option<MicrocodeConfig>,
     external: bool,
 ) -> FfsAssembly {
+    let layout = &host.layout;
     let region = |name: &str, span: Region, kind| MemoryRegion {
         name: hstr(name),
         base: span.base,
@@ -357,6 +338,13 @@ fn ffs(
         microcode,
         data_assets: vec![],
         file_assets: vec![],
+        smm: Some(fstart_image_build::build_plan::SmmFfsImage {
+            unit: SMM_UNIT.into(),
+            amd_tseg_check: Some(fstart_image_build::build_plan::AmdTsegCheck {
+                tseg_size: host.tseg_size,
+                max_cpus: host.max_cpus,
+            }),
+        }),
         full_flash_image: false,
         boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
@@ -406,7 +394,7 @@ fn resolve_with_apcb(
     };
     let images = {
         let ffs = |microcode, external| {
-            window.map(|window| ffs(&host.layout, window, payload, config, microcode, external))
+            window.map(|window| ffs(host, window, payload, config, microcode, external))
         };
         match &host.image {
             Image::Single(image) => image.images(host, selection, options, &board_apcb, ffs)?,

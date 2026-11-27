@@ -59,6 +59,9 @@ pub use locator::{LOCATOR_MAGIC, LOCATOR_SIZE, LOCATOR_VERSION, LocatorBlock, Lo
 /// Bounded key capacity of the independent constant trust policy.
 pub const TRUST_MAX_KEYS: usize = 4;
 
+/// FFS `FileType::Data` name of the standalone `FSMM` handler image.
+pub const SMM_IMAGE_ASSET: &str = "smm.bin";
+
 /// A public key embedded in constant policy for root verification.
 ///
 /// `#[repr(C)]` fixed layout — 68 bytes per key.

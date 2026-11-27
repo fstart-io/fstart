@@ -5,6 +5,9 @@
 
 #![no_std]
 
+#[cfg(any(feature = "alloc", test))]
+extern crate alloc;
+
 pub mod messages;
 
 #[cfg(all(feature = "x86_64", any(target_arch = "x86", target_arch = "x86_64")))]

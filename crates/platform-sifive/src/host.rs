@@ -208,6 +208,7 @@ pub fn resolve(
         microcode: None,
         data_assets: vec![],
         file_assets: vec![],
+        smm: None,
         full_flash_image: false,
         boot_image_format: BootImageFormat::None,
         boot_hart_id,

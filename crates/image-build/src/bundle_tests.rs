@@ -29,6 +29,7 @@ fn fixture() -> Bundle {
                 run_path: "/units/stage/stage.bin".into(),
                 load_addr: 0,
             }],
+            smm_images: BTreeMap::new(),
             inputs: vec![],
             packed_donor: None,
             bundled_payload: None,

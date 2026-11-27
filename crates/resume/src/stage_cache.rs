@@ -21,7 +21,9 @@ use fstart_ffs::root::BootstrapDescriptor;
 use zerocopy::byteorder::{LE, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use fstart_load::{Codec, Measurement, MemoryPolicy, VerifiedExecutable, load_bootstrap};
+use fstart_load::{
+    Codec, Measurement, MemoryPolicy, VerifiedExecutable, load_bootstrap, load_bootstrap_into,
+};
 
 /// Slot header magic, the bytes `FSCC` read little-endian.
 pub const STAGE_CACHE_MAGIC: u32 = u32::from_le_bytes(*b"FSCC");
@@ -49,6 +51,7 @@ const _: () = assert!(STAGE_CACHE_HEADER_LEN == 32);
 pub enum CachedStage {
     Postcar,
     Mainstage,
+    Smm,
 }
 
 impl CachedStage {
@@ -57,6 +60,7 @@ impl CachedStage {
         match self {
             Self::Postcar => fstart_store::tag::STAGE_CACHE_POSTCAR,
             Self::Mainstage => fstart_store::tag::STAGE_CACHE_RAMSTAGE,
+            Self::Smm => fstart_store::tag::STAGE_CACHE_SMM,
         }
     }
 
@@ -65,6 +69,7 @@ impl CachedStage {
         match self {
             Self::Postcar => 1,
             Self::Mainstage => 2,
+            Self::Smm => 3,
         }
     }
 
@@ -73,6 +78,7 @@ impl CachedStage {
         match self {
             Self::Postcar => "postcar",
             Self::Mainstage => "ramstage",
+            Self::Smm => "smm",
         }
     }
 }
@@ -205,6 +211,34 @@ pub fn load_from_slot(
     // RAM, and reservations exclude live code, stack, heap and the slot.
     // Unmeasured: a resume restores the PCRs the cold boot extended.
     unsafe { load_bootstrap(&body, &cached, policy, codec, &Measurement::NONE) }.ok()
+}
+
+/// Load a cached data blob (such as `smm.bin`) from a validated slot into
+/// `output`, re-authenticating its digests against `descriptor`.
+pub fn load_into_slot(
+    slot_media: &impl BootMedia,
+    stage: CachedStage,
+    descriptor: &BootstrapDescriptor,
+    output: &mut [u8],
+    codec: &dyn Codec,
+) -> Option<usize> {
+    let mut header = [0u8; STAGE_CACHE_HEADER_LEN];
+    if slot_media.read_at(0, &mut header).ok()? != STAGE_CACHE_HEADER_LEN {
+        return None;
+    }
+    let header = valid_header(&header, stage)?;
+    let stored = usize::try_from(header.stored_size.get()).ok()?;
+    if header.stored_size.get() != descriptor.stored_size
+        || header.loaded_size.get() != descriptor.loaded_size
+    {
+        return None;
+    }
+    let body = SubRegion::new(slot_media, STAGE_CACHE_HEADER_LEN, stored)?;
+    let mut cached = *descriptor;
+    cached.offset = 0;
+    cached.load_addr = 0;
+    load_bootstrap_into(&body, &cached, output, codec, &Measurement::NONE).ok()?;
+    usize::try_from(descriptor.loaded_size).ok()
 }
 
 #[cfg(test)]

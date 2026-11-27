@@ -18,14 +18,29 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// Builds per job: a board and each of its variants count as one build each.
-pub const MAX_BUILDS: usize = 7;
+///
+/// Boards of the same platform share `core`, `alloc`, registry crates, and
+/// workspace drivers in Cargo's target directory, so each additional board in
+/// a shard only compiles and links its own board crate (~10–45 s). Keeping a
+/// whole platform together avoids repeating runner setup and cold-cache
+/// warm-up across multiple runners.
+pub const MAX_BUILDS: usize = 24;
+
+/// Platform crates whose boards declare QEMU boot tests. Shards with none of
+/// these skip installing QEMU/swtpm and downloading the `boot-assets` artifact.
+fn has_qemu_boot_tests(dependency: &str) -> bool {
+    matches!(dependency, "fstart-platform-qemu" | "fstart-platform-sunxi")
+}
 
 /// The apt packages emulating an architecture. CI installs no recommended
 /// packages, but the network cards of the virt machines need the option ROMs
 /// of ipxe-qemu and sbsa-ref's display the VGA BIOS of seabios, which only
 /// qemu-system-x86 depends on; the q35 measured-boot tests need swtpm. The
 /// names are those of the runner image the workflow pins (Ubuntu 26.04).
-fn qemu_packages(arch: &str) -> &'static str {
+fn qemu_packages(arch: &str, boards: &[Board<'_>]) -> &'static str {
+    if !boards.iter().any(|b| has_qemu_boot_tests(b.dependency)) {
+        return "";
+    }
     match arch {
         "aarch64" => "qemu-system-arm ipxe-qemu seabios",
         "armv7" => "qemu-system-arm ipxe-qemu",
@@ -94,6 +109,14 @@ fn split<'a, 'b>(boards: &'b [Board<'a>]) -> Vec<&'b [Board<'a>]> {
     shards
 }
 
+fn shard_boards(shard: &[Board<'_>]) -> String {
+    shard
+        .iter()
+        .flat_map(|b| b.builds.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[must_use]
 pub fn matrix(boards: &[Board<'_>]) -> Matrix {
     let mut arches: BTreeMap<&str, Vec<Board<'_>>> = BTreeMap::new();
@@ -105,21 +128,43 @@ pub fn matrix(boards: &[Board<'_>]) -> Matrix {
     for (arch, mut group) in arches {
         // Boards of one platform crate share the most code: keep them together.
         group.sort_by_key(|b| (b.dependency, b.board));
-        let shards = split(&group);
-        for (index, shard) in shards.iter().enumerate() {
+        let total_builds: usize = group.iter().map(|b| b.builds.len()).sum();
+        if total_builds <= MAX_BUILDS {
             include.push(Shard {
-                shard: if shards.len() == 1 {
-                    arch.to_string()
-                } else {
-                    format!("{arch}-{}", index + 1)
-                },
-                boards: shard
-                    .iter()
-                    .flat_map(|b| b.builds.iter().copied())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                packages: qemu_packages(arch).into(),
+                shard: arch.to_string(),
+                boards: shard_boards(&group),
+                packages: qemu_packages(arch, &group).into(),
             });
+            continue;
+        }
+
+        // Large architectures split by platform crate first so each platform
+        // warms its shared drivers once and non-QEMU platforms skip QEMU setup.
+        let mut by_platform: BTreeMap<&str, Vec<Board<'_>>> = BTreeMap::new();
+        for board in group {
+            by_platform.entry(board.dependency).or_default().push(board);
+        }
+        for (dependency, platform_boards) in by_platform {
+            let base = if dependency.is_empty() {
+                arch.to_string()
+            } else {
+                let platform = dependency
+                    .strip_prefix("fstart-platform-")
+                    .unwrap_or(dependency);
+                format!("{arch}-{platform}")
+            };
+            let shards = split(&platform_boards);
+            for (index, shard) in shards.iter().enumerate() {
+                include.push(Shard {
+                    shard: if shards.len() == 1 {
+                        base.clone()
+                    } else {
+                        format!("{base}-{}", index + 1)
+                    },
+                    boards: shard_boards(shard),
+                    packages: qemu_packages(arch, shard).into(),
+                });
+            }
         }
     }
     Matrix { include }
@@ -186,8 +231,8 @@ mod tests {
     }
 
     #[test]
-    fn large_platform_splits_by_platform_crate_with_variants_kept() {
-        let names: Vec<_> = (0..6).map(|i| format!("intel-{i}")).collect();
+    fn large_arch_splits_by_platform_crate_and_scopes_qemu_packages() {
+        let names: Vec<_> = (0..MAX_BUILDS).map(|i| format!("intel-{i:02}")).collect();
         let mut boards: Vec<_> = names
             .iter()
             .map(|n| board(n, "x86_64", "fstart-platform-intel"))
@@ -196,16 +241,41 @@ mod tests {
             builds: vec!["amd", "amd-b", "amd-c"],
             ..board("amd", "x86_64", "fstart-platform-amd")
         });
+        boards.push(board("qemu-q35", "x86_64", "fstart-platform-qemu"));
+        let include = matrix(&boards).include;
+        let summary: Vec<_> = include
+            .iter()
+            .map(|s| (s.shard.as_str(), s.packages.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("x86_64-amd", ""),
+                ("x86_64-intel", ""),
+                ("x86_64-qemu", "qemu-system-x86 swtpm swtpm-tools"),
+            ]
+        );
+        assert_eq!(include[0].boards, "amd amd-b amd-c");
+        assert_eq!(include[1].boards, names.join(" "));
+        assert_eq!(include[2].boards, "qemu-q35");
+    }
+
+    #[test]
+    fn oversized_platform_splits_without_separating_variants() {
+        let names: Vec<_> = (0..MAX_BUILDS).map(|i| format!("intel-{i:02}")).collect();
+        let mut boards: Vec<_> = names
+            .iter()
+            .map(|n| board(n, "x86_64", "fstart-platform-intel"))
+            .collect();
+        boards.push(Board {
+            builds: vec!["z-var", "z-var-b"],
+            ..board("z-var", "x86_64", "fstart-platform-intel")
+        });
         let include = matrix(&boards).include;
         let shards: Vec<_> = include.iter().map(|s| s.shard.as_str()).collect();
-        assert_eq!(shards, ["x86_64-1", "x86_64-2"]);
-        // The AMD board sorts first; its variants count against the limit
-        // and are never separated from it.
-        assert_eq!(
-            include[0].boards,
-            "amd amd-b amd-c intel-0 intel-1 intel-2 intel-3"
-        );
-        assert_eq!(include[1].boards, "intel-4 intel-5");
+        assert_eq!(shards, ["x86_64-intel-1", "x86_64-intel-2"]);
+        assert_eq!(include[0].boards, names.join(" "));
+        assert_eq!(include[1].boards, "z-var z-var-b");
     }
 
     #[test]

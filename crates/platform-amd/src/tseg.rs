@@ -7,13 +7,6 @@ use fstart_arch::x86::{
     mp::MpHandle,
 };
 
-/// The board's SMM image that fbuild built from its `smm.rs` (the host
-/// plan's `smm` unit; `build.rs` checked that it fits TSEG).
-#[cfg(fstart_amd_has_smm_image)]
-pub const IMAGE: Option<&[u8]> = Some(include_bytes!(env!("FSTART_SMM_IMAGE")));
-#[cfg(not(fstart_amd_has_smm_image))]
-pub const IMAGE: Option<&[u8]> = None;
-
 /// Install the board's SMM handler in the TSEG at `base`, with `smi` as
 /// the owner of the SMI sources; `name` is the log prefix.
 pub fn install(
@@ -23,7 +16,7 @@ pub fn install(
     base: u64,
     size: u32,
 ) -> Result<InstalledTseg, &'static str> {
-    IMAGE
+    fstart_core::services::ffs_context::read_verified_asset(fstart_core::ffs::SMM_IMAGE_ASSET)
         .ok_or("no SMM image")
         .and_then(|image| {
             crate::tpm::measure_smm(image);

@@ -42,7 +42,7 @@ fn compiler_selection_and_cargo_units_preserve_sources_host_cfgs_and_generated_d
     let encoded = &selection.environment()["CARGO_ENCODED_RUSTFLAGS"];
     assert_eq!(encoded.split('\u{1f}').collect::<Vec<_>>(), selection.flags);
     assert!(
-        crate::selection::tests::member_flags(&selection)
+        crate::selection::tests::board_flags(&selection)
             .last()
             .unwrap()
             .contains("fstart ide projection ")

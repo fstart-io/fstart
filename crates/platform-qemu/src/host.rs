@@ -5,9 +5,8 @@ use crate::facts::{VirtBoardFacts, VirtMachine};
 use fstart_core::*;
 use fstart_image_build::{
     build_plan::{
-        ArtifactBinding, BootImageFormat, BuildPlan, CargoTarget, CompilationUnit,
-        FfsAssembly as Assembly, ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit,
-        UnitOutput,
+        BootImageFormat, BuildPlan, CargoTarget, CompilationUnit, FfsAssembly as Assembly,
+        ImageOperation, ImageStep, InputFile, SmmRelocation, SmmUnit, UnitOutput,
     },
     layout::EncodedLayout,
     linker::Xip,
@@ -459,6 +458,7 @@ fn resolve_virt(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         microcode: None,
         data_assets: vec![],
         file_assets: vec![],
+        smm: None,
         full_flash_image: true,
         boot_image_format: BootImageFormat::None,
         boot_hart_id: 0,
@@ -1083,6 +1083,12 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         microcode: None,
         data_assets: vec![],
         file_assets: vec![],
+        smm: machine
+            .is_q35()
+            .then(|| fstart_image_build::build_plan::SmmFfsImage {
+                unit: "smm".into(),
+                amd_tseg_check: None,
+            }),
         full_flash_image: policy.full_flash_image,
         boot_image_format: BootImageFormat::None,
         boot_hart_id: policy.boot_hart_id,
@@ -1154,11 +1160,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     // the board crate binds its handler via `smm_bin!` and the monolithic
     // stage embeds the image through `FSTART_SMM_IMAGE`.
     let mut units = vec![];
-    // The emulator can be started with an arbitrary -smp count; reserve a
-    // deliberate build-time MP budget, independent of the SMM image's stubs.
-    const Q35_MP_MAX_CPUS: u16 = 256;
-    let mp_capacity =
-        || BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), Q35_MP_MAX_CPUS.to_string())]);
     if machine.is_q35() {
         units.push(
             SmmUnit {
@@ -1168,7 +1169,7 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
                 // Direct relative calls; absolute cross-section references
                 // are audited.
                 relocation: SmmRelocation::Static,
-                environment_values: mp_capacity(),
+                environment_values: BTreeMap::new(),
                 image: fstart_image_build::smm_image::ImageOptions {
                     entry_count: 8,
                     stack_size: 0x400,
@@ -1179,15 +1180,6 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             .into(),
         );
     }
-    let stage_bindings = if machine.is_q35() {
-        vec![ArtifactBinding {
-            producer: "smm".into(),
-            artifact: "image".into(),
-            environment: "FSTART_SMM_IMAGE".into(),
-        }]
-    } else {
-        vec![]
-    };
     units.push(CompilationUnit {
         name: "stage".into(),
         cargo_target: CargoTarget::BoardBinary,
@@ -1197,12 +1189,8 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
         rustflags,
         release_only: false,
         linker_script: Some(linker_script),
-        environment_values: if machine.is_q35() {
-            mp_capacity()
-        } else {
-            BTreeMap::new()
-        },
-        bindings: stage_bindings,
+        environment_values: BTreeMap::new(),
+        bindings: vec![],
         file_bindings: vec![],
         board_features: vec![],
         output: UnitOutput::Executable {
@@ -1395,12 +1383,11 @@ mod tests {
             assert_eq!(stack.base + stack.size, writable.base + writable.size);
             assert_eq!(heap.base + heap.size, stack.base);
             if matches!(machine, VirtMachine::Q35) {
-                assert!(plan.units.iter().all(|unit| {
-                    unit.environment_values
-                        .get("FSTART_MP_MAX_CPUS")
-                        .map(String::as_str)
-                        == Some("256")
-                }));
+                assert!(
+                    plan.units
+                        .iter()
+                        .all(|unit| unit.environment_values.is_empty())
+                );
                 // Top 16 MiB of low RAM is reserved for TSEG: firmware
                 // statics must end below it so locking SMRAM cannot hide
                 // the stack (see the `ram` span in `qemu_policy`).
