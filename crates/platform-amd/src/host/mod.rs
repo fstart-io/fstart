@@ -80,10 +80,26 @@ pub struct Host {
     pub option_store: Option<fstart_image_build::options::OptionStore>,
 }
 
+/// The v3 synthesis layout of `soc` (Rome, Milan, Genoa, Siena); `None` for
+/// v2 SoCs (Picasso, Zeppelin, Naples).
+pub(super) const fn v3_layout(
+    soc: crate::board::SocId,
+) -> Option<fstart_amdfw_format::apcb::build::V3Layout> {
+    use crate::board::SocId;
+    use fstart_amdfw_format::apcb::build::V3Layout;
+    match soc {
+        SocId::Rome | SocId::Milan => Some(V3Layout::SP3),
+        SocId::Genoa => Some(V3Layout::GENOA),
+        SocId::Siena => Some(V3Layout::SIENA),
+        SocId::Picasso | SocId::Zeppelin | SocId::Naples => None,
+    }
+}
+
 /// Build a board's Rust-declared APCB overlay for `soc` (`Board::apcb_tokens`
 /// and `Board::apcb_v2_gpio`).
 pub(super) fn board_apcb_overlay<B: Board>(
     soc: crate::board::SocId,
+    vendor_apcb: bool,
 ) -> fstart_image_build::amd::apcb::ApcbOverlay {
     use fstart_image_build::amd::apcb::{ApcbOverlay, ApcbToken};
     let tokens = B::apcb_tokens(soc)
@@ -98,6 +114,7 @@ pub(super) fn board_apcb_overlay<B: Board>(
         tokens,
         cxl_regions: vec![],
         v2_gpio_id: B::apcb_v2_gpio(soc),
+        synthesize_v3: if vendor_apcb { None } else { v3_layout(soc) },
     }
 }
 
@@ -421,7 +438,9 @@ pub fn resolve_board<B: Board>(
     options: &HostOptions,
 ) -> Result<BuildPlan, PlanError> {
     let host = host::<B>()?;
-    let mut plan = resolve_with_apcb(&host, selection, options, board_apcb_overlay::<B>)?;
+    let mut plan = resolve_with_apcb(&host, selection, options, |soc| {
+        board_apcb_overlay::<B>(soc, options.vendor_apcb)
+    })?;
     plan.options = self::options::<B>(&host, selection.log_level.as_deref())?;
     use fstart_image_build::options::OptionStore;
     plan.options.secure_boot = matches!(plan.options.store, Some(OptionStore::Varstore { .. }))

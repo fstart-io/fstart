@@ -28,6 +28,7 @@
 
 use fstart_amdfw_format::apcb::{
     self, CxlRegion,
+    build::{self, V3Layout},
     token::{self, Token, TokenKind},
     v2,
 };
@@ -123,6 +124,11 @@ pub struct ApcbOverlay {
     /// Optional v2 GPIO RAM-ID triples (`PSP / 0x60`, four `(gpio, iomux, bank)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v2_gpio_id: Option<[[u8; 3]; 4]>,
+    /// When set, synthesize the v3 override (`0x60/0`, `0x68/8`) and event/PPR
+    /// store (`0x60/1`, `0x68/9`) APCBs from scratch using this SoC layout
+    /// instead of keeping the vendor's files. `None` keeps all vendor APCBs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthesize_v3: Option<V3Layout>,
 }
 
 impl ApcbOverlay {
@@ -131,11 +137,15 @@ impl ApcbOverlay {
             tokens: Vec::new(),
             cxl_regions: Vec::new(),
             v2_gpio_id: None,
+            synthesize_v3: None,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tokens.is_empty() && self.cxl_regions.is_empty() && self.v2_gpio_id.is_none()
+        self.tokens.is_empty()
+            && self.cxl_regions.is_empty()
+            && self.v2_gpio_id.is_none()
+            && self.synthesize_v3.is_none()
     }
 
     /// Add or replace a raw token override by ID.
@@ -183,6 +193,9 @@ impl ApcbOverlay {
         }
         if other.v2_gpio_id.is_some() {
             self.v2_gpio_id = other.v2_gpio_id;
+        }
+        if other.synthesize_v3.is_some() {
+            self.synthesize_v3 = other.synthesize_v3;
         }
     }
 
@@ -251,10 +264,40 @@ const fn is_override_slot(key: Key) -> bool {
         || (key.kind == bios::APCB_BACKUP && key.instance == 8)
 }
 
+/// Whether `key` is a v3 event/PPR store slot (`0x60/1` or its backup `0x68/9`).
+const fn is_event_store_slot(key: Key) -> bool {
+    (key.kind == bios::APCB && key.instance == 1)
+        || (key.kind == bios::APCB_BACKUP && key.instance == 9)
+}
+
 /// Apply `overlay` to every APCB (`0x60`/`0x68`) of an image.
 pub fn apply(apcbs: &mut [(Key, &mut Vec<u8>)], overlay: &ApcbOverlay) -> Result<()> {
     if overlay.is_empty() {
         return Ok(());
+    }
+    if let Some(layout) = overlay.synthesize_v3 {
+        // Synthesize fresh override (0x60/0, 0x68/8) and event/PPR store
+        // (0x60/1, 0x68/9) payloads from scratch. Defaults (0x68/0) remain
+        // from the base APCB and receive any token updates below.
+        for (key, bytes) in apcbs.iter_mut() {
+            if is_override_slot(*key) {
+                let mut buf = vec![0xffu8; 0x1000];
+                let sz = build::write_override_apcb(&mut buf, layout, 1, None, &[])
+                    .map_err(|e| format!("APCB {key:?}: synthesize override: {e:?}"))?;
+                if key.kind == bios::APCB_BACKUP {
+                    buf.truncate(sz);
+                }
+                **bytes = buf;
+            } else if is_event_store_slot(*key) {
+                let mut buf = vec![0xffu8; 0x1000];
+                let sz = build::write_event_store_apcb(&mut buf, layout, 1)
+                    .map_err(|e| format!("APCB {key:?}: synthesize event store: {e:?}"))?;
+                if key.kind == bios::APCB_BACKUP {
+                    buf.truncate(sz);
+                }
+                **bytes = buf;
+            }
+        }
     }
     let originals: Vec<Vec<u8>> = apcbs.iter().map(|(_, bytes)| bytes.to_vec()).collect();
 

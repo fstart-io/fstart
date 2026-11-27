@@ -364,6 +364,7 @@ pub fn resolve(
         tokens: super::apcb::resolve_tokens(&board.apcb_tokens)?,
         cxl_regions: board.cxl_regions.clone(),
         v2_gpio_id: None,
+        synthesize_v3: None,
     };
     Ok(Resolved {
         files: PspFiles {

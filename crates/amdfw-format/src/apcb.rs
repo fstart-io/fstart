@@ -16,6 +16,7 @@
 //! edit ([`commit`]) bumps `unique_instance`, recomputes the checksum, and
 //! erases any v3 HMAC tail so no stale HMAC remains.
 
+pub mod build;
 pub mod names;
 pub mod token;
 pub mod v2;
