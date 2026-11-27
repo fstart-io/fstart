@@ -11,7 +11,8 @@ aes-gcm = { workspace = true }
 hkdf = { workspace = true }
 hmac = { workspace = true }
 p256 = { workspace = true }
-sha2 = { workspace = true }
+# Match p256 0.13 / hmac 0.12 / hkdf 0.12 (digest 0.10).
+sha2 = { version = "0.10", default-features = false }
 zerocopy = { workspace = true }
 zeroize = { workspace = true }
 
