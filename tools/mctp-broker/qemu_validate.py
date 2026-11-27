@@ -28,7 +28,11 @@ def find_image(board: str, profile: str, pattern: str) -> Path:
         reverse=True,
     )
     if not candidates:
-        raise FileNotFoundError(f"No built image matching {board}/{profile}/{pattern}; run fbuild first")
+        raise FileNotFoundError(
+            f"No built image matching {board}/{profile}/{pattern}; run "
+            f"`cargo run -p fbuild -- build --board {board} --debug mctp-validate"
+            f"{' --release' if profile == 'release' else ''}` first"
+        )
     return Path(candidates[0])
 
 

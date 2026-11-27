@@ -137,10 +137,14 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         secured_resp: &mut [u8],
     ) -> Result<usize, Error> {
         let mut pt_in = [0u8; 512];
-        let pt_len = {
+        let (pt_len, used_pending_req) = {
             let sess = self.session.as_mut().ok_or(Error::SessionInactive)?;
-            sess.decrypt(secured_req, &mut pt_in)?
+            sess.decrypt_trying_pending(secured_req, &mut pt_in)?
         };
+        if used_pending_req && let Some(sess) = self.session.as_mut() {
+            sess.commit_req_key()?;
+            sess.commit_rsp_key_if_pending();
+        }
         let prefix_len = usize::from(self.transport == SessionTransport::Mctp);
         if pt_len < prefix_len + SpdmHeader::LEN {
             return Err(Error::ShortBuffer);
@@ -158,8 +162,8 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         }
         let spdm_out = &mut pt_out[prefix_len..];
 
-        let mut ratchet_req = false;
-        let mut ratchet_rsp_before_ack = false;
+        let mut stage_key_update: Option<bool> = None;
+        let mut encrypt_with_pending_rsp = false;
         let mut promote_th2: Option<[u8; HASH_LEN]> = None;
         let mut close_session = false;
 
@@ -187,34 +191,54 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
                     return Err(Error::SessionInactive);
                 }
                 // DSP0274 §10.21.1:
-                // param1: 1 = UpdateKey (req only), 2 = UpdateAllKeys (req + rsp BEFORE ACK),
-                // 3 = VerifyNewKey.
+                // param1: 1 = UpdateKey (stage req), 2 = UpdateAllKeys (stage req + rsp,
+                // encrypt ACK with pending rsp), 3 = VerifyNewKey (must decrypt under pending req).
                 match hdr.param1 {
-                    1 => ratchet_req = true,
-                    2 => {
-                        ratchet_req = true;
-                        ratchet_rsp_before_ack = true;
-                    }
-                    3 => {}
-                    _ => {
-                        return write_error(
+                    1 => {
+                        stage_key_update = Some(false);
+                        if spdm_out.len() < 4 {
+                            return Err(Error::BufferTooSmall);
+                        }
+                        spdm_out[..4].copy_from_slice(&[
                             self.version,
-                            SpdmErrorCode::InvalidRequest,
-                            0,
-                            secured_resp,
-                        );
+                            SpdmCode::KeyUpdateAck as u8,
+                            hdr.param1,
+                            hdr.param2,
+                        ]);
+                        4
                     }
+                    2 => {
+                        stage_key_update = Some(true);
+                        encrypt_with_pending_rsp = true;
+                        if spdm_out.len() < 4 {
+                            return Err(Error::BufferTooSmall);
+                        }
+                        spdm_out[..4].copy_from_slice(&[
+                            self.version,
+                            SpdmCode::KeyUpdateAck as u8,
+                            hdr.param1,
+                            hdr.param2,
+                        ]);
+                        4
+                    }
+                    3 => {
+                        if !used_pending_req {
+                            write_error(self.version, SpdmErrorCode::InvalidRequest, 0, spdm_out)?
+                        } else {
+                            if spdm_out.len() < 4 {
+                                return Err(Error::BufferTooSmall);
+                            }
+                            spdm_out[..4].copy_from_slice(&[
+                                self.version,
+                                SpdmCode::KeyUpdateAck as u8,
+                                hdr.param1,
+                                hdr.param2,
+                            ]);
+                            4
+                        }
+                    }
+                    _ => write_error(self.version, SpdmErrorCode::InvalidRequest, 0, spdm_out)?,
                 }
-                if spdm_out.len() < 4 {
-                    return Err(Error::BufferTooSmall);
-                }
-                spdm_out[..4].copy_from_slice(&[
-                    self.version,
-                    SpdmCode::KeyUpdateAck as u8,
-                    hdr.param1,
-                    hdr.param2,
-                ]);
-                4
             }
             x if x == SpdmCode::EndSession as u8 => {
                 if phase != SessionPhase::Application {
@@ -232,14 +256,15 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
 
         let enc_len = {
             let sess = self.session.as_mut().ok_or(Error::SessionInactive)?;
-            if ratchet_req {
-                sess.req_keys.ratchet(self.version)?;
+            if let Some(update_all) = stage_key_update {
+                sess.stage_key_update(update_all)?;
             }
-            // DSP0274 §10.21.1: UpdateAllKeys encrypts KEY_UPDATE_ACK with the NEW rsp key.
-            if ratchet_rsp_before_ack {
-                sess.rsp_keys.ratchet(self.version)?;
-            }
-            let n = sess.encrypt(&pt_out[..prefix_len + rsp_len], secured_resp)?;
+            // DSP0274 §10.21.1: UpdateAllKeys encrypts KEY_UPDATE_ACK with the staged new rsp key.
+            let n = if encrypt_with_pending_rsp {
+                sess.encrypt_pending(&pt_out[..prefix_len + rsp_len], secured_resp)?
+            } else {
+                sess.encrypt(&pt_out[..prefix_len + rsp_len], secured_resp)?
+            };
             if let Some(th2) = promote_th2 {
                 sess.derive_data_keys(&th2)?;
             }

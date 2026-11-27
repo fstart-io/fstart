@@ -81,6 +81,32 @@ fn run_full_spdm_session(transport: SessionTransport) {
     req.handle_secured_ack(SpdmCode::HeartbeatAck, &rx[..r])
         .unwrap();
 
+    // VerifyNewKey without a pending UpdateKey must fail on the requester side.
+    assert!(
+        req.build_secured_cmd(SpdmCode::KeyUpdate, 3, 0x01, &mut tx)
+            .is_err()
+    );
+
+    // UpdateKey (param1 = 1) staged and ACKed, then rolled back before VerifyNewKey:
+    // both sides still accept traffic under the previous active keys.
+    let n = req
+        .build_secured_cmd(SpdmCode::KeyUpdate, 1, 0x11, &mut tx)
+        .unwrap();
+    let r = rsp.handle_secured_spdm(&tx[..n], &mut rx).unwrap();
+    assert_eq!(
+        req.handle_secured_ack(SpdmCode::KeyUpdateAck, &rx[..r])
+            .unwrap(),
+        (1, 0x11)
+    );
+    req.session.as_mut().unwrap().rollback_key_update();
+    let n = req
+        .build_secured_cmd(SpdmCode::Heartbeat, 0, 0, &mut tx)
+        .unwrap();
+    let r = rsp.handle_secured_spdm(&tx[..n], &mut rx).unwrap();
+    req.handle_secured_ack(SpdmCode::HeartbeatAck, &rx[..r])
+        .unwrap();
+
+    // UpdateAllKeys (param1 = 2) followed by VerifyNewKey (param1 = 3).
     let n = req
         .build_secured_cmd(SpdmCode::KeyUpdate, 2, 0x55, &mut tx)
         .unwrap();
@@ -89,6 +115,16 @@ fn run_full_spdm_session(transport: SessionTransport) {
         req.handle_secured_ack(SpdmCode::KeyUpdateAck, &rx[..r])
             .unwrap(),
         (2, 0x55)
+    );
+
+    let n = req
+        .build_secured_cmd(SpdmCode::KeyUpdate, 3, 0x56, &mut tx)
+        .unwrap();
+    let r = rsp.handle_secured_spdm(&tx[..n], &mut rx).unwrap();
+    assert_eq!(
+        req.handle_secured_ack(SpdmCode::KeyUpdateAck, &rx[..r])
+            .unwrap(),
+        (3, 0x56)
     );
 
     let n = req

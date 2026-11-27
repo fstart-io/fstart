@@ -200,10 +200,12 @@ impl BaseResponder {
                         cmds[0] = 0b0011_1110;
                     }
                     2 => {
-                        // GetSensorReading(0x11), SetStateEffecterStates(0x39), GetPDRRepoInfo(0x50)
+                        // GetSensorReading(0x11), SetStateEffecterStates(0x39),
+                        // GetPDRRepositoryInfo(0x50), GetPDR(0x51)
                         cmds[0x11 / 8] |= 1 << (0x11 % 8);
                         cmds[0x39 / 8] |= 1 << (0x39 % 8);
                         cmds[0x50 / 8] |= 1 << (0x50 % 8);
+                        cmds[0x51 / 8] |= 1 << (0x51 % 8);
                     }
                     5 => {
                         for c in [0x01usize, 0x02, 0x10, 0x13, 0x14, 0x1A, 0x1B, 0x1D] {

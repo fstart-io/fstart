@@ -7,8 +7,8 @@ use fstart_pldm::fw_update::{
     encode_pass_component_req, encode_request_update_req, encode_update_component_req,
 };
 use fstart_pldm::platform::{
-    NumericSensor, StateEffecter, encode_get_pdr_repo_info_req, encode_get_sensor_reading_req,
-    encode_set_state_effecter_req,
+    NumericSensor, StateEffecter, encode_get_pdr_repo_info_req, encode_get_pdr_req,
+    encode_get_sensor_reading_req, encode_set_state_effecter_req,
 };
 use fstart_pldm::{CompletionCode, PldmResponder, PldmType};
 
@@ -61,6 +61,36 @@ fn pldm_base_and_platform_sans_io() {
     let rlen = pldm.handle_request(&req[..n], &mut resp).unwrap();
     assert_eq!(rlen, 44);
     assert_eq!(u32::from_le_bytes(resp[31..35].try_into().unwrap()), 2);
+
+    // Walk PDRs via GetPDR (handle 0 -> sensor 42 -> next handle 2 -> effecter 7 -> next handle 0)
+    let n = encode_get_pdr_req(8, 0, 64, &mut req).unwrap();
+    let rlen = pldm.handle_request(&req[..n], &mut resp).unwrap();
+    assert_eq!(rlen, 31);
+    assert_eq!(resp[3], CompletionCode::Success as u8);
+    let next_handle = u32::from_le_bytes(resp[4..8].try_into().unwrap());
+    assert_eq!(next_handle, 2);
+    assert_eq!(resp[12], 0x05); // StartAndEnd
+    assert_eq!(u16::from_le_bytes(resp[13..15].try_into().unwrap()), 16);
+    assert_eq!(resp[15 + 5], 0x02); // Numeric Sensor PDR
+    assert_eq!(
+        u16::from_le_bytes(resp[15 + 12..15 + 14].try_into().unwrap()),
+        42
+    );
+
+    let n = encode_get_pdr_req(9, next_handle, 64, &mut req).unwrap();
+    let rlen = pldm.handle_request(&req[..n], &mut resp).unwrap();
+    assert_eq!(rlen, 31);
+    assert_eq!(u32::from_le_bytes(resp[4..8].try_into().unwrap()), 0);
+    assert_eq!(resp[15 + 5], 0x0B); // State Effecter PDR
+    assert_eq!(
+        u16::from_le_bytes(resp[15 + 12..15 + 14].try_into().unwrap()),
+        7
+    );
+
+    // Out-of-range PDR handle returns INVALID_RECORD_HANDLE (0x82)
+    let n = encode_get_pdr_req(10, 99, 64, &mut req).unwrap();
+    pldm.handle_request(&req[..n], &mut resp).unwrap();
+    assert_eq!(resp[3], 0x82);
 }
 
 #[test]

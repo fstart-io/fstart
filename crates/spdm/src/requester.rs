@@ -477,19 +477,23 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
             pt[0] = crate::MCTP_MSG_TYPE_SPDM;
         }
         pt[prefix_len..prefix_len + 4].copy_from_slice(&[self.version, code as u8, param1, param2]);
-        let n = sess.encrypt(&pt[..prefix_len + 4], secured_out)?;
-        // DSP0274 §10.21.1: for UpdateAllKeys (param1 == 2), the responder
-        // encrypts KEY_UPDATE_ACK with its NEW key, so ratchet rsp_keys now.
-        if code == SpdmCode::KeyUpdate {
-            match param1 {
-                1 => sess.req_keys.ratchet(self.version)?,
-                2 => {
-                    sess.req_keys.ratchet(self.version)?;
-                    sess.rsp_keys.ratchet(self.version)?;
+        // DSP0274 §10.21.1:
+        // - VerifyNewKey (param1 == 3) is encrypted with the staged pending req key.
+        // - UpdateKey (1) / UpdateAllKeys (2) are encrypted with the active req key and
+        //   stage the new key(s) so rollback remains possible until VerifyNewKey ACKs.
+        let n = if code == SpdmCode::KeyUpdate && param1 == 3 {
+            sess.encrypt_pending(&pt[..prefix_len + 4], secured_out)?
+        } else {
+            let n = sess.encrypt(&pt[..prefix_len + 4], secured_out)?;
+            if code == SpdmCode::KeyUpdate {
+                match param1 {
+                    1 => sess.stage_key_update(false)?,
+                    2 => sess.stage_key_update(true)?,
+                    _ => {}
                 }
-                _ => {}
             }
-        }
+            n
+        };
         Ok(n)
     }
 
@@ -502,7 +506,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
     ) -> Result<(u8, u8), Error> {
         let sess = self.session.as_mut().ok_or(Error::SessionInactive)?;
         let mut pt = [0u8; 64];
-        let pt_len = sess.decrypt(secured_rsp, &mut pt)?;
+        let (pt_len, used_pending_rsp) = sess.decrypt_trying_pending(secured_rsp, &mut pt)?;
         let prefix_len = usize::from(self.transport == SessionTransport::Mctp);
         if pt_len < prefix_len + 4 {
             return Err(Error::ShortBuffer);
@@ -513,6 +517,12 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let (hdr, _) = SpdmHeader::parse(&pt[prefix_len..pt_len])?;
         if hdr.code != expected_code as u8 {
             return Err(Error::InvalidMessage);
+        }
+        if used_pending_rsp {
+            sess.commit_rsp_key_if_pending();
+        }
+        if expected_code == SpdmCode::KeyUpdateAck && hdr.param1 == 3 {
+            sess.commit_req_key()?;
         }
         if expected_code == SpdmCode::EndSessionAck {
             sess.active = false;

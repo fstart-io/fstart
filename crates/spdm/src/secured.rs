@@ -142,8 +142,9 @@ impl DirectionKeys {
         })
     }
 
-    /// Ratchet traffic keys for SPDM `KEY_UPDATE` (DSP0277 §6.4).
-    pub fn ratchet(&mut self, version: u8) -> Result<(), Error> {
+    /// Derive the next ratcheted [`DirectionKeys`] without mutating `self`
+    /// (DSP0277 §6.4), allowing rollback if `KEY_UPDATE` verification fails.
+    pub fn next_ratchet(&self, version: u8) -> Result<Self, Error> {
         let mut next_secret = [0u8; HASH_LEN];
         hkdf_expand_spdm(
             &self.secret,
@@ -152,8 +153,14 @@ impl DirectionKeys {
             None,
             &mut next_secret,
         )?;
-        *self = Self::derive(version, next_secret)?;
+        let derived = Self::derive(version, next_secret);
         next_secret.zeroize();
+        derived
+    }
+
+    /// Ratchet traffic keys in place for SPDM `KEY_UPDATE` (DSP0277 §6.4).
+    pub fn ratchet(&mut self, version: u8) -> Result<(), Error> {
+        *self = self.next_ratchet(version)?;
         Ok(())
     }
 }
@@ -170,6 +177,10 @@ pub struct SecuredSession {
     pub rsp_finished_key: [u8; HASH_LEN],
     pub req_keys: DirectionKeys,
     pub rsp_keys: DirectionKeys,
+    /// Staged requester-to-responder traffic keys awaiting `VerifyNewKey`.
+    pub pending_req_keys: Option<DirectionKeys>,
+    /// Staged responder-to-requester traffic keys awaiting `UpdateAllKeys` ACK / `VerifyNewKey`.
+    pub pending_rsp_keys: Option<DirectionKeys>,
     pub active: bool,
 }
 
@@ -233,6 +244,8 @@ impl SecuredSession {
             rsp_finished_key,
             req_keys,
             rsp_keys,
+            pending_req_keys: None,
+            pending_rsp_keys: None,
             active: true,
         })
     }
@@ -273,6 +286,8 @@ impl SecuredSession {
 
         self.req_keys = DirectionKeys::derive(self.version, req_data)?;
         self.rsp_keys = DirectionKeys::derive(self.version, rsp_data)?;
+        self.pending_req_keys = None;
+        self.pending_rsp_keys = None;
         req_data.zeroize();
         rsp_data.zeroize();
         self.handshake_secret.zeroize();
@@ -282,17 +297,47 @@ impl SecuredSession {
         Ok(())
     }
 
-    /// Encrypt `app_data` into a DSP0277 secured record in `out`.
-    pub fn encrypt(&mut self, app_data: &[u8], out: &mut [u8]) -> Result<usize, Error> {
-        if !self.active {
-            return Err(Error::SessionInactive);
-        }
-        let tx = if self.is_requester {
-            &mut self.req_keys
+    /// Stage ratcheted keys for SPDM `KEY_UPDATE` without discarding current keys
+    /// until `VerifyNewKey` completes (DSP0274 §10.21.1).
+    pub fn stage_key_update(&mut self, update_all: bool) -> Result<(), Error> {
+        self.pending_req_keys = Some(self.req_keys.next_ratchet(self.version)?);
+        self.pending_rsp_keys = if update_all {
+            Some(self.rsp_keys.next_ratchet(self.version)?)
         } else {
-            &mut self.rsp_keys
+            None
         };
-        let hdr_len = self.transport.header_len();
+        Ok(())
+    }
+
+    /// Commit staged `req_keys` (zeroizing the previous keys on drop).
+    pub fn commit_req_key(&mut self) -> Result<(), Error> {
+        let next = self.pending_req_keys.take().ok_or(Error::InvalidMessage)?;
+        self.req_keys = next;
+        Ok(())
+    }
+
+    /// Commit staged `rsp_keys` if present (zeroizing the previous keys on drop).
+    pub fn commit_rsp_key_if_pending(&mut self) {
+        if let Some(next) = self.pending_rsp_keys.take() {
+            self.rsp_keys = next;
+        }
+    }
+
+    /// Discard any uncommitted `KEY_UPDATE` keys and retain the active keys.
+    pub fn rollback_key_update(&mut self) {
+        self.pending_req_keys = None;
+        self.pending_rsp_keys = None;
+    }
+
+    /// Encrypt `app_data` into a DSP0277 secured record using `tx`.
+    fn encrypt_with(
+        session_id: u32,
+        transport: SessionTransport,
+        tx: &mut DirectionKeys,
+        app_data: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let hdr_len = transport.header_len();
         let pt_len = 2 + app_data.len();
         let record_len = pt_len + AEAD_TAG_LEN;
         let total = hdr_len + record_len;
@@ -303,8 +348,8 @@ impl SecuredSession {
         let seq = tx.seq_num;
         tx.seq_num = seq.checked_add(1).ok_or(Error::SequenceOverflow)?;
 
-        out[0..4].copy_from_slice(&self.session_id.to_le_bytes());
-        if self.transport == SessionTransport::Mctp {
+        out[0..4].copy_from_slice(&session_id.to_le_bytes());
+        if transport == SessionTransport::Mctp {
             out[4..6].copy_from_slice(&(seq as u16).to_le_bytes());
             out[6..8].copy_from_slice(&(record_len as u16).to_le_bytes());
         } else {
@@ -322,27 +367,51 @@ impl SecuredSession {
         Ok(total)
     }
 
-    /// Decrypt and authenticate a DSP0277 secured record into `out`, returning
-    /// the decrypted `app_data` length.
-    pub fn decrypt(&mut self, record: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+    /// Encrypt `app_data` into a DSP0277 secured record in `out`.
+    pub fn encrypt(&mut self, app_data: &[u8], out: &mut [u8]) -> Result<usize, Error> {
         if !self.active {
             return Err(Error::SessionInactive);
         }
-        let hdr_len = self.transport.header_len();
+        let tx = if self.is_requester {
+            &mut self.req_keys
+        } else {
+            &mut self.rsp_keys
+        };
+        Self::encrypt_with(self.session_id, self.transport, tx, app_data, out)
+    }
+
+    /// Encrypt `app_data` using the staged pending TX key (for requester `VerifyNewKey`
+    /// or responder `UpdateAllKeys` `KEY_UPDATE_ACK`).
+    pub fn encrypt_pending(&mut self, app_data: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+        if !self.active {
+            return Err(Error::SessionInactive);
+        }
+        let tx = if self.is_requester {
+            self.pending_req_keys.as_mut()
+        } else {
+            self.pending_rsp_keys.as_mut()
+        }
+        .ok_or(Error::InvalidMessage)?;
+        Self::encrypt_with(self.session_id, self.transport, tx, app_data, out)
+    }
+
+    fn decrypt_with(
+        session_id: u32,
+        transport: SessionTransport,
+        rx: &mut DirectionKeys,
+        record: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let hdr_len = transport.header_len();
         if record.len() < hdr_len + 2 + AEAD_TAG_LEN {
             return Err(Error::ShortBuffer);
         }
         let sid = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
-        if sid != self.session_id {
+        if sid != session_id {
             return Err(Error::InvalidMessage);
         }
-        let rx = if self.is_requester {
-            &mut self.rsp_keys
-        } else {
-            &mut self.req_keys
-        };
         let expected_seq = rx.seq_num;
-        let rec_len = if self.transport == SessionTransport::Mctp {
+        let rec_len = if transport == SessionTransport::Mctp {
             let wire_seq = u16::from_le_bytes([record[4], record[5]]);
             if wire_seq != (expected_seq as u16) {
                 return Err(Error::DecryptFailed);
@@ -353,7 +422,7 @@ impl SecuredSession {
         };
 
         let expected_len = hdr_len + rec_len;
-        let len_ok = if self.transport == SessionTransport::Doe {
+        let len_ok = if transport == SessionTransport::Doe {
             // PCIe DOE pads data objects to 4-byte DW boundaries (0..3 pad bytes).
             record.len() >= expected_len && record.len() - expected_len <= 3
         } else {
@@ -382,5 +451,43 @@ impl SecuredSession {
         }
         out.copy_within(2..2 + app_len, 0);
         Ok(app_len)
+    }
+
+    /// Decrypt and authenticate a DSP0277 secured record into `out`, returning
+    /// the decrypted `app_data` length.
+    pub fn decrypt(&mut self, record: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+        let (len, _) = self.decrypt_trying_pending(record, out)?;
+        Ok(len)
+    }
+
+    /// Decrypt `record`, trying the staged pending RX key first when a `KEY_UPDATE`
+    /// is in progress and falling back to the active RX key on failure.
+    ///
+    /// Returns `(app_data_len, used_pending_key)`.
+    pub fn decrypt_trying_pending(
+        &mut self,
+        record: &[u8],
+        out: &mut [u8],
+    ) -> Result<(usize, bool), Error> {
+        if !self.active {
+            return Err(Error::SessionInactive);
+        }
+        let pending_rx = if self.is_requester {
+            self.pending_rsp_keys.as_mut()
+        } else {
+            self.pending_req_keys.as_mut()
+        };
+        if let Some(rx) = pending_rx
+            && let Ok(len) = Self::decrypt_with(self.session_id, self.transport, rx, record, out)
+        {
+            return Ok((len, true));
+        }
+        let rx = if self.is_requester {
+            &mut self.rsp_keys
+        } else {
+            &mut self.req_keys
+        };
+        let len = Self::decrypt_with(self.session_id, self.transport, rx, record, out)?;
+        Ok((len, false))
     }
 }
