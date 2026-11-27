@@ -73,6 +73,17 @@ enum Command {
         #[arg(long)]
         list: bool,
     },
+    /// Run Kani formal verification proofs across a parallel LPT work queue.
+    Kani {
+        /// Maximum number of concurrent Kani workers (defaults to CPU count).
+        #[arg(short = 'j', long, env = "KANI_JOBS")]
+        jobs: Option<usize>,
+        /// List the scheduled harnesses without running them.
+        #[arg(long)]
+        list: bool,
+        /// Optional substring filters on package or harness name.
+        filters: Vec<String>,
+    },
     /// Build boards in release and run their library tests, one after the
     /// other. A failing board never stops the ones after it.
     BuildBoards {
@@ -447,6 +458,11 @@ fn main() {
         }),
         Command::Shards => fbuild::shards::run(),
         Command::Checks { list } => fbuild::checks::run(list),
+        Command::Kani {
+            jobs,
+            list,
+            filters,
+        } => fbuild::kani::run(jobs, list, &filters),
         Command::BuildBoards { size_dir, boards } => verification::build_boards(&boards, size_dir),
         Command::CheckAcpi { boards } => fbuild::acpi_check::check(&boards),
         Command::BootTest {

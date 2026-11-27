@@ -14,6 +14,7 @@ pub mod ide;
 mod ide_graph;
 #[cfg(test)]
 mod intel_linker_tests;
+pub mod kani;
 pub mod payload;
 pub mod plan_executor;
 mod profile_source;
