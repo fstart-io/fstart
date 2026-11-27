@@ -174,7 +174,9 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
     fn read_be32(&self) -> u32 {
         let mut buf = [0; 4];
         self.read_bytes(&mut buf);
-        u32::from_be_bytes(buf)
+        zerocopy::big_endian::U32::read_from_bytes(&buf)
+            .expect("4 bytes")
+            .get()
     }
 
     fn check_signature(&self) -> bool {
@@ -262,7 +264,9 @@ impl<T: FwCfgTransport> QemuFwCfg<T> {
         self.select(FW_CFG_NB_CPUS);
         let mut buf = [0u8; 2];
         self.read_bytes(&mut buf);
-        let count = u16::from_le_bytes(buf);
+        let count = zerocopy::little_endian::U16::read_from_bytes(&buf)
+            .expect("2 bytes")
+            .get();
         if count == 0 { 1 } else { count }
     }
 

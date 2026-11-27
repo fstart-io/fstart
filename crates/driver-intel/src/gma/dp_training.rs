@@ -245,17 +245,25 @@ pub fn sink_training_payload(
     lane_count: u8,
     out: &mut [u8; 5],
 ) -> Result<usize, GmaError> {
+    #[repr(C)]
+    #[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
+    struct TrainingPayloadWire {
+        pattern: u8,
+        lanes: [u8; 4],
+    }
+    use zerocopy::IntoBytes;
+
     if !matches!(lane_count, 1 | 2 | 4) {
         return Err(GmaError::InvalidConfig);
     }
-    out[0] = pattern.encode();
     let lane_value = train_set.encode(max_voltage_swing(), max_pre_emphasis(train_set));
-    let mut idx = 0;
-    while idx < lane_count as usize {
-        out[1 + idx] = lane_value;
-        idx += 1;
-    }
-    Ok(1 + lane_count as usize)
+    let wire = TrainingPayloadWire {
+        pattern: pattern.encode(),
+        lanes: [lane_value; 4],
+    };
+    let len = 1 + lane_count as usize;
+    out[..len].copy_from_slice(&wire.as_bytes()[..len]);
+    Ok(len)
 }
 
 /// Adjust the current train set from sink adjust-request nibbles, clamped to `max_vs`.

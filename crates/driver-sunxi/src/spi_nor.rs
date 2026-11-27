@@ -122,12 +122,31 @@ impl<B> SpiNorFlash<B> {
     where
         B: SpiBus<u8, Error = SunxiSpiError>,
     {
-        let mut frame = [NOR_CMD_RDID, 0, 0, 0];
+        #[repr(C)]
+        #[derive(
+            Clone,
+            Copy,
+            zerocopy::FromBytes,
+            zerocopy::IntoBytes,
+            zerocopy::Immutable,
+            zerocopy::KnownLayout,
+            zerocopy::Unaligned,
+        )]
+        struct JedecIdFrame {
+            cmd: u8,
+            id: [u8; 3],
+        }
+        use zerocopy::IntoBytes;
+
+        let mut frame = JedecIdFrame {
+            cmd: NOR_CMD_RDID,
+            id: [0; 3],
+        };
         self.bus
             .borrow_mut()
-            .transfer_in_place(&mut frame)
+            .transfer_in_place(frame.as_mut_bytes())
             .map_err(service_error)?;
-        let id = [frame[1], frame[2], frame[3]];
+        let id = frame.id;
         if id == [0, 0, 0] || id == [0xFF, 0xFF, 0xFF] {
             fstart_log::error!("spi-nor: no flash detected");
             return Err(ServiceError::HardwareError);
@@ -146,22 +165,41 @@ impl<B> SpiNorFlash<B> {
     where
         B: SpiBus<u8, Error = SunxiSpiError>,
     {
+        #[repr(C)]
+        #[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
+        struct ReadCommand {
+            opcode: u8,
+            addr: [u8; 3],
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
+        struct FastReadCommand {
+            opcode: u8,
+            addr: [u8; 3],
+            dummy: u8,
+        }
+        use zerocopy::IntoBytes;
+
         let cmd_len = self.cmd_len();
         let len = buf.len().min(NOR_MAX_TRANSFER - cmd_len);
         if len == 0 {
             return Ok(0);
         }
         let mut frame = [0u8; NOR_MAX_TRANSFER];
-        frame[0] = if self.fast_read {
-            NOR_CMD_FAST_READ
-        } else {
-            NOR_CMD_READ
-        };
-        frame[1] = (addr >> 16) as u8;
-        frame[2] = (addr >> 8) as u8;
-        frame[3] = addr as u8;
+        let [_, a2, a1, a0] = addr.to_be_bytes();
         if self.fast_read {
-            frame[4] = 0xFF;
+            let cmd = FastReadCommand {
+                opcode: NOR_CMD_FAST_READ,
+                addr: [a2, a1, a0],
+                dummy: 0xFF,
+            };
+            frame[..cmd_len].copy_from_slice(cmd.as_bytes());
+        } else {
+            let cmd = ReadCommand {
+                opcode: NOR_CMD_READ,
+                addr: [a2, a1, a0],
+            };
+            frame[..cmd_len].copy_from_slice(cmd.as_bytes());
         }
         let total = cmd_len + len;
         self.bus

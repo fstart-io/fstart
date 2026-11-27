@@ -17,6 +17,7 @@ fstart-core = { workspace = true }
 fstart-log = { workspace = true }
 tock-registers = { workspace = true }
 ufmt = { workspace = true }
+zerocopy = { workspace = true }
 
 [lints]
 workspace = true

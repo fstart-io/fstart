@@ -183,11 +183,7 @@ impl<'a> AcpiImage<'a> {
             return Err("duplicate FADT".into());
         }
 
-        let dsdt_addr = fadt_pointer(
-            fadt_hdr.prefix.dsdt.get(),
-            fadt_hdr.x_dsdt.get(),
-            "DSDT",
-        )?;
+        let dsdt_addr = fadt_pointer(fadt_hdr.prefix.dsdt.get(), fadt_hdr.x_dsdt.get(), "DSDT")?;
         if dsdt_addr == 0 {
             return Err("FADT DSDT address is zero".into());
         }

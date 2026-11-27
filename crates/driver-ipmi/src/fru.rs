@@ -180,23 +180,26 @@ impl FruIdentity {
         size: u16,
         mut read: impl FnMut(u16, &mut [u8]) -> Result<usize, Error>,
     ) -> Result<Self, Error> {
-        let mut header = [0u8; 8];
-        if size < 8 || read(0, &mut header)? < 8 {
+        use zerocopy::FromBytes;
+
+        let mut raw = [0u8; core::mem::size_of::<FruCommonHeader>()];
+        if size < raw.len() as u16 || read(0, &mut raw)? < raw.len() {
             return Err(Error::Short);
         }
-        if (header[0] & 0x0f) != 1 || !checksum_ok(&header) {
+        let header = FruCommonHeader::read_from_bytes(&raw).map_err(|_| Error::Short)?;
+        if (header.format_version & 0x0f) != 1 || !checksum_ok(&raw) {
             return Err(Error::Short);
         }
 
         let mut id = Self::EMPTY;
         let mut buf = [0u8; MAX_AREA_BYTES];
-        if let Some(area) = read_area(&mut read, size, header[2], &mut buf)? {
+        if let Some(area) = read_area(&mut read, size, header.chassis_info_offset, &mut buf)? {
             id.parse_chassis(area);
         }
-        if let Some(area) = read_area(&mut read, size, header[3], &mut buf)? {
+        if let Some(area) = read_area(&mut read, size, header.board_info_offset, &mut buf)? {
             id.parse_board(area);
         }
-        if let Some(area) = read_area(&mut read, size, header[4], &mut buf)? {
+        if let Some(area) = read_area(&mut read, size, header.product_info_offset, &mut buf)? {
             id.parse_product(area);
         }
         Ok(id)
@@ -244,14 +247,16 @@ impl FruIdentity {
     }
 
     fn parse_chassis(&mut self, area: &[u8]) {
-        let Some(&raw_kind) = area.get(2) else {
+        use zerocopy::FromBytes;
+
+        let Ok((prefix, rest)) = ChassisAreaPrefix::ref_from_prefix(area) else {
             return;
         };
-        let kind = raw_kind & 0x7f;
+        let kind = prefix.chassis_type & 0x7f;
         if (1..=MAX_CHASSIS_TYPE).contains(&kind) {
             self.chassis_type = Some(kind);
         }
-        let mut cursor = area.get(3..area.len().saturating_sub(1)).unwrap_or(&[]);
+        let mut cursor = rest.get(..rest.len().saturating_sub(1)).unwrap_or(&[]);
         if let Some(s) = next_field(&mut cursor, true) {
             self.chassis_part_number = s;
         }
@@ -261,12 +266,13 @@ impl FruIdentity {
     }
 
     fn parse_board(&mut self, area: &[u8]) {
-        let Some(&lang) = area.get(2) else {
+        use zerocopy::FromBytes;
+
+        let Ok((prefix, rest)) = BoardAreaPrefix::ref_from_prefix(area) else {
             return;
         };
-        let english = is_english(lang);
-        // Bytes 0..6: version, length, language, 3-byte mfg date/time.
-        let mut cursor = area.get(6..area.len().saturating_sub(1)).unwrap_or(&[]);
+        let english = is_english(prefix.language);
+        let mut cursor = rest.get(..rest.len().saturating_sub(1)).unwrap_or(&[]);
         if let Some(s) = next_field(&mut cursor, english) {
             self.board_manufacturer = s;
         }
@@ -282,12 +288,13 @@ impl FruIdentity {
     }
 
     fn parse_product(&mut self, area: &[u8]) {
-        let Some(&lang) = area.get(2) else {
+        use zerocopy::FromBytes;
+
+        let Ok((prefix, rest)) = ProductAreaPrefix::ref_from_prefix(area) else {
             return;
         };
-        let english = is_english(lang);
-        // Bytes 0..3: version, length, language.
-        let mut cursor = area.get(3..area.len().saturating_sub(1)).unwrap_or(&[]);
+        let english = is_english(prefix.language);
+        let mut cursor = rest.get(..rest.len().saturating_sub(1)).unwrap_or(&[]);
         if let Some(s) = next_field(&mut cursor, english) {
             self.product_manufacturer = s;
         }
@@ -308,6 +315,91 @@ impl FruIdentity {
         }
     }
 }
+
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct FruCommonHeader {
+    format_version: u8,
+    internal_use_offset: u8,
+    chassis_info_offset: u8,
+    board_info_offset: u8,
+    product_info_offset: u8,
+    multirecord_offset: u8,
+    pad: u8,
+    checksum: u8,
+}
+
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct FruAreaHeader {
+    format_version: u8,
+    length_blocks: u8,
+}
+
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct ChassisAreaPrefix {
+    header: FruAreaHeader,
+    chassis_type: u8,
+}
+
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct BoardAreaPrefix {
+    header: FruAreaHeader,
+    language: u8,
+    mfg_date: [u8; 3],
+}
+
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    zerocopy::FromBytes,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::Unaligned,
+)]
+struct ProductAreaPrefix {
+    header: FruAreaHeader,
+    language: u8,
+}
+
+tock_registers::register_bitfields![u8,
+    /// FRU Type/Length byte (IPMI FRU spec §13, 8 bits).
+    TypeLength [
+        LENGTH OFFSET(0) NUMBITS(6) [],
+        KIND OFFSET(6) NUMBITS(2) []
+    ]
+];
 
 /// The SMBIOS 2.6+ UUID (DSP0134 §7.2.1) of a `Get System GUID` (IPMI
 /// 2.0 §22.14) payload: its bytes as they come, which BMCs send in SMBIOS
@@ -348,14 +440,18 @@ fn read_area<'a>(
     if usize::from(start) + 2 > usize::from(size) {
         return Ok(None);
     }
-    let mut hdr = [0u8; 2];
-    if read(start, &mut hdr)? < 2 {
+    let mut raw_hdr = [0u8; core::mem::size_of::<FruAreaHeader>()];
+    if read(start, &mut raw_hdr)? < raw_hdr.len() {
         return Ok(None);
     }
-    if (hdr[0] & 0x0f) != 1 || hdr[1] == 0 {
+    let Ok(hdr) = zerocopy::FromBytes::read_from_bytes(&raw_hdr) else {
+        return Ok(None);
+    };
+    let hdr: FruAreaHeader = hdr;
+    if (hdr.format_version & 0x0f) != 1 || hdr.length_blocks == 0 {
         return Ok(None);
     }
-    let len = usize::from(hdr[1]) * 8;
+    let len = usize::from(hdr.length_blocks) * 8;
     if usize::from(start) + len > usize::from(size) {
         return Ok(None);
     }
@@ -373,8 +469,8 @@ fn next_field(cursor: &mut &[u8], english: bool) -> Option<FruString> {
         *cursor = &[];
         return None;
     }
-    let kind = tl >> 6;
-    let len = usize::from(tl & 0x3f);
+    let kind = TypeLength::KIND.read(tl);
+    let len = usize::from(TypeLength::LENGTH.read(tl));
     let data = rest.get(..len)?;
     *cursor = &rest[len..];
 
