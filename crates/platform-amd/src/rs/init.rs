@@ -654,6 +654,12 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
         // the memory map keeps it reserved.
         let apob =
             unsafe { Apob::from_address(V::APOB.base, psp::Variant::Gn) }.map_err(|_| "APOB")?;
+        if apob::mem::apcb_boot_info(&apob)
+            .and_then(|i| i.recovery())
+            .unwrap_or(false)
+        {
+            fstart_log::warn!("apob: APCB recovery boot");
+        }
         let map = sysmap::system_memory_map(&apob).map_err(|_| "APOB memory map")?;
         let regions =
             sysmap::memory_map(psp::Variant::Gn, map.top, map.holes()).map_err(|_| "memory map")?;

@@ -18,6 +18,15 @@ enum Command {
     Inspect(ImageArgs),
     /// Validate reachable dependencies; optionally check a retained prefix.
     Validate(ImageArgs),
+    /// Inspect an APCB v2 or v3 binary (header, groups, entries, tokens).
+    Apcb(ApcbArgs),
+}
+#[derive(clap::Args)]
+struct ApcbArgs {
+    file: PathBuf,
+    /// Print every v3 token (ID, name, value) in addition to entry summaries.
+    #[arg(long)]
+    tokens: bool,
 }
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Platform {
@@ -347,11 +356,58 @@ fn arguments(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Comma
         Args::try_parse_from(args).map(|a| a.command)
     }
 }
+fn inspect_apcb(a: ApcbArgs) -> amd::Result<()> {
+    use fstart_amdfw_format::apcb::{self, names, token, v2};
+    let bytes = std::fs::read(&a.file).map_err(|e| format!("{}: {e}", a.file.display()))?;
+    let ver = apcb::version(&bytes).map_err(|e| format!("APCB header: {e:?}"))?;
+    let size = apcb::size(&bytes).map_err(|e| format!("APCB size: {e:?}"))?;
+    let unique = apcb::unique_instance(&bytes).map_err(|e| format!("APCB unique: {e:?}"))?;
+    let ok = apcb::checksum_ok(&bytes).map_err(|e| format!("APCB checksum: {e:?}"))?;
+    println!(
+        "{}: {:?} file={:#x} apcb_size={:#x} unique={:#010x} checksum_ok={ok}",
+        a.file.display(),
+        ver,
+        bytes.len(),
+        size,
+        unique
+    );
+    if let Ok(Some(gpio)) = v2::read_gpio_id(&bytes) {
+        println!("  v2 GPIO RAM-ID: {gpio:?}");
+    }
+    apcb::walk(&bytes, |entry| {
+        let tok_count = token::kind_of(entry).map(|k| (k, entry.data.len() / token::TOKEN_SIZE));
+        println!(
+            "  group={:#06x} kind={:#06x} inst={} prio={:#04x} board={:#06x} data={:#x}..{:#x} ({}B){}",
+            entry.group,
+            entry.kind,
+            entry.instance,
+            entry.priority_mask,
+            entry.board_mask,
+            entry.data.start,
+            entry.data.end,
+            entry.data.len(),
+            match tok_count {
+                Some((k, n)) => format!(" tokens={n} ({k:?})"),
+                None => String::new(),
+            }
+        );
+        if a.tokens && tok_count.is_some() {
+            for (id, value) in token::entry_tokens(&bytes, entry) {
+                let name = names::name(id).unwrap_or("?");
+                println!("    {id:#010x} {name} = {value:#x} ({value})");
+            }
+        }
+        false
+    })
+    .map_err(|e| format!("APCB walk: {e:?}"))?;
+    Ok(())
+}
 fn run(a: Command) -> amd::Result<()> {
     match a {
         Command::Inspect(a) => inspect(a, false),
         Command::Validate(a) => inspect(a, true),
         Command::Pack(a) => pack(*a),
+        Command::Apcb(a) => inspect_apcb(a),
     }
 }
 fn main() {

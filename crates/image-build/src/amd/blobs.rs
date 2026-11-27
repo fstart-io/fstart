@@ -175,6 +175,13 @@ pub struct BoardBlobs {
     /// config 1), e.g. for a BMC on eSPI. Erased if absent.
     #[serde(default)]
     pub efs_espi: Option<[u8; 4]>,
+    /// Optional APCB v3 token overrides in `[package.metadata.fstart.amd]`
+    /// (applied last, after any Rust `Board::apcb_overlay`).
+    #[serde(default)]
+    pub apcb_tokens: Vec<super::apcb::BoardToken>,
+    /// Optional DF CXL region descriptors (`0xCC`) written into APCB v3.
+    #[serde(default)]
+    pub cxl_regions: Vec<fstart_amdfw_format::apcb::CxlRegion>,
 }
 
 /// The board tables of `table` (`[package.metadata.fstart.amd]`): itself
@@ -353,6 +360,11 @@ pub fn resolve(
             })
         })
         .collect::<Result<_, String>>()?;
+    let apcb_overlay = super::apcb::ApcbOverlay {
+        tokens: super::apcb::resolve_tokens(&board.apcb_tokens)?,
+        cxl_regions: board.cxl_regions.clone(),
+        v2_gpio_id: None,
+    };
     Ok(Resolved {
         files: PspFiles {
             flash_size,
@@ -371,6 +383,7 @@ pub fn resolve(
             apob_nv: None,
             psp_nv: None,
             apcb,
+            apcb_overlay,
             assets,
             psp_app: board.psp_app,
         },

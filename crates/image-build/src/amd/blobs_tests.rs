@@ -213,6 +213,8 @@ fn vendor_tables() -> (SocBlobs, BoardBlobs) {
         apcb: BoardApcb::Files { instances: 2 },
         apob_destination: None,
         efs_espi: None,
+        apcb_tokens: vec![],
+        cxl_regions: vec![],
     };
     (soc, board)
 }
@@ -375,6 +377,8 @@ fn entries_share_a_file_only_with_the_same_bytes() {
         apcb: BoardApcb::Files { instances: 0 },
         apob_destination: None,
         efs_espi: None,
+        apcb_tokens: vec![],
+        cxl_regions: vec![],
     };
     // The same entry twice: one file.
     let same = soc(vec![file(1, 0, 0, "a.bin"), file(1, 0, 0, "a.bin")], vec![]);

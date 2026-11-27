@@ -50,6 +50,49 @@ impl SocId {
     pub const fn rs(self) -> bool {
         matches!(self, Self::Genoa | Self::Siena)
     }
+
+    /// Look up a SoC by its `[package.metadata.fstart.amd.<name>]` table name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "picasso" => Some(Self::Picasso),
+            "zeppelin" => Some(Self::Zeppelin),
+            "naples" => Some(Self::Naples),
+            "rome" => Some(Self::Rome),
+            "milan" => Some(Self::Milan),
+            "genoa" => Some(Self::Genoa),
+            "siena" => Some(Self::Siena),
+            _ => None,
+        }
+    }
+}
+
+/// One board-declared APCB v3 token override (`no_std`-safe, read at host plan
+/// time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApcbTokenOverride {
+    pub id: u32,
+    pub value: u32,
+    pub kind: Option<fstart_amdfw_format::apcb::token::TokenKind>,
+}
+
+impl ApcbTokenOverride {
+    pub const fn new(
+        id: u32,
+        value: u32,
+        kind: Option<fstart_amdfw_format::apcb::token::TokenKind>,
+    ) -> Self {
+        Self { id, value, kind }
+    }
+
+    /// Disable `PspPsbAutoFuse` (`0x2fcd70c9`) in place where present.
+    pub const fn disable_psb_auto_fuse() -> Self {
+        Self::new(0x2fcd_70c9, 0, None)
+    }
+
+    /// Enable or disable ABL console output (`FchConsoleOutMode`, `0xddb759da`).
+    pub const fn abl_console_out(enable: bool) -> Self {
+        Self::new(0xddb7_59da, enable as u32, None)
+    }
 }
 
 /// A board's facts. Host planning and the board's stage read the same
@@ -93,6 +136,17 @@ pub trait Board: 'static {
     /// host ACPI baseline checks.
     fn acpi_soc_sb_aml(_soc: SocId) -> Result<alloc::vec::Vec<u8>, alloc::string::String> {
         Ok(alloc::vec::Vec::new())
+    }
+
+    /// Board-owned APCB v3 token overrides for `soc` (applied at host image
+    /// assembly time, before any `Cargo.toml` `apcb-tokens` escape hatch).
+    fn apcb_tokens(_soc: SocId) -> &'static [ApcbTokenOverride] {
+        &[]
+    }
+
+    /// Board-owned APCB v2 GPIO RAM-ID triples (`PSP / 0x60`) for `soc`.
+    fn apcb_v2_gpio(_soc: SocId) -> Option<[[u8; 3]; 4]> {
+        None
     }
 }
 

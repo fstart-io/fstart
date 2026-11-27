@@ -80,6 +80,27 @@ pub struct Host {
     pub option_store: Option<fstart_image_build::options::OptionStore>,
 }
 
+/// Build a board's Rust-declared APCB overlay for `soc` (`Board::apcb_tokens`
+/// and `Board::apcb_v2_gpio`).
+pub(super) fn board_apcb_overlay<B: Board>(
+    soc: crate::board::SocId,
+) -> fstart_image_build::amd::apcb::ApcbOverlay {
+    use fstart_image_build::amd::apcb::{ApcbOverlay, ApcbToken};
+    let tokens = B::apcb_tokens(soc)
+        .iter()
+        .map(|t| ApcbToken {
+            id: t.id,
+            value: t.value,
+            kind: t.kind,
+        })
+        .collect();
+    ApcbOverlay {
+        tokens,
+        cxl_regions: vec![],
+        v2_gpio_id: B::apcb_v2_gpio(soc),
+    }
+}
+
 /// What the flash image is made of.
 pub enum Image {
     /// One 16 MiB image with the PSP firmware of one SoC.
@@ -319,6 +340,15 @@ pub fn resolve(
     selection: &BuildSelection,
     options: &HostOptions,
 ) -> Result<BuildPlan, PlanError> {
+    resolve_with_apcb(host, selection, options, |_| Default::default())
+}
+
+fn resolve_with_apcb(
+    host: &Host,
+    selection: &BuildSelection,
+    options: &HostOptions,
+    board_apcb: impl Fn(crate::board::SocId) -> fstart_image_build::amd::apcb::ApcbOverlay,
+) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     selection.validate_compiler_files()?;
     if !selection.compiler_files.is_empty() {
@@ -345,8 +375,8 @@ pub fn resolve(
             window.map(|window| ffs(&host.layout, window, payload, config, microcode, external))
         };
         match &host.image {
-            Image::Single(image) => image.images(host, selection, options, ffs)?,
-            Image::Dual(image) => image.images(host, selection, options, ffs)?,
+            Image::Single(image) => image.images(host, selection, options, &board_apcb, ffs)?,
+            Image::Dual(image) => image.images(host, selection, options, &board_apcb, ffs)?,
         }
     };
     let plan = BuildPlan {
@@ -391,7 +421,7 @@ pub fn resolve_board<B: Board>(
     options: &HostOptions,
 ) -> Result<BuildPlan, PlanError> {
     let host = host::<B>()?;
-    let mut plan = resolve(&host, selection, options)?;
+    let mut plan = resolve_with_apcb(&host, selection, options, board_apcb_overlay::<B>)?;
     plan.options = self::options::<B>(&host, selection.log_level.as_deref())?;
     use fstart_image_build::options::OptionStore;
     plan.options.secure_boot = matches!(plan.options.store, Some(OptionStore::Varstore { .. }))

@@ -41,6 +41,16 @@ impl fstart_platform_amd::board::Board for Board {
     fn acpi_board() -> AcpiBoard {
         acpi_board()
     }
+
+    fn apcb_tokens(_soc: SocId) -> &'static [fstart_platform_amd::board::ApcbTokenOverride] {
+        use fstart_platform_amd::board::ApcbTokenOverride;
+        const TOKENS: &[ApcbTokenOverride] = &[
+            ApcbTokenOverride::disable_psb_auto_fuse(),
+            // PspOpnPlatformComptFusing: keep fusing off in place.
+            ApcbTokenOverride::new(0x24b4_5ecd, 0, None),
+        ];
+        TOKENS
+    }
 }
 
 /// The BMC's one KCS channel, KCS3 (`0xCA2`/`0xCA3`), which the OS's IPMI

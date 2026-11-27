@@ -81,6 +81,10 @@ pub struct PspFiles {
     /// The APCB instances, generated from the board's template.
     #[serde(default)]
     pub apcb: Option<ApcbFiles>,
+    /// Unified APCB v2/v3 overlay applied to every APCB (`0x60`/`0x68`) of the
+    /// partition before packing.
+    #[serde(default, skip_serializing_if = "super::apcb::ApcbOverlay::is_empty")]
+    pub apcb_overlay: super::apcb::ApcbOverlay,
     /// Files the FFS carries as verified data assets (e.g. the video BIOS).
     #[serde(default)]
     pub assets: Vec<fstart_core::board::FileAsset>,
@@ -709,6 +713,14 @@ impl AmdAssembly {
                 });
             }
         }
+        if !files.apcb_overlay.is_empty() {
+            let mut apcbs: Vec<(Key, &mut Vec<u8>)> = bios
+                .iter_mut()
+                .filter(|b| super::apcb::is_apcb(b.key))
+                .map(|b| (b.key, &mut b.bytes))
+                .collect();
+            super::apcb::apply(&mut apcbs, &files.apcb_overlay)?;
+        }
         SingleLevelImage {
             bios_directory: self.bios_directory,
             flash_size: files.flash_size,
@@ -788,6 +800,21 @@ impl PspFiles {
         };
         let mut psp = entries(&self.psp)?;
         let mut bios = entries(&self.bios)?;
+        if !self.apcb_overlay.is_empty() {
+            let mut apcbs: Vec<(Key, &mut Vec<u8>)> = bios
+                .iter_mut()
+                .filter_map(|entry| {
+                    if !super::apcb::is_apcb(entry.key) {
+                        return None;
+                    }
+                    match &mut entry.content {
+                        levels::Content::File(bytes) => Some((entry.key, bytes)),
+                        _ => None,
+                    }
+                })
+                .collect();
+            super::apcb::apply(&mut apcbs, &self.apcb_overlay)?;
+        }
         for fixed in &self.fixed {
             let entry = levels::Entry {
                 key: fixed.key,

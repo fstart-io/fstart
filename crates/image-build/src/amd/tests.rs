@@ -65,6 +65,7 @@ fn typed_operation_packs_real_reset_input_without_a_fictitious_ffs_image() {
         apob_nv: raw.apob_nv,
         psp_nv: raw.psp_nv,
         apcb: None,
+        apcb_overlay: Default::default(),
         assets: vec![],
         psp_app: false,
     };
@@ -438,11 +439,47 @@ fn native_image_has_the_partition_the_compressed_reset_and_the_ffs() {
 fn check_native_image(reset_size: u32, reset_offset: u32) {
     use assembly::{ApcbFiles, FileBlob, PspFiles, PspOptions};
     use fstart_amdfw_format::{Flash, directory::BiosEntry};
-    // An APCB template with the GPIO and one SPD sentinel.
-    let mut template = vec![0; 128 + 28 + 512];
-    template[..4].copy_from_slice(b"APCB");
-    template[32..44].copy_from_slice(&[0xfa, 0xde, 0xdd, 0xad].repeat(3));
-    template[156..162].copy_from_slice(&[0xf0, 0x05, 0xba, 0x11, 0, 0]);
+    // An APCB v2 template with PSP/0x60 GPIO and MEMORY/0x30 SPD entries.
+    let mut template = Vec::new();
+    template.extend_from_slice(b"APCB");
+    template.extend_from_slice(&0x20u16.to_le_bytes());
+    template.extend_from_slice(&0x20u16.to_le_bytes());
+    template.extend_from_slice(&0u32.to_le_bytes());
+    template.extend_from_slice(&1u32.to_le_bytes());
+    template.resize(0x20, 0);
+    let psp_at = template.len();
+    template.extend_from_slice(b"PSPG");
+    template.extend_from_slice(&0x1701u16.to_le_bytes());
+    template.extend_from_slice(&16u16.to_le_bytes());
+    template.extend_from_slice(&1u16.to_le_bytes());
+    template.extend_from_slice(&[0; 6]);
+    let mut psp_data = vec![0u8; 16];
+    psp_data[0..2].copy_from_slice(&3u16.to_le_bytes());
+    template.extend_from_slice(&0x1701u16.to_le_bytes());
+    template.extend_from_slice(&0x60u16.to_le_bytes());
+    template.extend_from_slice(&((16 + psp_data.len()) as u16).to_le_bytes());
+    template.extend_from_slice(&[0u8; 10]);
+    template.extend_from_slice(&psp_data);
+    let psp_size = (template.len() - psp_at) as u32;
+    template[psp_at + 12..psp_at + 16].copy_from_slice(&psp_size.to_le_bytes());
+    let mem_at = template.len();
+    template.extend_from_slice(b"MEMG");
+    template.extend_from_slice(&0x1704u16.to_le_bytes());
+    template.extend_from_slice(&16u16.to_le_bytes());
+    template.extend_from_slice(&1u16.to_le_bytes());
+    template.extend_from_slice(&[0; 6]);
+    let mut mem_data = vec![0u8; 4 + 28 + 512];
+    mem_data[0..4].copy_from_slice(&1u32.to_le_bytes());
+    template.extend_from_slice(&0x1704u16.to_le_bytes());
+    template.extend_from_slice(&0x30u16.to_le_bytes());
+    template.extend_from_slice(&((16 + mem_data.len()) as u16).to_le_bytes());
+    template.extend_from_slice(&[0u8; 10]);
+    template.extend_from_slice(&mem_data);
+    let mem_size = (template.len() - mem_at) as u32;
+    template[mem_at + 12..mem_at + 16].copy_from_slice(&mem_size.to_le_bytes());
+    let total = template.len() as u32;
+    template[8..12].copy_from_slice(&total.to_le_bytes());
+    fstart_amdfw_format::apcb::fix_checksum(&mut template).unwrap();
     let files = PspFiles {
         flash_size: 0x100_0000,
         efs_offset: 0xe2_0000,
@@ -475,6 +512,7 @@ fn check_native_image(reset_size: u32, reset_offset: u32) {
             second_channel: false,
             strip_manufacturer: true,
         }),
+        apcb_overlay: Default::default(),
         assets: vec![],
         psp_app: false,
     };
@@ -653,6 +691,7 @@ fn offset_addressed(flash_size: u32, slot: BiosDirectorySlot) -> AmdAssembly {
                 apob_nv: None,
                 psp_nv: None,
                 apcb: None,
+                apcb_overlay: Default::default(),
                 assets: vec![],
                 psp_app: false,
             },

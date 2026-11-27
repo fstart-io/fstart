@@ -47,6 +47,7 @@ impl Image {
         host: &Host,
         selection: &BuildSelection,
         options: &HostOptions,
+        board_apcb: &impl Fn(crate::board::SocId) -> fstart_image_build::amd::apcb::ApcbOverlay,
         ffs: impl FnOnce(Option<MicrocodeConfig>, bool) -> Option<FfsAssembly>,
     ) -> Result<Vec<ImageStep>, String> {
         if self.halves.is_empty() {
@@ -58,7 +59,7 @@ impl Image {
             let ffs = ffs(None, false).ok_or("the SP3 layout has an FFS")?;
             return Ok(vec![ffs.into()]);
         }
-        let (packed, microcode) = self.packed(selection)?;
+        let (packed, microcode) = self.packed(selection, board_apcb)?;
         let ffs = ffs(Some(microcode), false).ok_or("the SP3 layout has an FFS")?;
         Ok(vec![
             ffs.into(),
@@ -83,6 +84,7 @@ impl Image {
     fn packed(
         &self,
         selection: &BuildSelection,
+        board_apcb: &impl Fn(crate::board::SocId) -> fstart_image_build::amd::apcb::ApcbOverlay,
     ) -> Result<(Vec<PackedHalf>, MicrocodeConfig), String> {
         let tables = &selection.manifests;
         let boards = blobs::board_tables(&tables.board["amd"])?;
@@ -106,13 +108,18 @@ impl Image {
                     half.name
                 ));
             }
-            let resolved = blobs::resolve(
+            let mut resolved = blobs::resolve(
                 &soc,
                 board,
                 name,
                 Path::new(BLOBS_DIR),
                 fstart_amdfw_format::HALF_SIZE as u32,
             )?;
+            if let Some(soc_id) = crate::board::SocId::from_name(half.name) {
+                let mut overlay = board_apcb(soc_id);
+                overlay.merge(resolved.files.apcb_overlay);
+                resolved.files.apcb_overlay = overlay;
+            }
             for file in &resolved.microcode {
                 files
                     .push(bounded(file)?)
