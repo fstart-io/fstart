@@ -574,7 +574,7 @@ mod proofs {
     /// bytes succeeds. Policy failures never reach the cryptography.
     ///
     /// The key table has symbolic length, so its loop needs an explicit
-    /// bound; `ci/kani.sh` raises memcmp's for the 160-byte slot compares.
+    /// bound; `fbuild kani` raises memcmp's for the 160-byte slot compares.
     #[kani::proof]
     #[kani::unwind(6)]
     #[kani::stub(fstart_crypto::verify::verify_signature, verify_signature_stub)]

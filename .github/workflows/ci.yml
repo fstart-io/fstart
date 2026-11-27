@@ -414,7 +414,7 @@ jobs:
           rustup toolchain install --profile minimal "$tc"
           ln -sfn "$(rustc +"$tc" --print sysroot)" ~/.kani/kani-0.68.0/toolchain
       - name: Run Kani proofs
-        run: ./ci/kani.sh
+        run: cargo fbuild kani
 
   # The one status check that says whether the run passed.
   check:
