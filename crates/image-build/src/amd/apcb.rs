@@ -112,6 +112,18 @@ impl ApcbToken {
     }
 }
 
+/// One APCB v2 packed parameter-list override (`group`, `type`, `token`,
+/// `value`), used on Zeppelin (MJ11) and Picasso.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ApcbV2Param {
+    pub group: u16,
+    #[serde(rename = "type")]
+    pub entry_type: u16,
+    pub token: u16,
+    pub value: u64,
+}
+
 /// Unified APCB overlay carried in [`super::assembly::PspFiles`] and applied
 /// to every APCB (`0x60`/`0x68`) of a packed image.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +136,10 @@ pub struct ApcbOverlay {
     /// Optional v2 GPIO RAM-ID triples (`PSP / 0x60`, four `(gpio, iomux, bank)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v2_gpio_id: Option<[[u8; 3]; 4]>,
+    /// Optional v2 parameter-list overrides (e.g. Zeppelin `FCHG/0x0c`,
+    /// `DFG/0x06`, `MEMG/0x08`, `CBSG/0x0d`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub v2_params: Vec<ApcbV2Param>,
     /// When set, synthesize the v3 override (`0x60/0`, `0x68/8`) and event/PPR
     /// store (`0x60/1`, `0x68/9`) APCBs from scratch using this SoC layout
     /// instead of keeping the vendor's files. `None` keeps all vendor APCBs.
@@ -137,6 +153,7 @@ impl ApcbOverlay {
             tokens: Vec::new(),
             cxl_regions: Vec::new(),
             v2_gpio_id: None,
+            v2_params: Vec::new(),
             synthesize_v3: None,
         }
     }
@@ -145,6 +162,7 @@ impl ApcbOverlay {
         self.tokens.is_empty()
             && self.cxl_regions.is_empty()
             && self.v2_gpio_id.is_none()
+            && self.v2_params.is_empty()
             && self.synthesize_v3.is_none()
     }
 
@@ -183,7 +201,18 @@ impl ApcbOverlay {
         self
     }
 
-    /// Merge `other` on top of `self` (later values win per token ID).
+    /// Override a v2 parameter-list entry (`(group, entry_type, token) -> value`).
+    pub fn with_v2_param(mut self, group: u16, entry_type: u16, token: u16, value: u64) -> Self {
+        self.set_v2_param(ApcbV2Param {
+            group,
+            entry_type,
+            token,
+            value,
+        });
+        self
+    }
+
+    /// Merge `other` on top of `self` (later values win per token/param key).
     pub fn merge(&mut self, other: Self) {
         for token in other.tokens {
             self.set_token(token);
@@ -193,6 +222,9 @@ impl ApcbOverlay {
         }
         if other.v2_gpio_id.is_some() {
             self.v2_gpio_id = other.v2_gpio_id;
+        }
+        for param in other.v2_params {
+            self.set_v2_param(param);
         }
         if other.synthesize_v3.is_some() {
             self.synthesize_v3 = other.synthesize_v3;
@@ -204,6 +236,16 @@ impl ApcbOverlay {
             *existing = token;
         } else {
             self.tokens.push(token);
+        }
+    }
+
+    fn set_v2_param(&mut self, param: ApcbV2Param) {
+        if let Some(existing) = self.v2_params.iter_mut().find(|p| {
+            p.group == param.group && p.entry_type == param.entry_type && p.token == param.token
+        }) {
+            *existing = param;
+        } else {
+            self.v2_params.push(param);
         }
     }
 }
@@ -331,6 +373,42 @@ pub fn apply(apcbs: &mut [(Key, &mut Vec<u8>)], overlay: &ApcbOverlay) -> Result
             return Err(
                 "CXL regions requested, but no APCB has a DF CXL region array (0xCC)".into(),
             );
+        }
+    }
+
+    for param in &overlay.v2_params {
+        let mut updated = 0usize;
+        for (key, bytes) in apcbs.iter_mut() {
+            updated += v2::update_param(
+                bytes,
+                param.group,
+                param.entry_type,
+                param.token,
+                param.value,
+            )
+            .map_err(|e| {
+                format!(
+                    "APCB {key:?}: v2 param ({:#06x}/{:#04x}/{:#06x}): {e:?}",
+                    param.group, param.entry_type, param.token
+                )
+            })?;
+        }
+        if updated == 0 {
+            return Err(format!(
+                "v2 param ({:#06x}/{:#04x}/{:#06x}) not found in any APCB",
+                param.group, param.entry_type, param.token
+            ));
+        }
+        for (key, bytes) in apcbs.iter() {
+            if let Some(read) = v2::read_param(bytes, param.group, param.entry_type, param.token)
+                .map_err(|e| format!("APCB {key:?}: v2 param readback: {e:?}"))?
+                && read.value != param.value
+            {
+                return Err(format!(
+                    "APCB {key:?}: v2 param ({:#06x}/{:#04x}/{:#06x}) reads {:#x} after writing {:#x}",
+                    param.group, param.entry_type, param.token, read.value, param.value
+                ));
+            }
         }
     }
 
@@ -696,5 +774,59 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("explicit size"), "{err}");
+    }
+
+    #[test]
+    fn v2_param_overlay_updates_and_commits() {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"APCB");
+        out.extend_from_slice(&0x20u16.to_le_bytes());
+        out.extend_from_slice(&0x20u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&7u32.to_le_bytes());
+        out.resize(0x20, 0);
+        let fch_at = out.len();
+        out.extend_from_slice(b"FCHG");
+        out.extend_from_slice(&apcb::group::FCH.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&[0; 6]);
+        // FCHG/0x0c with two 1-byte params (0x1c01 = 0, 0x1c02 = 1), matching MJ11.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(1u32 | (0x1c01u32 << 8)).to_le_bytes());
+        payload.extend_from_slice(&(1u32 | (0x1c02u32 << 8)).to_le_bytes());
+        payload.extend_from_slice(&(0x1fffu32 << 8).to_le_bytes());
+        payload.extend_from_slice(&[0x00, 0x01, 0xff, 0x00]);
+        out.extend_from_slice(&apcb::group::FCH.to_le_bytes());
+        out.extend_from_slice(&v2::param_type::FCH_PARAMS.to_le_bytes());
+        out.extend_from_slice(&((16 + payload.len()) as u16).to_le_bytes());
+        out.extend_from_slice(&[0u8; 10]);
+        out.extend_from_slice(&payload);
+        let fch_size = (out.len() - fch_at) as u32;
+        out[fch_at + 12..fch_at + 16].copy_from_slice(&fch_size.to_le_bytes());
+        let total = out.len() as u32;
+        out[8..12].copy_from_slice(&total.to_le_bytes());
+        apcb::fix_checksum(&mut out).unwrap();
+
+        let mut set = [(Key::new(bios::APCB, 0, 0), &mut out)];
+        apply(
+            &mut set,
+            &ApcbOverlay::new().with_v2_param(
+                apcb::group::FCH,
+                v2::param_type::FCH_PARAMS,
+                0x1c01,
+                1,
+            ),
+        )
+        .unwrap();
+        assert!(apcb::checksum_ok(&out).unwrap());
+        assert_eq!(apcb::unique_instance(&out), Ok(8));
+        assert_eq!(
+            v2::read_param(&out, apcb::group::FCH, v2::param_type::FCH_PARAMS, 0x1c01)
+                .unwrap()
+                .unwrap()
+                .value,
+            1
+        );
     }
 }

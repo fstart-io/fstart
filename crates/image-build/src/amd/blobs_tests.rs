@@ -214,6 +214,7 @@ fn vendor_tables() -> (SocBlobs, BoardBlobs) {
         apob_destination: None,
         efs_espi: None,
         apcb_tokens: vec![],
+        apcb_v2_params: vec![],
         cxl_regions: vec![],
     };
     (soc, board)
@@ -378,6 +379,7 @@ fn entries_share_a_file_only_with_the_same_bytes() {
         apob_destination: None,
         efs_espi: None,
         apcb_tokens: vec![],
+        apcb_v2_params: vec![],
         cxl_regions: vec![],
     };
     // The same entry twice: one file.

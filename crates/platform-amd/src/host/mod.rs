@@ -95,13 +95,13 @@ pub(super) const fn v3_layout(
     }
 }
 
-/// Build a board's Rust-declared APCB overlay for `soc` (`Board::apcb_tokens`
-/// and `Board::apcb_v2_gpio`).
+/// Build a board's Rust-declared APCB overlay for `soc` (`Board::apcb_tokens`,
+/// `Board::apcb_v2_gpio`, and `Board::apcb_v2_params`).
 pub(super) fn board_apcb_overlay<B: Board>(
     soc: crate::board::SocId,
     vendor_apcb: bool,
 ) -> fstart_image_build::amd::apcb::ApcbOverlay {
-    use fstart_image_build::amd::apcb::{ApcbOverlay, ApcbToken};
+    use fstart_image_build::amd::apcb::{ApcbOverlay, ApcbToken, ApcbV2Param};
     let tokens = B::apcb_tokens(soc)
         .iter()
         .map(|t| ApcbToken {
@@ -110,10 +110,20 @@ pub(super) fn board_apcb_overlay<B: Board>(
             kind: t.kind,
         })
         .collect();
+    let v2_params = B::apcb_v2_params(soc)
+        .iter()
+        .map(|p| ApcbV2Param {
+            group: p.group,
+            entry_type: p.entry_type,
+            token: p.token,
+            value: p.value,
+        })
+        .collect();
     ApcbOverlay {
         tokens,
         cxl_regions: vec![],
         v2_gpio_id: B::apcb_v2_gpio(soc),
+        v2_params,
         synthesize_v3: if vendor_apcb { None } else { v3_layout(soc) },
     }
 }

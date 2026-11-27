@@ -95,6 +95,27 @@ impl ApcbTokenOverride {
     }
 }
 
+/// One board-declared APCB v2 parameter-list override (`no_std`-safe, read at
+/// host plan time), keyed by `(group, entry_type, token)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApcbV2ParamOverride {
+    pub group: u16,
+    pub entry_type: u16,
+    pub token: u16,
+    pub value: u64,
+}
+
+impl ApcbV2ParamOverride {
+    pub const fn new(group: u16, entry_type: u16, token: u16, value: u64) -> Self {
+        Self {
+            group,
+            entry_type,
+            token,
+            value,
+        }
+    }
+}
+
 /// A board's facts. Host planning and the board's stage read the same
 /// values; the flow is the board's `main`.
 pub trait Board: 'static {
@@ -147,6 +168,12 @@ pub trait Board: 'static {
     /// Board-owned APCB v2 GPIO RAM-ID triples (`PSP / 0x60`) for `soc`.
     fn apcb_v2_gpio(_soc: SocId) -> Option<[[u8; 3]; 4]> {
         None
+    }
+
+    /// Board-owned APCB v2 parameter-list overrides (`(group, entry_type,
+    /// token) -> value`) for `soc` (Zeppelin/MJ11, Picasso).
+    fn apcb_v2_params(_soc: SocId) -> &'static [ApcbV2ParamOverride] {
+        &[]
     }
 }
 

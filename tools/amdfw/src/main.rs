@@ -376,6 +376,19 @@ fn inspect_apcb(a: ApcbArgs) -> amd::Result<()> {
     }
     apcb::walk(&bytes, |entry| {
         let tok_count = token::kind_of(entry).map(|k| (k, entry.data.len() / token::TOKEN_SIZE));
+        let v2_param_count = if ver == apcb::Version::V2
+            && v2::param_type::is_param_entry(entry.group, entry.kind)
+        {
+            let mut n = 0usize;
+            v2::for_each_entry_param(&bytes[entry.data.clone()], |_| {
+                n += 1;
+                false
+            })
+            .ok()
+            .map(|()| n)
+        } else {
+            None
+        };
         println!(
             "  group={:#06x} kind={:#06x} inst={} prio={:#04x} board={:#06x} data={:#x}..{:#x} ({}B){}",
             entry.group,
@@ -386,9 +399,10 @@ fn inspect_apcb(a: ApcbArgs) -> amd::Result<()> {
             entry.data.start,
             entry.data.end,
             entry.data.len(),
-            match tok_count {
-                Some((k, n)) => format!(" tokens={n} ({k:?})"),
-                None => String::new(),
+            match (tok_count, v2_param_count) {
+                (Some((k, n)), _) => format!(" tokens={n} ({k:?})"),
+                (None, Some(n)) => format!(" params={n}"),
+                (None, None) => String::new(),
             }
         );
         if a.tokens && tok_count.is_some() {
@@ -396,6 +410,15 @@ fn inspect_apcb(a: ApcbArgs) -> amd::Result<()> {
                 let name = names::name(id).unwrap_or("?");
                 println!("    {id:#010x} {name} = {value:#x} ({value})");
             }
+        }
+        if a.tokens && v2_param_count.is_some() {
+            let _ = v2::for_each_entry_param(&bytes[entry.data.clone()], |p| {
+                println!(
+                    "    token={:#06x} size={}B tp={} = {:#x} ({})",
+                    p.token, p.size, p.time_point, p.value, p.value
+                );
+                false
+            });
         }
         false
     })

@@ -3,17 +3,23 @@
 //! - `PSP / 0x60`: GPIO board-ID strap selection (`method = 3`, four
 //!   `(gpio, iomux, bank)` triples starting at data offset `+2`);
 //! - `MEMORY / 0x30`: per-slot DDR4 SPD table (`u32 count` followed by
-//!   `count` `SpdSlot` records of 28-byte [`SpdDescriptor`] + 512-byte SPD).
+//!   `count` `SpdSlot` records of 28-byte [`SpdDescriptor`] + 512-byte SPD);
+//! - Parameter-list entries (`PSPG/0x02`, `CCXG/0x04`, `DFG/0x06`,
+//!   `MEMG/0x08`, `GNBG/0x0a`, `FCHG/0x0c`, `CBSG/0x0d`, `CBSG/0x0f`):
+//!   packed `APCB_PARAM_ATTRIBUTE_ENTRY` (`u32`) table terminated by
+//!   `(time_point = 0, token = 0x1fff)` followed by contiguous little-endian
+//!   values of `1`, `2`, `4`, or `8` bytes each ([`for_each_entry_param`],
+//!   [`read_param`], [`update_param`]).
 //!
 //! Because this walks the APCB v2 container directly rather than scanning for
 //! magic sentinels, it works identically on both sentinel templates
-//! (`APCB_magic.bin`) and real donor APCBs (such as Vilboz's extracted
-//! instances).
+//! (`APCB_magic.bin`) and real donor APCBs (such as Vilboz's and MJ11's
+//! extracted instances).
 
 use zerocopy::little_endian::U32;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
-use super::{Error, Version, find, group, version};
+use super::{Error, Version, find, group, version, walk};
 
 /// PSP group entry type for board-ID selection (`BoardIdGettingMethod`).
 pub const BOARD_ID_METHOD: u16 = 0x60;
@@ -21,6 +27,238 @@ pub const BOARD_ID_METHOD: u16 = 0x60;
 pub const BOARD_ID_GPIO: u16 = 3;
 /// Memory group entry type for embedded SPD tables (`DimmInfoSmbus` / `SpdData`).
 pub const MEMORY_SPD: u16 = 0x30;
+
+/// Entry types of APCB v2 packed parameter-list entries.
+pub mod param_type {
+    use super::group;
+
+    pub const PSP_PARAMS: u16 = 0x02;
+    pub const CCX_PARAMS: u16 = 0x04;
+    pub const DF_PARAMS: u16 = 0x06;
+    pub const MEMORY_PARAMS: u16 = 0x08;
+    pub const GNB_PARAMS: u16 = 0x0a;
+    pub const FCH_PARAMS: u16 = 0x0c;
+    pub const CBS_COMMON_PARAMS: u16 = 0x0d;
+    pub const CBS_DEBUG_PARAMS: u16 = 0x0f;
+
+    /// Whether `(group_id, entry_type)` is an APCB v2 packed parameter-list entry.
+    pub const fn is_param_entry(group_id: u16, entry_type: u16) -> bool {
+        matches!(
+            (group_id, entry_type),
+            (group::PSP, PSP_PARAMS)
+                | (group::CCX, CCX_PARAMS)
+                | (group::DF, DF_PARAMS)
+                | (group::MEMORY, MEMORY_PARAMS)
+                | (group::GNB, GNB_PARAMS)
+                | (group::FCH, FCH_PARAMS)
+                | (group::CBS, CBS_COMMON_PARAMS | CBS_DEBUG_PARAMS)
+        )
+    }
+}
+
+/// Token ID marking the end of an APCB v2 `APCB_PARAM_ATTRIBUTE_ENTRY` table.
+const PARAM_END_TOKEN: u16 = 0x1fff;
+
+/// One decoded parameter from an APCB v2 packed parameter-list entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V2Param {
+    pub time_point: u8,
+    pub token: u16,
+    /// Width in bytes (`1`, `2`, `4`, or `8`).
+    pub size: u8,
+    pub value: u64,
+}
+
+#[derive(Clone, Copy)]
+struct Attr {
+    time_point: u8,
+    token: u16,
+    size: u8,
+}
+
+fn decode_attr(word: u32) -> Attr {
+    Attr {
+        time_point: (word & 0xff) as u8,
+        token: ((word >> 8) & 0x1fff) as u16,
+        size: (((word >> 21) & 0x7) as u8) + 1,
+    }
+}
+
+fn valid_param_size(size: u8) -> bool {
+    matches!(size, 1 | 2 | 4 | 8)
+}
+
+fn value_fits(size: u8, value: u64) -> bool {
+    match size {
+        1 => value <= u64::from(u8::MAX),
+        2 => value <= u64::from(u16::MAX),
+        4 => value <= u64::from(u32::MAX),
+        8 => true,
+        _ => false,
+    }
+}
+
+/// Locate the byte offset where the value block begins (immediately after the
+/// `(time_point = 0, token = 0x1fff)` terminator attribute) and count entries.
+fn param_value_start(payload: &[u8]) -> Result<(usize, usize), Error> {
+    let mut off = 0usize;
+    let mut count = 0usize;
+    while off + 4 <= payload.len() {
+        let word = u32::from_le_bytes([
+            payload[off],
+            payload[off + 1],
+            payload[off + 2],
+            payload[off + 3],
+        ]);
+        off += 4;
+        let attr = decode_attr(word);
+        if attr.time_point == 0 && attr.token == PARAM_END_TOKEN {
+            return Ok((count, off));
+        }
+        if !valid_param_size(attr.size) {
+            return Err(Error::EntrySize {
+                expected: 1,
+                actual: usize::from(attr.size),
+            });
+        }
+        count += 1;
+    }
+    Err(Error::Truncated(payload.len()))
+}
+
+/// Walk every parameter in a single APCB v2 parameter-list entry's `payload`.
+/// Stops early if `f` returns `true`.
+pub fn for_each_entry_param(
+    payload: &[u8],
+    mut f: impl FnMut(V2Param) -> bool,
+) -> Result<(), Error> {
+    let (count, mut val_off) = param_value_start(payload)?;
+    for i in 0..count {
+        let off = i * 4;
+        let attr = decode_attr(u32::from_le_bytes([
+            payload[off],
+            payload[off + 1],
+            payload[off + 2],
+            payload[off + 3],
+        ]));
+        let sz = usize::from(attr.size);
+        let end = val_off.checked_add(sz).ok_or(Error::Truncated(val_off))?;
+        let slice = payload.get(val_off..end).ok_or(Error::Truncated(end))?;
+        let mut buf = [0u8; 8];
+        buf[..sz].copy_from_slice(slice);
+        let value = u64::from_le_bytes(buf);
+        val_off = end;
+        if f(V2Param {
+            time_point: attr.time_point,
+            token: attr.token,
+            size: attr.size,
+            value,
+        }) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Read the first occurrence of `(group_id, entry_type, token)` from a v2 APCB.
+pub fn read_param(
+    apcb: &[u8],
+    group_id: u16,
+    entry_type: u16,
+    token: u16,
+) -> Result<Option<V2Param>, Error> {
+    if version(apcb)? != Version::V2 {
+        return Ok(None);
+    }
+    let mut found = None;
+    let mut err = None;
+    walk(apcb, |entry| {
+        if entry.group != group_id || entry.kind != entry_type {
+            return false;
+        }
+        if let Err(e) = for_each_entry_param(&apcb[entry.data.clone()], |p| {
+            if p.token == token {
+                found = Some(p);
+                true
+            } else {
+                false
+            }
+        }) {
+            err = Some(e);
+            return true;
+        }
+        found.is_some()
+    })?;
+    if let Some(e) = err {
+        return Err(e);
+    }
+    Ok(found)
+}
+
+/// Update every occurrence of `(group_id, entry_type, token)` in place across
+/// all matching entries of a v2 APCB (without fixing checksum). Returns the
+/// number of occurrences updated.
+///
+/// Updating all matching entries ensures duplicate entries (such as MJ11's
+/// duplicated `CBSG / 0x0d` and `CBSG / 0x0f` blocks) stay consistent.
+pub fn update_param(
+    apcb: &mut [u8],
+    group_id: u16,
+    entry_type: u16,
+    token: u16,
+    value: u64,
+) -> Result<usize, Error> {
+    if version(apcb)? != Version::V2 {
+        return Ok(0);
+    }
+    // Collect matching entry data ranges first without allocating.
+    let mut updated = 0usize;
+    let mut cursor = 0usize;
+    loop {
+        let mut next_range = None;
+        walk(apcb, |entry| {
+            if entry.header_offset >= cursor && entry.group == group_id && entry.kind == entry_type
+            {
+                cursor = entry.header_offset + 1;
+                next_range = Some(entry.data.clone());
+                true
+            } else {
+                false
+            }
+        })?;
+        let Some(range) = next_range else {
+            break;
+        };
+        let payload = &mut apcb[range];
+        let (count, mut val_off) = param_value_start(payload)?;
+        for i in 0..count {
+            let off = i * 4;
+            let attr = decode_attr(u32::from_le_bytes([
+                payload[off],
+                payload[off + 1],
+                payload[off + 2],
+                payload[off + 3],
+            ]));
+            let sz = usize::from(attr.size);
+            let end = val_off.checked_add(sz).ok_or(Error::Truncated(val_off))?;
+            if end > payload.len() {
+                return Err(Error::Truncated(end));
+            }
+            if attr.token == token {
+                if !value_fits(attr.size, value) {
+                    return Err(Error::TokenValue {
+                        id: u32::from(token),
+                        value: value as u32,
+                    });
+                }
+                payload[val_off..end].copy_from_slice(&value.to_le_bytes()[..sz]);
+                updated += 1;
+            }
+            val_off = end;
+        }
+    }
+    Ok(updated)
+}
 
 /// 28-byte descriptor preceding each 512-byte SPD payload in `MEMORY / 0x30`.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned, Clone, Copy, Debug)]
@@ -236,5 +474,105 @@ mod tests {
         fix_checksum(&mut apcb).unwrap();
         assert!(checksum_ok(&apcb).unwrap());
         assert_eq!(read_gpio_id(&apcb), Ok(Some(want_gpio)));
+    }
+
+    fn v2_param_apcb() -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"APCB");
+        out.extend_from_slice(&0x20u16.to_le_bytes());
+        out.extend_from_slice(&0x20u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.resize(0x20, 0);
+
+        let attr = |tp: u8, token: u16, size: u8| -> [u8; 4] {
+            let word = u32::from(tp) | (u32::from(token) << 8) | (u32::from(size - 1) << 21);
+            word.to_le_bytes()
+        };
+        let end_attr = || -> [u8; 4] { (u32::from(PARAM_END_TOKEN) << 8).to_le_bytes() };
+
+        // CBSG with two duplicate 0x0d entries (mirroring MJ11).
+        let cbs_at = out.len();
+        out.extend_from_slice(b"CBSG");
+        out.extend_from_slice(&group::CBS.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&[0; 6]);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&attr(1, 0x001c, 4));
+        payload.extend_from_slice(&attr(1, 0x005b, 1));
+        payload.extend_from_slice(&attr(1, 0x002c, 2));
+        payload.extend_from_slice(&end_attr());
+        payload.extend_from_slice(&0x0000_0001u32.to_le_bytes());
+        payload.push(0x00);
+        payload.extend_from_slice(&0x1234u16.to_le_bytes());
+        payload.push(0xff);
+        for _ in 0..2 {
+            out.extend_from_slice(&group::CBS.to_le_bytes());
+            out.extend_from_slice(&param_type::CBS_COMMON_PARAMS.to_le_bytes());
+            out.extend_from_slice(&((16 + payload.len()) as u16).to_le_bytes());
+            out.extend_from_slice(&[0u8; 10]);
+            out.extend_from_slice(&payload);
+        }
+        let cbs_size = (out.len() - cbs_at) as u32;
+        out[cbs_at + 12..cbs_at + 16].copy_from_slice(&cbs_size.to_le_bytes());
+
+        let total = out.len() as u32;
+        out[8..12].copy_from_slice(&total.to_le_bytes());
+        fix_checksum(&mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn reads_and_updates_v2_params_across_duplicate_entries() {
+        let mut apcb = v2_param_apcb();
+        assert_eq!(
+            read_param(&apcb, group::CBS, param_type::CBS_COMMON_PARAMS, 0x002c),
+            Ok(Some(V2Param {
+                time_point: 1,
+                token: 0x002c,
+                size: 2,
+                value: 0x1234,
+            }))
+        );
+        // Rejects value wider than 1-byte param 0x005b.
+        assert!(matches!(
+            update_param(
+                &mut apcb,
+                group::CBS,
+                param_type::CBS_COMMON_PARAMS,
+                0x005b,
+                0x100
+            ),
+            Err(Error::TokenValue { id: 0x005b, .. })
+        ));
+        // Updates both duplicate 0x0d entries in place.
+        assert_eq!(
+            update_param(
+                &mut apcb,
+                group::CBS,
+                param_type::CBS_COMMON_PARAMS,
+                0x002c,
+                0xabcd
+            ),
+            Ok(2)
+        );
+        fix_checksum(&mut apcb).unwrap();
+        assert!(checksum_ok(&apcb).unwrap());
+        let mut seen = Vec::new();
+        walk(&apcb, |e| {
+            if e.group == group::CBS && e.kind == param_type::CBS_COMMON_PARAMS {
+                for_each_entry_param(&apcb[e.data.clone()], |p| {
+                    if p.token == 0x002c {
+                        seen.push(p.value);
+                    }
+                    false
+                })
+                .unwrap();
+            }
+            false
+        })
+        .unwrap();
+        assert_eq!(seen, vec![0xabcd, 0xabcd]);
     }
 }

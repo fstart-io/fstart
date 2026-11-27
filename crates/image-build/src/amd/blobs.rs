@@ -176,9 +176,13 @@ pub struct BoardBlobs {
     #[serde(default)]
     pub efs_espi: Option<[u8; 4]>,
     /// Optional APCB v3 token overrides in `[package.metadata.fstart.amd]`
-    /// (applied last, after any Rust `Board::apcb_overlay`).
+    /// (applied last, after any Rust `Board::apcb_tokens`).
     #[serde(default)]
     pub apcb_tokens: Vec<super::apcb::BoardToken>,
+    /// Optional APCB v2 parameter-list overrides in `[package.metadata.fstart.amd]`
+    /// (applied last, after any Rust `Board::apcb_v2_params`).
+    #[serde(default)]
+    pub apcb_v2_params: Vec<super::apcb::ApcbV2Param>,
     /// Optional DF CXL region descriptors (`0xCC`) written into APCB v3.
     #[serde(default)]
     pub cxl_regions: Vec<fstart_amdfw_format::apcb::CxlRegion>,
@@ -364,6 +368,7 @@ pub fn resolve(
         tokens: super::apcb::resolve_tokens(&board.apcb_tokens)?,
         cxl_regions: board.cxl_regions.clone(),
         v2_gpio_id: None,
+        v2_params: board.apcb_v2_params.clone(),
         synthesize_v3: None,
     };
     Ok(Resolved {
