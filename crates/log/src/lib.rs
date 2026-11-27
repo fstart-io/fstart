@@ -41,6 +41,8 @@
 
 #![no_std]
 
+pub mod mem;
+
 // Re-export ufmt for code that uses `fstart_log::ufmt::uWrite` etc.
 // Note: fstart_log macros use `::ufmt` paths because ufmt's own
 // macros internally expand to `ufmt::` paths. This means any crate
@@ -273,11 +275,29 @@ fn mux_output(
 
 impl Console for ConsoleMux {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
-        mux_output(|console| console.write_byte(byte))
+        let _guard = ConsoleLockGuard::try_acquire()?;
+        let mut error = ServiceError::NotInitialized;
+        let mut accepted = mem::write_bytes(&[byte]);
+        for console in consoles() {
+            match timed(|| console.write_byte(byte)) {
+                Ok(()) => accepted = true,
+                Err(failure) => error = failure,
+            }
+        }
+        if accepted { Ok(()) } else { Err(error) }
     }
 
     fn write_bytes(&self, bytes: &[u8]) -> Result<(), ServiceError> {
-        mux_output(|console| console.write_bytes(bytes))
+        let _guard = ConsoleLockGuard::try_acquire()?;
+        let mut error = ServiceError::NotInitialized;
+        let mut accepted = mem::write_bytes(bytes);
+        for console in consoles() {
+            match timed(|| console.write_bytes(bytes)) {
+                Ok(()) => accepted = true,
+                Err(failure) => error = failure,
+            }
+        }
+        if accepted { Ok(()) } else { Err(error) }
     }
 
     fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
@@ -623,6 +643,20 @@ pub struct ConsoleWriter {
     /// Held from `writer()` until the macro's writer goes out of scope, which
     /// brackets the tag, the message and the flush.
     _guard: ConsoleLockGuard,
+    /// Set by `panic_writer()` so memory-log writes use try-lock and never
+    /// deadlock if a panic fires while `MEM_LOCK` is held.
+    panicking: bool,
+}
+
+impl ConsoleWriter {
+    #[inline]
+    fn write_mem(&self, bytes: &[u8]) -> bool {
+        if self.panicking {
+            mem::try_write_bytes(bytes)
+        } else {
+            mem::write_bytes(bytes)
+        }
+    }
 }
 
 impl ufmt::uWrite for ConsoleWriter {
@@ -634,6 +668,7 @@ impl ufmt::uWrite for ConsoleWriter {
     #[cfg(not(feature = "debug-consoles"))]
     #[inline(never)]
     fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
+        self.write_mem(s.as_bytes());
         // SAFETY: CONSOLE is written once during init, then only read.
         let console = unsafe { *CONSOLE.0.get() };
         if let Some(c) = console {
@@ -666,7 +701,8 @@ impl ufmt::uWrite for ConsoleWriter {
     #[cfg(feature = "debug-consoles")]
     #[inline]
     fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
-        write_all(s)
+        let mem_taken = self.write_mem(s.as_bytes());
+        write_all(s, mem_taken)
     }
 }
 
@@ -687,6 +723,7 @@ impl embedded_io::Write for ConsoleWriter {
         if buf.is_empty() {
             return Ok(0);
         }
+        self.write_mem(buf);
         // SAFETY: CONSOLE is written once during init, then only read.
         let console = unsafe { *CONSOLE.0.get() };
         if let Some(c) = console {
@@ -701,7 +738,7 @@ impl embedded_io::Write for ConsoleWriter {
             return Ok(0);
         }
         let mut result = Ok(());
-        let mut taken = false;
+        let mut taken = self.write_mem(buf);
         for c in consoles() {
             match timed(|| c.write_bytes(buf)) {
                 Ok(()) => taken = true,
@@ -748,9 +785,9 @@ impl embedded_io::Write for ConsoleWriter {
 /// not cut another's messages short.
 #[cfg(feature = "debug-consoles")]
 #[inline(never)]
-fn write_all(s: &str) -> Result<(), ()> {
+fn write_all(s: &str, mem_taken: bool) -> Result<(), ()> {
     let mut result = Ok(());
-    let mut taken = false;
+    let mut taken = mem_taken;
     for c in consoles() {
         match write_translated(c, s) {
             Ok(()) => taken = true,
@@ -796,6 +833,7 @@ fn write_translated(c: &dyn Console, s: &str) -> Result<(), ()> {
 pub fn writer() -> ConsoleWriter {
     ConsoleWriter {
         _guard: ConsoleLockGuard::acquire(),
+        panicking: false,
     }
 }
 
@@ -809,6 +847,7 @@ pub fn panic_writer() -> ConsoleWriter {
     CONSOLE_LOCK.store(true, Ordering::Release);
     ConsoleWriter {
         _guard: ConsoleLockGuard,
+        panicking: true,
     }
 }
 

@@ -218,6 +218,7 @@ impl<D> MainstagePayload<D> for Aarch64UefiPayload {
                 peripherals: handoff.peripherals,
                 framebuffer: None,
                 acpi_rsdp: None,
+                acpi_log: None,
                 smbios: None,
                 fdt,
                 ecam_regions: ecam.as_slice(),
@@ -355,6 +356,7 @@ impl Riscv64UefiPayload {
                 peripherals: handoff.peripherals,
                 framebuffer: None,
                 acpi_rsdp: None,
+                acpi_log: None,
                 smbios: None,
                 fdt,
                 ecam_regions: ecam.as_slice(),
@@ -460,7 +462,17 @@ impl<D> MainstagePayload<D> for X86LinuxPayload {
         #[cfg(feature = "tcg")]
         measure_x86_linux_cmdline(config.bootargs);
         fstart_stage::timestamps::handoff();
-        fstart_arch::x86::boot::boot_linux(&params)
+        let acpi_log = description.acpi.and_then(|acpi| acpi.log);
+        fstart_arch::x86::boot::boot_linux_with_handoff(&params, || {
+            if let Some(log) = acpi_log {
+                // SAFETY: platform reserved this identity-mapped FLOG ACPI table
+                // inside the sealed ACPI store entry; this runs right before
+                // entering Linux after all firmware diagnostics have been logged.
+                unsafe {
+                    fstart_log::mem::finalize_acpi_table_and_detach(log.base, log.size as usize);
+                }
+            }
+        })
     }
 }
 
@@ -615,6 +627,7 @@ impl<D> MainstagePayload<D> for X86UefiPayload {
                     }
                 }),
                 acpi_rsdp: description.acpi.map(|acpi| acpi.rsdp),
+                acpi_log: description.acpi.and_then(|acpi| acpi.log),
                 smbios: description.smbios,
                 fdt: None,
                 ecam_regions: ecam.as_slice(),

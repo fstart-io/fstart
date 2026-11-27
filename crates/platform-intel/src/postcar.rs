@@ -60,6 +60,7 @@ pub fn run<B: IntelBoard, C: ConsoleDevice + 'static>(
     let mut store = crate::store::open(geometry).ok();
     if let Some(store) = &store {
         crate::store::attach_timestamps(store);
+        crate::store::attach_console(store);
         fstart_timestamp::add_at(fstart_timestamp::id::POSTCAR_START, entry);
     }
     // The debug consoles reach PCI (the EHCI controller, the LPC bridge's

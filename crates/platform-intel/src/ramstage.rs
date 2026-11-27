@@ -282,6 +282,7 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
             halt(e)
         });
         crate::store::attach_timestamps(&store);
+        crate::store::attach_console(&store);
         fstart_timestamp::add_at(fstart_timestamp::id::RAMSTAGE_START, entry);
         southbridge.set_resume(resume);
         if cfg!(feature = "ehci-console")
@@ -346,14 +347,17 @@ impl<B: IntelBoard> Ramstage<B, Entered> {
         let console = slot.install(console);
         crate::debug_console::install::<B>(true);
         self.uart = console.uart_port();
-        // Preserve the original board-console handoff unless debug fan-out
-        // was explicitly selected. In debug builds NoConsole must not hide
-        // the optional EHCI input/output from the payload.
-        self.console = Some(console);
-        #[cfg(any(feature = "ehci-console", feature = "flash-console"))]
+        // Preserve the original board-console handoff unless debug fan-out or
+        // the in-memory firmware log is active. In debug or memlog builds,
+        // ConsoleMux routes payload output to both the board console and the
+        // attached log sinks without hiding optional EHCI input/output.
+        self.console = if fstart_log::mem::is_attached()
+            || cfg!(any(feature = "ehci-console", feature = "flash-console"))
         {
-            self.console = Some(&fstart_log::ConsoleMux);
-        }
+            Some(&fstart_log::ConsoleMux)
+        } else {
+            Some(console)
+        };
         fstart_log::info!(
             "{} ramstage: entered ({} console ready)",
             B::Platform::NAME,
@@ -943,12 +947,44 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         // was given.
         let root = self.pci.as_ref().and_then(|pci| pci.roots().first());
         let root = root.ok_or(ServiceError::NotInitialized)?;
-        let tables = crate::acpi::collect(northbridge, southbridge, root, board, &self.video_aml)
-            .map_err(|_| ServiceError::HardwareError)?;
+        let mut tables =
+            crate::acpi::collect(northbridge, southbridge, root, board, &self.video_aml)
+                .map_err(|_| ServiceError::HardwareError)?;
+        let log_reserved_len = if fstart_log::mem::is_attached() && fstart_log::mem::capacity() > 0
+        {
+            let cap = fstart_log::mem::capacity();
+            let mut initial = alloc::vec![0u8; cap];
+            let used = fstart_log::mem::copy_to(&mut initial);
+            let flog = fstart_acpi::flog::build_reserved(cap, &initial[..used]);
+            let reserved = flog.len();
+            tables.extra.push(flog);
+            Some(reserved)
+        } else {
+            None
+        };
         let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
         let rsdp = crate::tables::prepare_acpi(store, &platform, &tables.dsdt, &tables.extra)
             .map_err(|_| ServiceError::HardwareError)?;
         self.ctx.set_acpi_rsdp(Some(rsdp));
+        if let Some(reserved) = log_reserved_len
+            && let Some(acpi_entry) = store.find(fstart_store::tag::ACPI)
+        {
+            // SAFETY: `acpi_entry` is the freshly assembled ACPI table slice.
+            let assembled = unsafe {
+                core::slice::from_raw_parts(
+                    store.address(&acpi_entry) as *const u8,
+                    acpi_entry.len(),
+                )
+            };
+            if let Some(flog_addr) = fstart_acpi::flog::find_in_assembled(assembled, rsdp, reserved)
+            {
+                self.ctx
+                    .set_acpi_log(Some(fstart_core::description::Range::new(
+                        flog_addr,
+                        reserved as u64,
+                    )));
+            }
+        }
         Ok(())
     }
 
@@ -1094,7 +1130,24 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
         description.framebuffer = self
             .pci_framebuffer
             .or_else(|| self.northbridge.framebuffer_info());
-        description.acpi = self.acpi_rsdp().map(AcpiTables::at);
+        description.acpi = self.acpi_rsdp().map(|rsdp| {
+            let region = self
+                .store
+                .as_ref()
+                .and_then(|s| {
+                    let entry = s.find(fstart_store::tag::ACPI)?;
+                    Some(Range::new(
+                        s.address(&entry) as u64,
+                        (entry.len() as u64).next_multiple_of(0x1000),
+                    ))
+                })
+                .unwrap_or_else(|| Range::new(rsdp & !0xfff, 0x10000));
+            AcpiTables {
+                rsdp,
+                region,
+                log: self.ctx.acpi_log(),
+            }
+        });
         description.acpi_s5 = self.acpi_s5.as_slice();
         description.smbios = self.ctx.smbios();
         description.mainboard = (&self.mainboard.0, &self.mainboard.1);
@@ -1182,6 +1235,7 @@ fn init_mp<P: IntelEarlyPlatform>(
 pub struct MainstageCtx {
     e820: fstart_core::services::memory_detect::E820State,
     acpi_rsdp: Option<u64>,
+    acpi_log: Option<fstart_core::description::Range>,
     smbios: Option<u64>,
     firmware_base: u64,
     firmware_size: usize,
@@ -1192,6 +1246,7 @@ impl MainstageCtx {
         Self {
             e820: fstart_core::services::memory_detect::E820State::new(),
             acpi_rsdp: None,
+            acpi_log: None,
             smbios: None,
             firmware_base,
             firmware_size,
@@ -1225,6 +1280,11 @@ impl MainstageCtx {
     }
 
     #[must_use]
+    pub const fn acpi_log(&self) -> Option<fstart_core::description::Range> {
+        self.acpi_log
+    }
+
+    #[must_use]
     pub const fn smbios(&self) -> Option<u64> {
         self.smbios
     }
@@ -1236,6 +1296,10 @@ impl MainstageCtx {
 
     pub(crate) fn set_acpi_rsdp(&mut self, rsdp: Option<u64>) {
         self.acpi_rsdp = rsdp;
+    }
+
+    pub(crate) fn set_acpi_log(&mut self, log: Option<fstart_core::description::Range>) {
+        self.acpi_log = log;
     }
 
     pub(crate) fn set_smbios(&mut self, smbios: Option<u64>) {

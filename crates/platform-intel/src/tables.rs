@@ -109,6 +109,11 @@ fn print_acpi_table(data: &[u8]) {
         return;
     };
     let sig = &data[..4];
+    // Dumping FLOG at TRACE level would log the firmware log back into itself
+    // and flood the serial console.
+    if sig == &fstart_acpi::flog::SIGNATURE {
+        return;
+    }
     let sig_str = core::str::from_utf8(sig).unwrap_or("????");
     // The writer holds the console lock; release it before the hexdump takes
     // it again per line.
@@ -229,10 +234,21 @@ pub fn prepare_acpi(
     extra: &[Vec<u8>],
 ) -> Result<u64, fstart_acpi::AmlError> {
     // Room for boards with large ACPI namespaces (dozens of devices, IORT
-    // with many ID mappings); the entry is trimmed to the assembled size.
-    const BUF_SIZE: usize = 128 * 1024;
+    // with many ID mappings) plus any large extra tables (such as FLOG); the
+    // entry is trimmed to the assembled size.
+    const BASE_BUF_SIZE: usize = 128 * 1024;
+    let extra_bytes: usize = extra
+        .iter()
+        .try_fold(0usize, |acc, table| {
+            acc.checked_add(table.len().next_multiple_of(16))
+        })
+        .ok_or(fstart_acpi::AmlError::LengthOverflow)?;
+    let buf_size = BASE_BUF_SIZE
+        .checked_add(extra_bytes)
+        .ok_or(fstart_acpi::AmlError::LengthOverflow)?
+        .next_multiple_of(0x1000);
     let entry = store
-        .add(fstart_store::tag::ACPI, BUF_SIZE, 12)
+        .add(fstart_store::tag::ACPI, buf_size, 12)
         .map_err(|_| fstart_acpi::AmlError::LengthOverflow)?;
     let acpi_addr = store.address(&entry) as u64;
     // SAFETY: a fresh store entry nothing else references.

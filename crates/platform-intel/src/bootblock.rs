@@ -229,6 +229,11 @@ impl<B: IntelBoard> Bootblock<B, Early> {
             );
         }
         fstart_timestamp::add_at(fstart_timestamp::id::BOOTBLOCK_START, entry);
+        #[cfg(feature = "bundle-bootblock")]
+        if let Some(car_log) = B::Platform::bootblock_car_log() {
+            // SAFETY: platform-owned CAR BSS slice, exclusive for bootblock lifetime.
+            unsafe { fstart_log::mem::init(car_log.as_mut_ptr(), car_log.len()) };
+        }
         let (Ok(mut northbridge), Ok(mut southbridge), Ok(geometry)) = (
             Nb::<B>::new_from_config(B::CONFIG.northbridge()),
             Sb::<B>::new_from_config(B::CONFIG.southbridge()),
@@ -450,6 +455,11 @@ impl<B: IntelBoard> Bootblock<B, Dram> {
         let mut store =
             crate::store::bootblock(geometry, ram_end, boot_path == BootPath::S3Resume)?;
         crate::store::move_timestamps(&mut store, TIMESTAMP_CAPACITY);
+        crate::store::move_console(
+            &mut store,
+            crate::store::CONSOLE_LOG_CAPACITY,
+            boot_path == BootPath::S3Resume,
+        );
         crate::memory_info::publish(&mut store, self.northbridge.memory_info().as_ref())?;
         // A constant test, so boards without the cache link none of this.
         if B::FACTS.memory_cache

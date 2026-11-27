@@ -81,6 +81,9 @@ pub struct UefiLaunchConfig<'a> {
     pub framebuffer: Option<FramebufferConfig>,
     /// ACPI RSDP physical address.
     pub acpi_rsdp: Option<u64>,
+    /// Pre-reserved `FLOG` ACPI table (`base` = SDT address, `size` = reserved
+    /// bytes including the 36-byte header) patched before OS handoff.
+    pub acpi_log: Option<fstart_core::description::Range>,
     /// SMBIOS entry point physical address.
     pub smbios: Option<u64>,
     /// Flattened Device Tree blob.
@@ -278,10 +281,13 @@ fn launch_with_adapters(
     ));
     let mut variable_storage = launch.variable_storage;
     let mut launch_settings = launch.settings;
-    let hooks = launch_settings
-        .as_mut()
-        .is_some_and(settings::install)
-        .then_some(&settings::SettingsHooks as &dyn crabefi::PlatformHooks);
+    let has_settings = launch_settings.as_mut().is_some_and(settings::install);
+    let platform_hooks = FstartHooks {
+        settings: has_settings,
+        acpi_log: launch.acpi_log,
+    };
+    let hooks = (has_settings || launch.acpi_log.is_some())
+        .then_some(&platform_hooks as &dyn crabefi::PlatformHooks);
     init_platform_raw(PlatformConfig {
         memory_map,
         timer,
@@ -311,6 +317,53 @@ fn launch_with_adapters(
         heap_pre_initialized: false,
         acpi_devices: launch.acpi_devices,
     })
+}
+
+/// Platform hooks bridging CrabEFI lifecycle transitions back to fstart:
+/// the firmware-settings menu and finalization of the `FLOG` ACPI log table
+/// right before OS handoff.
+struct FstartHooks {
+    settings: bool,
+    acpi_log: Option<fstart_core::description::Range>,
+}
+
+impl FstartHooks {
+    fn patch_acpi_log(&self) {
+        if let Some(log) = self.acpi_log {
+            // SAFETY: platform reserved this identity-mapped FLOG ACPI table
+            // inside the sealed ACPI store entry; no heap allocation occurs.
+            unsafe {
+                fstart_log::mem::finalize_acpi_table(log.base, log.size as usize);
+            }
+        }
+    }
+}
+
+impl crabefi::PlatformHooks for FstartHooks {
+    fn quiesce_dma(&self) {
+        // Covers CrabEFI's direct Linux boot as well as pre-ExitBootServices.
+        self.patch_acpi_log();
+    }
+
+    fn on_exit_boot_services(&self) {
+        // Capture any final CrabEFI ExitBootServices messages and detach
+        // atomically so nothing after ExitBootServices touches the buffer.
+        if let Some(log) = self.acpi_log {
+            // SAFETY: platform reserved this identity-mapped FLOG ACPI table
+            // inside the sealed ACPI store entry; no heap allocation occurs.
+            unsafe {
+                fstart_log::mem::finalize_acpi_table_and_detach(log.base, log.size as usize);
+            }
+        }
+    }
+
+    fn firmware_settings_available(&self) -> bool {
+        self.settings && settings::SettingsHooks.firmware_settings_available()
+    }
+
+    fn show_firmware_settings(&self) -> bool {
+        self.settings && settings::SettingsHooks.show_firmware_settings()
+    }
 }
 
 /// CrabEFI's level for fstart's `level` in a build of `verbosity`: never more

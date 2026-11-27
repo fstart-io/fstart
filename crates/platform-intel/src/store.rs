@@ -13,6 +13,44 @@ use fstart_core::layout::{Region, RegionKind};
 use fstart_core::services::ServiceError;
 use fstart_store::Store;
 
+/// Body capacity of the DRAM firmware log in `fstart_store::tag::CONSOLE`.
+pub(crate) const CONSOLE_LOG_CAPACITY: usize = 64 * 1024;
+
+/// Platform-owned CAR storage for early bootblock console logging.
+///
+/// One-shot exclusive take, mirroring `TrainingWorkspace`. Only compiled into
+/// bootblock binaries so later stages carry zero bytes of CAR log BSS.
+#[cfg(feature = "bundle-bootblock")]
+#[repr(C, align(8))]
+pub(crate) struct CarLogWorkspace<const N: usize> {
+    // First field inherits the struct's 8-byte alignment for `fstart_log::mem::init`.
+    buf: core::cell::UnsafeCell<[u8; N]>,
+    taken: core::sync::atomic::AtomicBool,
+}
+
+#[cfg(feature = "bundle-bootblock")]
+// SAFETY: bootblock runs single-threaded on the BSP; `taken` enforces one-shot
+// exclusive mutable access.
+unsafe impl<const N: usize> Sync for CarLogWorkspace<N> {}
+
+#[cfg(feature = "bundle-bootblock")]
+impl<const N: usize> CarLogWorkspace<N> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            buf: core::cell::UnsafeCell::new([0; N]),
+            taken: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn take(&'static self) -> Option<&'static mut [u8]> {
+        if self.taken.swap(true, core::sync::atomic::Ordering::AcqRel) {
+            return None;
+        }
+        // SAFETY: one-shot exclusive take in BSP CAR BSS.
+        Some(unsafe { &mut *self.buf.get() })
+    }
+}
+
 fn open_window(region: Region, create: bool) -> Result<Store, ServiceError> {
     let base = NonNull::new(region.base as *mut u8).ok_or(ServiceError::InvalidParam)?;
     let size = usize::try_from(region.size).map_err(|_| ServiceError::InvalidParam)?;
@@ -68,6 +106,36 @@ pub(crate) fn attach_timestamps(store: &Store) {
     if let Some(entry) = store.find(fstart_store::tag::TIMESTAMPS) {
         // SAFETY: the store entry holds the bootblock's table.
         unsafe { fstart_timestamp::attach(store.address(&entry) as *mut u8, entry.len()) };
+    }
+}
+
+/// Move the bootblock console log from CAR into the firmware store (or start
+/// recording into DRAM for platforms without a CAR log buffer). On S3 resume,
+/// reuse the existing store entry without growing the store.
+pub(crate) fn move_console(store: &mut Store, capacity: usize, resume: bool) {
+    let size = fstart_log::mem::buffer_size(capacity);
+    if resume {
+        if let Some(entry) = store.find(fstart_store::tag::CONSOLE) {
+            // SAFETY: existing DRAM store entry owned by the memory console.
+            unsafe { fstart_log::mem::append_to(store.address(&entry) as *mut u8, entry.len()) };
+        }
+        return;
+    }
+    let entry = store
+        .find(fstart_store::tag::CONSOLE)
+        .filter(|entry| entry.len() >= size)
+        .or_else(|| store.add(fstart_store::tag::CONSOLE, size, 3).ok());
+    if let Some(entry) = entry {
+        // SAFETY: a store entry owned by the memory console from now on.
+        unsafe { fstart_log::mem::move_to(store.address(&entry) as *mut u8, entry.len()) };
+    }
+}
+
+/// Attach to the in-memory console log the bootblock published in the store.
+pub(crate) fn attach_console(store: &Store) {
+    if let Some(entry) = store.find(fstart_store::tag::CONSOLE) {
+        // SAFETY: the store entry holds the bootblock's memory log.
+        unsafe { fstart_log::mem::attach(store.address(&entry) as *mut u8, entry.len()) };
     }
 }
 

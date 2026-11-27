@@ -114,6 +114,13 @@ mod stage {
             WORKSPACE.take()
         }
 
+        #[cfg(feature = "bundle-bootblock")]
+        fn bootblock_car_log() -> Option<&'static mut [u8]> {
+            static LOG: crate::store::CarLogWorkspace<0x4000> =
+                crate::store::CarLogWorkspace::new();
+            LOG.take()
+        }
+
         #[cfg(all(
             feature = "flash-console",
             feature = "bundle-bootblock",
