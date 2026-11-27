@@ -152,9 +152,6 @@ pub fn compilation_plan(
             .map(ToString::to_string)
             .collect::<Vec<_>>()
     };
-    let mp_capacity = || {
-        std::collections::BTreeMap::from([("FSTART_MP_MAX_CPUS".into(), plan.max_cpus.to_string())])
-    };
     // Long-mode SMM images are copied without absolute-address fixups;
     // their data references must be RIP-relative. The 32-bit loader rebases
     // its audited absolute references instead.
@@ -168,7 +165,7 @@ pub fn compilation_plan(
             } else {
                 SmmRelocation::Pie
             },
-            environment_values: mp_capacity(),
+            environment_values: std::collections::BTreeMap::new(),
             image: fstart_image_build::smm_image::ImageOptions {
                 entry_count: plan.smm.entry_points.unwrap_or(plan.max_cpus),
                 stack_size: plan.smm.stack_size,
@@ -208,7 +205,7 @@ pub fn compilation_plan(
             features: row.features.clone(), build_std: Some("core,alloc".into()), release_only: false,
             rustflags: flags(&format!("-Zub-checks=no -Crelocation-model={relocation_model} -Ccode-model=small -Clink-arg=-no-pie -Zplt=yes --cfg curve25519_dalek_backend=\"serial\" --cfg sha1_backend=\"soft\" --cfg sha2_backend=\"soft\" --cfg sha2_backend_soft=\"compact\"")),
             linker_script: Some(fstart_image_build::linker::resolved_intel(&plan.reservations, row.role, !plan.intel_fit, plan.platform, plan.intel_fit)?),
-            environment_values: mp_capacity(),
+            environment_values: std::collections::BTreeMap::new(),
             bindings,
             file_bindings: vec![],
             board_features: if ram { vec!["acpi".into()] } else { vec![] },
@@ -723,12 +720,7 @@ mod tests {
         assert_eq!(uefi.stages[2].features, ["bundle-ramstage", "payload-uefi"]);
         assert_eq!(uefi.smm_features, ["bundle-smm"]);
         let units = compilation_plan(uefi).unwrap().units;
-        assert!(units.iter().all(|unit| {
-            unit.environment_values
-                .get("FSTART_MP_MAX_CPUS")
-                .map(|value| value.as_str())
-                == Some("2")
-        }));
+        assert!(units.iter().all(|unit| unit.environment_values.is_empty()));
         let linux = resolve(
             FACTS,
             BuildSelection {

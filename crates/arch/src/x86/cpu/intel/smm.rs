@@ -7,11 +7,13 @@
 //!
 //! No chipset, board, or CPU-model decision is made here.
 
+#![cfg_attr(not(any(feature = "alloc", test)), allow(dead_code))]
+
 use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 
-use crate::x86::mp::{
-    MAX_CPUS, MpHandle, SMM_DEFAULT_ASEG, SMM_DEFAULT_ENTRY_STACK_TOP, SMM_DEFAULT_SMBASE,
-};
+use crate::x86::mp::{MpHandle, SMM_DEFAULT_SMBASE};
+#[cfg(any(feature = "alloc", test))]
+use crate::x86::mp::{SMM_DEFAULT_ASEG, SMM_DEFAULT_ENTRY_STACK_TOP};
 
 use super::smrr::SmrrRange;
 
@@ -174,12 +176,14 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
 
     /// Install, relocate and lock the permanent handler using the
     /// already-initialized MP subsystem.
+    #[cfg(any(feature = "alloc", test))]
     pub fn install(&self, mp: &MpHandle, image: &[u8]) -> Result<(), IntelSmmError> {
         self.relocate(mp, image)?.activate(mp)
     }
 
     /// Relocate all CPUs and close and lock SMRAM. Event sources remain
     /// quiesced while the platform finishes model initialization.
+    #[cfg(any(feature = "alloc", test))]
     pub fn relocate(
         &self,
         mp: &MpHandle,
@@ -191,9 +195,6 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
             .filter(|(_, size)| *size != 0)
             .ok_or(IntelSmmError::TsegDisabled)?;
         let num_cpus = mp.num_cpus();
-        if num_cpus as usize > MAX_CPUS {
-            return Err(IntelSmmError::TooManyCpus);
-        }
         fstart_log::info!(
             "{} SMM: TSEG base={:#x} size={:#x}, online CPUs={}",
             self.name,
@@ -202,7 +203,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
             num_cpus
         );
 
-        let mut layouts = [ZERO_CPU_LAYOUT; MAX_CPUS];
+        let mut layouts = alloc::vec![ZERO_CPU_LAYOUT; usize::from(num_cpus)];
         if !self.smram.smram_open() {
             self.smram.smram_close();
             return Err(IntelSmmError::SmramOpenFailed);
@@ -218,6 +219,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         })
     }
 
+    #[cfg(any(feature = "alloc", test))]
     fn install_open(
         &self,
         mp: &MpHandle,
@@ -225,7 +227,7 @@ impl<'a, NB: SmramControl, SB: SmiControl, C: SmmCpu> IntelSmm<'a, NB, SB, C> {
         smram_base: u64,
         smram_size: u32,
         num_cpus: u16,
-        layouts: &mut [fstart_smm::CpuSmmLayout; MAX_CPUS],
+        layouts: &mut [fstart_smm::CpuSmmLayout],
     ) -> Result<SB::EnableState, IntelSmmError> {
         let format = self.cpu.smm_save_state_format();
         // SMRR is optional hardware, not a prerequisite for legacy CPUs to

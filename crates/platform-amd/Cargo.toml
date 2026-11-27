@@ -23,6 +23,7 @@ media = ["dep:fstart-stage", "fstart-stage/ffs"]
 bundle = [
   "media",
   "dep:fstart-stage", "dep:fstart-payload",
+  "fstart-arch/alloc",
   "fstart-arch/amd-psp-reset",
   "fstart-stage/x86_64", "fstart-stage/ffs", "fstart-stage/acpi",
   "fstart-stage/ffs-signature", "fstart-stage/ed25519", "fstart-stage/sha2-digest",
@@ -1417,7 +1418,7 @@ fstart-pci.workspace = true
 tock-registers.workspace = true
 embedded-hal.workspace = true
 fstart-driver-i2c.workspace = true
-fstart-arch = { workspace = true, features = ["x86_64", "x86-identity-paging"] }
+fstart-arch = { workspace = true, features = ["x86_64", "alloc", "x86-identity-paging"] }
 fstart-stage = { workspace = true, optional = true }
 fstart-payload = { workspace = true, optional = true }
 heapless.workspace = true

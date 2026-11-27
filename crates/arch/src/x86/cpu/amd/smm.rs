@@ -5,7 +5,10 @@
 //! SMM_ADDR, SMM_MASK and SMM_BASE and locks them. The southbridge owns its SMI sources through
 //! [`SmiControl`]; nothing here is chipset specific.
 
+#![cfg_attr(not(any(feature = "alloc", test)), allow(dead_code))]
+
 use core::ops::Range;
+#[cfg(any(feature = "alloc", test))]
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use tock_registers::LocalRegisterCopy;
@@ -13,7 +16,8 @@ use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 use crate::x86::cpu::amd::msr::{HWCR, Hwcr, SMM_ADDR, SMM_BASE, SMM_MASK, SmmMask};
 use crate::x86::cpu::msr::{MsrAccess, NativeMsr};
-use crate::x86::mp::{MAX_CPUS, MpHandle};
+#[cfg(any(feature = "alloc", test))]
+use crate::x86::mp::MpHandle;
 
 /// Save-state bytes reserved at the top of every SMBASE window. The AMD64
 /// layout uses the top 0x200; the installer staggers windows by this much.
@@ -145,6 +149,7 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
     /// Install the handler `image` in the TSEG at `base`, point every online
     /// CPU's SMBASE into it, lock SMM and enable the chipset's SMIs. A cold
     /// boot path: it fails if SMM is already locked.
+    #[cfg(any(feature = "alloc", test))]
     pub fn install(
         &self,
         mp: &MpHandle,
@@ -156,9 +161,6 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
             return Err(AmdSmmError::BadTseg);
         }
         let num_cpus = mp.num_cpus();
-        if usize::from(num_cpus) > MAX_CPUS {
-            return Err(AmdSmmError::TooManyCpus);
-        }
         // SAFETY: HWCR and SMM_MASK exist on every AMD64 CPU.
         let cpu = unsafe { NativeMsr::new() };
         if cpu.reg(HWCR).is_set(Hwcr::SMM_LOCK) {
@@ -180,7 +182,7 @@ impl<'a, S: SmiControl> AmdSmm<'a, S> {
         // installer validates every placement before writing.
         unsafe { core::ptr::write_bytes(base as *mut u8, 0, size as usize) };
         let handler_config = self.smi.smm_handler_config();
-        let mut layouts = [ZERO_CPU_LAYOUT; MAX_CPUS];
+        let mut layouts = alloc::vec![ZERO_CPU_LAYOUT; usize::from(num_cpus)];
         let installed = unsafe {
             fstart_smm::install_pic_image(
                 image,
