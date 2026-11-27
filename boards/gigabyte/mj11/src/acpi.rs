@@ -15,15 +15,15 @@ const KCS: IpmiKcsAcpi = kcs::DEFAULT_ACPI;
 pub fn tables() -> Board {
     let com1 = SuperIoConfig {
         com1: Some(ComPortConfig {
-            io_base: super::COM1,
-            irq: super::COM1_IRQ,
+            io_base: crate::bmc::COM1,
+            irq: crate::bmc::COM1_IRQ,
             baud_rate: 115_200,
         }),
         ..SuperIoConfig::default()
     };
     let mut spcr = alloc::vec::Vec::new();
     fstart_acpi::Aml::to_aml_bytes(
-        &fstart_acpi::spcr::build_spcr_16550_io(super::COM1, super::COM1_IRQ),
+        &fstart_acpi::spcr::build_spcr_16550_io(crate::bmc::COM1, crate::bmc::COM1_IRQ),
         &mut spcr,
     );
     Board {

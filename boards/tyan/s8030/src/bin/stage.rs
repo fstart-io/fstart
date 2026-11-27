@@ -43,29 +43,14 @@ fn flow<S: Socket>(id: Identified<Board, S>) -> ! {
     // Disabling onboard VGA disables its PCIe link too. Leave the display
     // untouched in that case; the serial console still serves the payload.
     if options.onboard_vga {
-        let pci = stage.pci();
-        let address = pci
-            .devices()
-            .find(|&a| {
-                pci.device(a).is_some_and(|d| {
-                    d.vendor_id() == gfx::ASPEED_VENDOR_ID
-                        && d.device_id() == gfx::AST_VGA_DEVICE_ID
-                })
-            })
-            .unwrap_or_else(|| stage.fail("ASPEED VGA device"));
+        let address =
+            gfx::find_device(stage.pci()).unwrap_or_else(|| stage.fail("ASPEED VGA device"));
         // SAFETY: BSP exclusively owns the enumerated GPU and its allocated,
         // identity-mapped BARs. The BMC retains ownership of its shared DRAM;
         // this driver neither resets the BMC nor executes a VGA ROM.
-        let framebuffer =
-            unsafe { gfx::initialize(pci, address, &stage.clock()) }.unwrap_or_else(|error| {
-                fstart_log::error!(
-                    "s8030: ASPEED display error {}",
-                    match error {
-                        gfx::Error::Device => "device",
-                        gfx::Error::Resources => "resources",
-                        gfx::Error::BmcDramNotReady => "BMC DRAM not ready",
-                    }
-                );
+        let framebuffer = unsafe { gfx::initialize(stage.pci(), address, &stage.clock()) }
+            .unwrap_or_else(|error| {
+                fstart_log::error!("s8030: ASPEED display error ({})", error.name());
                 stage.fail("ASPEED display")
             });
         stage.set_framebuffer(framebuffer);

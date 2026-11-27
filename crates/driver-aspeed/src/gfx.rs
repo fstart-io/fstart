@@ -91,6 +91,26 @@ pub enum Error {
     BmcDramNotReady,
 }
 
+impl Error {
+    /// Short human-readable description for boot logs.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Device => "unsupported device",
+            Self::Resources => "invalid BAR or VRAM",
+            Self::BmcDramNotReady => "BMC DRAM not ready",
+        }
+    }
+}
+
+/// Locate the first enumerated ASPEED VGA endpoint on `pci`.
+pub fn find_device(pci: &PciEcam) -> Option<PciAddress> {
+    pci.devices().find(|&address| {
+        pci.device(address).is_some_and(|device| {
+            device.vendor_id() == ASPEED_VENDOR_ID && device.device_id() == AST_VGA_DEVICE_ID
+        })
+    })
+}
+
 #[derive(Clone, Copy)]
 enum Chip {
     Ast2500,

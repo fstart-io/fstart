@@ -52,12 +52,10 @@ fn main() -> ! {
             match unsafe { gfx::initialize(stage.pci(), address, &stage.clock()) } {
                 Ok(framebuffer) => stage.set_framebuffer(framebuffer),
                 Err(error) => {
-                    let reason = match error {
-                        gfx::Error::Device => "unsupported device",
-                        gfx::Error::Resources => "invalid BAR or VRAM",
-                        gfx::Error::BmcDramNotReady => "BMC DRAM not ready",
-                    };
-                    fstart_log::warn!("s8040: native VGA unavailable ({}); keeping serial", reason);
+                    fstart_log::warn!(
+                        "s8040: native VGA unavailable ({}); keeping serial",
+                        error.name()
+                    );
                 }
             }
         } else {

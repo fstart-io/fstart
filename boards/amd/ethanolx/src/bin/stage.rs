@@ -47,28 +47,12 @@ fn flow<S: Socket>(id: Identified<Board, S>) -> ! {
         .scan_bus();
     // This board's BMC owns the AST2500 and its initialized shared DRAM.
     // Use its native host display driver; never execute a VGA ROM or reset it.
-    let pci = stage.pci();
-    let address = pci
-        .devices()
-        .find(|&a| {
-            pci.device(a).is_some_and(|d| {
-                d.vendor_id() == gfx::ASPEED_VENDOR_ID && d.device_id() == gfx::AST_VGA_DEVICE_ID
-            })
-        })
-        .unwrap_or_else(|| stage.fail("ASPEED VGA device"));
+    let address = gfx::find_device(stage.pci()).unwrap_or_else(|| stage.fail("ASPEED VGA device"));
     // SAFETY: BSP owns this board's enumerated GPU and its identity-mapped
     // allocated BARs; no payload display driver is running yet.
-    let framebuffer =
-        unsafe { gfx::initialize(pci, address, &stage.clock()) }.unwrap_or_else(|error| {
-            use fstart_driver_aspeed::gfx::Error;
-            fstart_log::error!(
-                "ethanolx: ASPEED display error {}",
-                match error {
-                    Error::Device => "device",
-                    Error::Resources => "resources",
-                    Error::BmcDramNotReady => "BMC DRAM not ready",
-                }
-            );
+    let framebuffer = unsafe { gfx::initialize(stage.pci(), address, &stage.clock()) }
+        .unwrap_or_else(|error| {
+            fstart_log::error!("ethanolx: ASPEED display error ({})", error.name());
             stage.fail("ASPEED display")
         });
     stage.set_framebuffer(framebuffer);
