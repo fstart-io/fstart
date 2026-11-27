@@ -90,8 +90,37 @@ pub struct HostOptions {
     /// image steps read it there, and what the plan compiles is the same
     /// for every directory.
     pub blobs: Option<String>,
+    /// Keep all vendor APCB files from `--blobs`/`--donor` instead of
+    /// synthesizing the v3 override (`0x60/0`, `0x68/8`) and event-store
+    /// (`0x60/1`, `0x68/9`) slots from scratch (`--option vendor-apcb=true`).
+    #[serde(deserialize_with = "deserialize_bool_or_str")]
+    pub vendor_apcb: bool,
     #[serde(flatten)]
     pub x86_linux: fstart_image_build::plan::X86LinuxOptions,
+}
+
+#[cfg(feature = "host")]
+fn deserialize_bool_or_str<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrStr {
+        Bool(bool),
+        Str(alloc::string::String),
+    }
+    match BoolOrStr::deserialize(deserializer)? {
+        BoolOrStr::Bool(b) => Ok(b),
+        BoolOrStr::Str(s) => match s.as_str() {
+            "true" | "1" | "yes" => Ok(true),
+            "false" | "0" | "no" => Ok(false),
+            _ => Err(serde::de::Error::custom(alloc::format!(
+                "expected boolean or true/false string, got {s:?}"
+            ))),
+        },
+    }
 }
 
 /// Every board's host adapter, the `HostPlan` fbuild's plan runner calls.

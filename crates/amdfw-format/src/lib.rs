@@ -9,6 +9,7 @@
 #![no_std]
 
 pub mod anchor;
+pub mod apcb;
 pub mod directory;
 pub mod efs;
 pub mod microcode;

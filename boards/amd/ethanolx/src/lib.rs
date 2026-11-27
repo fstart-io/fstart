@@ -51,6 +51,12 @@ impl fstart_platform_amd::board::Board for Board {
     fn acpi_board() -> AcpiBoard {
         acpi_board()
     }
+
+    fn apcb_tokens(_soc: SocId) -> &'static [fstart_platform_amd::board::ApcbTokenOverride] {
+        const TOKENS: &[fstart_platform_amd::board::ApcbTokenOverride] =
+            &[fstart_platform_amd::board::ApcbTokenOverride::disable_psb_auto_fuse()];
+        TOKENS
+    }
 }
 
 /// The policy knobs over Milan's policy, as the boot resolves them.

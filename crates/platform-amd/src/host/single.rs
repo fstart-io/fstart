@@ -49,10 +49,11 @@ impl Image {
         host: &Host,
         selection: &BuildSelection,
         options: &HostOptions,
+        board_apcb: &impl Fn(crate::board::SocId) -> fstart_image_build::amd::apcb::ApcbOverlay,
         ffs: impl FnOnce(Option<MicrocodeConfig>, bool) -> Option<FfsAssembly>,
     ) -> Result<Vec<ImageStep>, String> {
         let layout = &host.layout;
-        let packed = self.packed(host, selection, options)?;
+        let packed = self.packed(host, selection, options, board_apcb)?;
         let microcode = packed.as_ref().map(microcode).transpose()?.flatten();
         let mut ffs = ffs(microcode, true);
         // The video BIOSes of the SoC's blob table go into the FFS.
@@ -108,6 +109,7 @@ impl Image {
         host: &Host,
         selection: &BuildSelection,
         options: &HostOptions,
+        board_apcb: &impl Fn(crate::board::SocId) -> fstart_image_build::amd::apcb::ApcbOverlay,
     ) -> Result<Option<blobs::Resolved>, String> {
         if options.blobs.is_none() {
             return Ok(None);
@@ -132,14 +134,19 @@ impl Image {
         let name = tables.board["board"]
             .as_str()
             .ok_or("the board table has no board name")?;
-        blobs::resolve(
+        let mut resolved = blobs::resolve(
             &soc,
             &board,
             name,
             Path::new(BLOBS_DIR),
             host.layout.flash.size as u32,
-        )
-        .map(Some)
+        )?;
+        if let Some(soc_id) = crate::board::SocId::from_name(self.soc) {
+            let mut overlay = board_apcb(soc_id);
+            overlay.merge(resolved.files.apcb_overlay);
+            resolved.files.apcb_overlay = overlay;
+        }
+        Ok(Some(resolved))
     }
 }
 

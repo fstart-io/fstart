@@ -40,6 +40,12 @@ impl fstart_platform_amd::board::Board for Board {
     fn acpi_board() -> fstart_platform_amd::acpi::Board {
         bmc::acpi_board()
     }
+
+    fn apcb_tokens(_soc: SocId) -> &'static [fstart_platform_amd::board::ApcbTokenOverride] {
+        const TOKENS: &[fstart_platform_amd::board::ApcbTokenOverride] =
+            &[fstart_platform_amd::board::ApcbTokenOverride::disable_psb_auto_fuse()];
+        TOKENS
+    }
 }
 
 /// Soldered devices the boot needs, by their lane and what is behind the

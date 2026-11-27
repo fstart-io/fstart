@@ -111,6 +111,10 @@ impl fstart_platform_amd::board::Board for Board {
         picasso::acpi::devices(CONFIG.fch.console_uart, CONFIG.i2c, &routes, false)
             .map_err(|e| alloc::format!("vilboz ({}) FCH AML: {e:?}", soc.name()))
     }
+
+    fn apcb_v2_gpio(_soc: fstart_platform_amd::board::SocId) -> Option<[[u8; 3]; 4]> {
+        Some(APCB_RAM_ID)
+    }
 }
 
 /// The console on FCH UART 0. A constant: a UART the FCH doesn't have

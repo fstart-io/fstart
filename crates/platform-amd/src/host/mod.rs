@@ -80,6 +80,54 @@ pub struct Host {
     pub option_store: Option<fstart_image_build::options::OptionStore>,
 }
 
+/// The v3 synthesis layout of `soc` (Rome, Milan, Genoa, Siena); `None` for
+/// v2 SoCs (Picasso, Zeppelin, Naples).
+pub(super) const fn v3_layout(
+    soc: crate::board::SocId,
+) -> Option<fstart_amdfw_format::apcb::build::V3Layout> {
+    use crate::board::SocId;
+    use fstart_amdfw_format::apcb::build::V3Layout;
+    match soc {
+        SocId::Rome | SocId::Milan => Some(V3Layout::SP3),
+        SocId::Genoa => Some(V3Layout::GENOA),
+        SocId::Siena => Some(V3Layout::SIENA),
+        SocId::Picasso | SocId::Zeppelin | SocId::Naples => None,
+    }
+}
+
+/// Build a board's Rust-declared APCB overlay for `soc` (`Board::apcb_tokens`,
+/// `Board::apcb_v2_gpio`, and `Board::apcb_v2_params`).
+pub(super) fn board_apcb_overlay<B: Board>(
+    soc: crate::board::SocId,
+    vendor_apcb: bool,
+) -> fstart_image_build::amd::apcb::ApcbOverlay {
+    use fstart_image_build::amd::apcb::{ApcbOverlay, ApcbToken, ApcbV2Param};
+    let tokens = B::apcb_tokens(soc)
+        .iter()
+        .map(|t| ApcbToken {
+            id: t.id,
+            value: t.value,
+            kind: t.kind,
+        })
+        .collect();
+    let v2_params = B::apcb_v2_params(soc)
+        .iter()
+        .map(|p| ApcbV2Param {
+            group: p.group,
+            entry_type: p.entry_type,
+            token: p.token,
+            value: p.value,
+        })
+        .collect();
+    ApcbOverlay {
+        tokens,
+        cxl_regions: vec![],
+        v2_gpio_id: B::apcb_v2_gpio(soc),
+        v2_params,
+        synthesize_v3: if vendor_apcb { None } else { v3_layout(soc) },
+    }
+}
+
 /// What the flash image is made of.
 pub enum Image {
     /// One 16 MiB image with the PSP firmware of one SoC.
@@ -319,6 +367,15 @@ pub fn resolve(
     selection: &BuildSelection,
     options: &HostOptions,
 ) -> Result<BuildPlan, PlanError> {
+    resolve_with_apcb(host, selection, options, |_| Default::default())
+}
+
+fn resolve_with_apcb(
+    host: &Host,
+    selection: &BuildSelection,
+    options: &HostOptions,
+    board_apcb: impl Fn(crate::board::SocId) -> fstart_image_build::amd::apcb::ApcbOverlay,
+) -> Result<BuildPlan, PlanError> {
     selection.reject_debug()?;
     selection.validate_compiler_files()?;
     if !selection.compiler_files.is_empty() {
@@ -345,8 +402,8 @@ pub fn resolve(
             window.map(|window| ffs(&host.layout, window, payload, config, microcode, external))
         };
         match &host.image {
-            Image::Single(image) => image.images(host, selection, options, ffs)?,
-            Image::Dual(image) => image.images(host, selection, options, ffs)?,
+            Image::Single(image) => image.images(host, selection, options, &board_apcb, ffs)?,
+            Image::Dual(image) => image.images(host, selection, options, &board_apcb, ffs)?,
         }
     };
     let plan = BuildPlan {
@@ -391,7 +448,9 @@ pub fn resolve_board<B: Board>(
     options: &HostOptions,
 ) -> Result<BuildPlan, PlanError> {
     let host = host::<B>()?;
-    let mut plan = resolve(&host, selection, options)?;
+    let mut plan = resolve_with_apcb(&host, selection, options, |soc| {
+        board_apcb_overlay::<B>(soc, options.vendor_apcb)
+    })?;
     plan.options = self::options::<B>(&host, selection.log_level.as_deref())?;
     use fstart_image_build::options::OptionStore;
     plan.options.secure_boot = matches!(plan.options.store, Some(OptionStore::Varstore { .. }))

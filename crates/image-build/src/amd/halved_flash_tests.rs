@@ -341,6 +341,7 @@ fn packed_half(generation: Generation) -> PackedHalf {
             apob_nv: None,
             psp_nv: None,
             apcb: None,
+            apcb_overlay: Default::default(),
             assets: vec![],
             psp_app: false,
         },

@@ -713,6 +713,12 @@ impl<V: Variant> crate::flow::Soc for Rs<V> {
             // SAFETY: BSP only, before MP.
             unsafe { fstart_log::set_max_level(level) };
         }
+        if apob::mem::apcb_boot_info(&apob)
+            .and_then(|i| i.recovery())
+            .unwrap_or(false)
+        {
+            fstart_log::warn!("apob: APCB recovery boot");
+        }
         Ok(Mapped {
             top_mem: tom,
             top_mem2: tom2,
