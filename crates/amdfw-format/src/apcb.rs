@@ -187,10 +187,14 @@ pub fn walk(apcb: &[u8], mut stop: impl FnMut(&Entry) -> bool) -> Result<Option<
         let (group, _) = GroupHeader::ref_from_prefix(&apcb[group_at..size])
             .map_err(|_| Error::Truncated(group_at))?;
         let group_header_size = usize::from(group.header_size.get());
+        let group_size = group.group_size.get() as usize;
         let group_end = group_at
-            .checked_add(group.group_size.get() as usize)
+            .checked_add(group_size)
             .filter(|&end| {
-                end <= size && end > group_at && group_header_size >= size_of::<GroupHeader>()
+                end <= size
+                    && end > group_at
+                    && group_header_size >= size_of::<GroupHeader>()
+                    && group_header_size <= group_size
             })
             .ok_or(Error::Truncated(group_at))?;
         let mut at = group_at + group_header_size;

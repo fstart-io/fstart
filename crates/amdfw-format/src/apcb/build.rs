@@ -156,6 +156,11 @@ pub fn write_override_apcb(
             actual: data.len(),
         });
     }
+    let df_entry_size =
+        u16::try_from(ENTRY_HEADER_SIZE + df_len).map_err(|_| Error::EntrySize {
+            expected: usize::from(u16::MAX) - ENTRY_HEADER_SIZE,
+            actual: df_len,
+        })?;
     let df_padded = df_len.next_multiple_of(4);
     let df_group_size = GROUP_HEADER_SIZE + ENTRY_HEADER_SIZE + df_padded;
 
@@ -182,7 +187,7 @@ pub fn write_override_apcb(
         at,
         group::DF,
         CXL_REGIONS,
-        (ENTRY_HEADER_SIZE + df_len) as u16,
+        df_entry_size,
         0,
         false,
         0x10,
@@ -267,6 +272,11 @@ pub fn write_event_store_apcb(
     unique_instance: u32,
 ) -> Result<usize, Error> {
     let data_len = usize::from(layout.event_store_len);
+    let event_entry_size =
+        u16::try_from(ENTRY_HEADER_SIZE + data_len).map_err(|_| Error::EntrySize {
+            expected: usize::from(u16::MAX) - ENTRY_HEADER_SIZE,
+            actual: data_len,
+        })?;
     let data_padded = data_len.next_multiple_of(4);
     let mem_group_size = GROUP_HEADER_SIZE + ENTRY_HEADER_SIZE + data_padded;
     let total = HEADER_SIZE + mem_group_size;
@@ -283,7 +293,7 @@ pub fn write_event_store_apcb(
         at,
         group::MEMORY,
         MEMORY_EVENT_STORE,
-        (ENTRY_HEADER_SIZE + data_len) as u16,
+        event_entry_size,
         0,
         false,
         0x08,

@@ -222,14 +222,18 @@ pub fn update_token(apcb: &mut [u8], token: Token) -> Result<Occurrences, Error>
     Ok(occurrences)
 }
 
-/// The entry of `kind` a new token goes into: all-boards (`0xffff`) entries
-/// before board-masked ones, then highest priority, then first.
+/// The all-boards (`0xffff`) entry of `kind` a new token goes into: highest
+/// priority first, then first in container order. Board-masked-only entries
+/// are never selected so a new token is never silently added for only one
+/// board mask.
 fn target_entry(apcb: &[u8], kind: TokenKind) -> Result<Option<Entry>, Error> {
-    let mut best: Option<((bool, u32), Entry)> = None;
+    let mut best: Option<(u32, Entry)> = None;
     token_entries(apcb, |entry, k| {
-        let key = (entry.board_mask != 0xffff, rank(entry.priority_mask));
-        if k == kind && best.as_ref().is_none_or(|(b, _)| key < *b) {
-            best = Some((key, entry.clone()));
+        if k == kind && entry.board_mask == 0xffff {
+            let key = rank(entry.priority_mask);
+            if best.as_ref().is_none_or(|(b, _)| key < *b) {
+                best = Some((key, entry.clone()));
+            }
         }
     })?;
     Ok(best.map(|(_, entry)| entry))

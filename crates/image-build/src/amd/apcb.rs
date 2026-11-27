@@ -317,14 +317,33 @@ pub fn apply(apcbs: &mut [(Key, &mut Vec<u8>)], overlay: &ApcbOverlay) -> Result
     if overlay.is_empty() {
         return Ok(());
     }
+    let cxl_array = if overlay.cxl_regions.is_empty() {
+        None
+    } else {
+        Some(apcb::cxl_array_of(&overlay.cxl_regions).map_err(|e| format!("CXL regions: {e:?}"))?)
+    };
     if let Some(layout) = overlay.synthesize_v3 {
+        let df_cc = match &cxl_array {
+            Some(array) if usize::from(layout.df_cc_len) == apcb::CXL_ARRAY_SIZE => {
+                Some(array.as_slice())
+            }
+            Some(_) => {
+                return Err(format!(
+                    "CXL regions require a {:#x}-byte DF/0xCC CXL region array, \
+                     but synthesized layout uses {:#x} bytes",
+                    apcb::CXL_ARRAY_SIZE,
+                    layout.df_cc_len
+                ));
+            }
+            None => None,
+        };
         // Synthesize fresh override (0x60/0, 0x68/8) and event/PPR store
         // (0x60/1, 0x68/9) payloads from scratch. Defaults (0x68/0) remain
         // from the base APCB and receive any token updates below.
         for (key, bytes) in apcbs.iter_mut() {
             if is_override_slot(*key) {
                 let mut buf = vec![0xffu8; 0x1000];
-                let sz = build::write_override_apcb(&mut buf, layout, 1, None, &[])
+                let sz = build::write_override_apcb(&mut buf, layout, 1, df_cc, &[])
                     .map_err(|e| format!("APCB {key:?}: synthesize override: {e:?}"))?;
                 if key.kind == bios::APCB_BACKUP {
                     buf.truncate(sz);
@@ -359,13 +378,15 @@ pub fn apply(apcbs: &mut [(Key, &mut Vec<u8>)], overlay: &ApcbOverlay) -> Result
         }
     }
 
-    if !overlay.cxl_regions.is_empty() {
-        let array =
-            apcb::cxl_array_of(&overlay.cxl_regions).map_err(|e| format!("CXL regions: {e:?}"))?;
+    if let Some(array) = &cxl_array {
         let mut written = 0usize;
         for (key, bytes) in apcbs.iter_mut() {
+            if overlay.synthesize_v3.is_some() && is_override_slot(*key) {
+                written += 1;
+                continue;
+            }
             written += usize::from(
-                apcb::write_cxl_array(bytes, &array)
+                apcb::write_cxl_array(bytes, array)
                     .map_err(|e| format!("APCB {key:?}: CXL regions: {e:?}"))?,
             );
         }
@@ -491,7 +512,9 @@ fn set_token(apcbs: &mut [(Key, &mut Vec<u8>)], wanted: &ApcbToken) -> Result<()
         let has_override_target = apcbs.iter().any(|(key, bytes)| {
             is_override_slot(*key) && {
                 let mut ok = false;
-                let _ = token::token_entries(bytes, |_, k| ok |= k == kind);
+                let _ = token::token_entries(bytes, |e, k| {
+                    ok |= k == kind && e.board_mask == 0xffff;
+                });
                 ok
             }
         });
