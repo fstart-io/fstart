@@ -102,12 +102,88 @@ fn ambient_artifact_environment_isolation() {
     assert!(output.contains("FSTART_FIXTURE_IMAGE=recorded\n") && !output.contains("AUX_INPUT="));
 }
 
-/// Profile rustflags the unit applies to this workspace's own crates.
-pub(crate) fn member_flags(selection: &Selection) -> Vec<String> {
+/// Profile rustflags the unit applies to the board package being linked.
+pub(crate) fn board_flags(selection: &Selection) -> Vec<String> {
     let recorded: serde_json::Value =
         serde_json::from_slice(&fs::read(selection.directory.join("rustflags.json")).unwrap())
             .unwrap();
-    serde_json::from_value(recorded["member_rustflags"].clone()).unwrap()
+    serde_json::from_value(recorded["board_rustflags"].clone()).unwrap()
+}
+
+#[test]
+fn linker_script_rustflags_are_scoped_to_board_package() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let board = crate::board_manifest::find(root, "qemu-aarch64").unwrap();
+    let unit = fstart_platform_qemu::host::resolve(
+        fstart_platform_qemu::facts::VirtMachine::Aarch64,
+        fstart_image_build::plan::BuildSelection {
+            payload: Some("halt".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .units
+    .remove(0);
+    let scratch =
+        Scratch(std::env::temp_dir().join(format!("fstart profile scope {}", std::process::id())));
+    let selection = Selection::prepare_unit(
+        root,
+        &board,
+        &unit,
+        scratch.0.clone(),
+        "{}",
+        BTreeMap::new(),
+        &[],
+        true,
+    )
+    .unwrap();
+    let profile_toml = fs::read_to_string(selection.directory.join("profile.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&profile_toml).unwrap();
+    let release = &parsed["profile"]["release"];
+    assert!(
+        release.get("rustflags").is_none(),
+        "workspace-wide profile rustflags would bust Cargo and sccache for every driver/platform crate: {profile_toml}"
+    );
+    let pkg_flags = release["package"][board.package.as_str()]["rustflags"]
+        .as_array()
+        .expect("board package should carry the linker script rustflags");
+    assert_eq!(pkg_flags.len(), 1);
+    assert!(pkg_flags[0].as_str().unwrap().starts_with("-Clink-arg=-T"));
+
+    // Distinct global rustflags (e.g. pic vs static relocation models) must
+    // use distinct Cargo target directories so stages do not clobber each
+    // other's core/driver artifacts in place, while identical flags share one.
+    let same = Selection::prepare_unit(
+        root,
+        &board,
+        &unit,
+        scratch.0.join("same"),
+        "{}",
+        BTreeMap::new(),
+        &[],
+        true,
+    )
+    .unwrap();
+    assert_eq!(selection.target_dir(root), same.target_dir(root));
+
+    let mut other_unit = unit;
+    other_unit.rustflags.push("-Crelocation-model=pic".into());
+    let other = Selection::prepare_unit(
+        root,
+        &board,
+        &other_unit,
+        scratch.0.join("other"),
+        "{}",
+        BTreeMap::new(),
+        &[],
+        true,
+    )
+    .unwrap();
+    assert_ne!(selection.target_dir(root), other.target_dir(root));
 }
 
 /// The path rustc records for `path` under `flags`: the last matching

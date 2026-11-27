@@ -1,5 +1,6 @@
 //! One compiler invocation for resolved builds, checks and editor checks.
 
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
@@ -84,22 +85,25 @@ impl Selection {
         let flags = unit.rustflags.clone();
         let mut build_remap_flags = Vec::new();
         append_remap_flags(&mut build_remap_flags, root);
-        // The linker script only concerns this workspace's crates. Passing it
-        // as a profile rustflag rather than RUSTFLAGS keeps core, alloc and
-        // registry dependencies identical between units, so every unit shares
-        // one Cargo target directory and builds those once.
-        let mut member_flags: Vec<String> = Vec::new();
+        // The linker script only concerns the board package being linked.
+        // Scoping it to `[profile.<p>.package.<board>]` rather than
+        // `[profile.<p>]` (which hits every workspace member, since
+        // `package."*"` only overrides non-member dependencies) keeps
+        // workspace drivers, platforms, core, alloc and registry crates
+        // identical across stages and boards so Cargo and sccache compile
+        // them once.
+        let mut board_flags: Vec<String> = Vec::new();
         if let Some(script) = &unit.linker_script {
             let path = directory.join("link.ld");
             fs::write(&path, script).map_err(|e| e.to_string())?;
-            member_flags.push(format!("-Clink-arg=-T{}", path.display()));
+            board_flags.push(format!("-Clink-arg=-T{}", path.display()));
         }
         fs::write(
             directory.join("rustflags.json"),
             serde_json::to_vec_pretty(&serde_json::json!({
                 "rustflags": flags,
                 "build_remap_rustflags": build_remap_flags,
-                "member_rustflags": member_flags,
+                "board_rustflags": board_flags,
             }))
             .map_err(|e| e.to_string())?,
         )
@@ -109,22 +113,20 @@ impl Selection {
         } else {
             "dev"
         };
-        // `"*"` matches every non-member package; build-override covers
-        // build scripts and proc macros, which run on the host. Every
-        // firmware crate is size-optimized, in dev builds too: opt-level 0
-        // frames overflow the 8 KiB CAR/SRAM boot stacks. Per-package
-        // overrides in Cargo.toml (crypto, lz4_flex) still win.
+        // Every firmware crate is size-optimized, in dev builds too:
+        // opt-level 0 frames overflow the 8 KiB CAR/SRAM boot stacks.
+        // Per-package overrides in Cargo.toml (crypto, lz4_flex) still win.
+        // Only the board package gets the unit's linker-script rustflags.
         let profile_config = directory.join("profile.toml");
-        fs::write(
-            &profile_config,
-            format!(
-                "[profile.{profile}]\nopt-level = \"s\"\nrustflags = {}\n\
-                 [profile.{profile}.package.\"*\"]\nrustflags = []\n\
-                 [profile.{profile}.build-override]\nrustflags = []\n",
-                serde_json::to_string(&member_flags).map_err(|e| e.to_string())?
-            ),
-        )
-        .map_err(|e| e.to_string())?;
+        let mut profile_toml = format!("[profile.{profile}]\nopt-level = \"s\"\n");
+        if !board_flags.is_empty() {
+            profile_toml.push_str(&format!(
+                "[profile.{profile}.package.{}]\nrustflags = {}\n",
+                serde_json::to_string(&board.package).map_err(|e| e.to_string())?,
+                serde_json::to_string(&board_flags).map_err(|e| e.to_string())?,
+            ));
+        }
+        fs::write(&profile_config, profile_toml).map_err(|e| e.to_string())?;
         let manifest = root.join("Cargo.toml");
         let mut args = vec![
             "--locked".into(),
@@ -153,7 +155,7 @@ impl Selection {
                 unit.target.clone()
             },
             "--target-dir".into(),
-            shared_target_dir(root).display().to_string(),
+            shared_target_dir(root, &flags).display().to_string(),
             "-Zprofile-rustflags".into(),
             "--config".into(),
             profile_config.display().to_string(),
@@ -187,7 +189,7 @@ impl Selection {
 
     /// Cargo target directory holding this unit's compiler outputs.
     pub fn target_dir(&self, root: &Path) -> PathBuf {
-        shared_target_dir(root)
+        shared_target_dir(root, &self.flags)
     }
 
     pub fn environment(&self) -> BTreeMap<String, String> {
@@ -334,9 +336,20 @@ fn rustc_sysroot() -> Option<PathBuf> {
     (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
 }
 
-/// One Cargo target directory for all firmware units of all boards. Cargo
-/// keys every artifact by its full configuration, so units only share what
-/// is really identical, such as core for one target.
-fn shared_target_dir(root: &Path) -> PathBuf {
-    root.join("target/fstart-build/cargo")
+/// Cargo target directory keyed by the unit's global `RUSTFLAGS`.
+///
+/// Cargo does not include `CARGO_ENCODED_RUSTFLAGS` in a unit's metadata hash:
+/// changing global flags (such as `-Crelocation-model=pic` for bootblock vs
+/// `static` for postcar/ramstage vs `pie` for SMM) clobbers `core`, `alloc`,
+/// registry crates, and workspace drivers in place. Partitioning the target
+/// directory by `unit.rustflags` lets boards share all compiled dependencies
+/// for each flag set without stages overwriting one another.
+fn shared_target_dir(root: &Path, rustflags: &[String]) -> PathBuf {
+    let mut hash = Sha256::new();
+    for flag in rustflags {
+        hash.update((flag.len() as u64).to_le_bytes());
+        hash.update(flag.as_bytes());
+    }
+    let key = &crate::hex_digest(hash.finalize())[..16];
+    root.join("target/fstart-build/cargo").join(key)
 }
