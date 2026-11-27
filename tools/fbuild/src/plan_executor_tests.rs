@@ -175,7 +175,7 @@ fn compiler_files_are_snapshotted_content_bound_and_namespace_isolated() {
     assert_eq!(records[0]["bytes"], 5);
     assert_eq!(
         records[0]["sha256"],
-        format!("{:x}", Sha256::digest(b"first"))
+        crate::hex_digest(Sha256::digest(b"first"))
     );
     let cached = resolved
         .prepare(&scratch.0, &board, unit, &BTreeMap::new(), true)
@@ -274,4 +274,39 @@ fn explain_json_preserves_common_route_envelope() {
     let inner: serde_json::Value = serde_json::from_str(&resolved.json().unwrap()).unwrap();
     assert!(inner.get("route").is_none());
     assert_eq!(inner["plan"]["payload"], "halt");
+}
+
+#[test]
+fn selection_log_level_preserves_pinned_unit_value() {
+    let mut plan = fstart_platform_qemu::host::resolve(
+        fstart_platform_qemu::facts::VirtMachine::Q35,
+        fstart_image_build::plan::BuildSelection {
+            payload: Some("halt".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let smm = plan
+        .units
+        .iter_mut()
+        .find(|u| u.name == "smm")
+        .expect("Q35 plan includes an SMM unit");
+    smm.environment_values
+        .insert("FSTART_LOG_LEVEL".into(), "off".into());
+    let selection = fstart_image_build::plan::BuildSelection {
+        log_level: Some("info".into()),
+        ..Default::default()
+    };
+    apply_selection_environment(&mut plan.units, &selection);
+    for unit in &plan.units {
+        let expected = if unit.name == "smm" { "off" } else { "info" };
+        assert_eq!(
+            unit.environment_values
+                .get("FSTART_LOG_LEVEL")
+                .map(String::as_str),
+            Some(expected),
+            "unit {}",
+            unit.name
+        );
+    }
 }

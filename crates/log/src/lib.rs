@@ -74,8 +74,17 @@ pub enum Level {
     Trace = 4,
 }
 
-// (No methods — tag strings are hardcoded in macros for compile-time
-// constant folding.)
+impl Level {
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Error => "[ERROR] ",
+            Self::Warn => "[WARN ] ",
+            Self::Info => "[INFO ] ",
+            Self::Debug => "[DEBUG] ",
+            Self::Trace => "[TRACE] ",
+        }
+    }
+}
 
 /// Build-time verbosity selected by `FSTART_LOG_LEVEL`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -619,10 +628,11 @@ pub struct ConsoleWriter {
 impl ufmt::uWrite for ConsoleWriter {
     type Error = ();
 
-    // One console: the code and its inlining are exactly those of a build
-    // without debug consoles support.
+    // Out of line: ufmt calls write_str for every literal fragment and formatted
+    // argument, so inlining duplicates the newline loop and timing at every log
+    // site (matching write_all under debug-consoles).
     #[cfg(not(feature = "debug-consoles"))]
-    #[inline]
+    #[inline(never)]
     fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
         // SAFETY: CONSOLE is written once during init, then only read.
         let console = unsafe { *CONSOLE.0.get() };
@@ -963,8 +973,81 @@ pub fn hex_dump(data: &[u8]) {
 }
 
 // ---------------------------------------------------------------------------
+// Out-of-line record framing
+// ---------------------------------------------------------------------------
+
+/// Return `true` when `s` contains no `{` or `}` format directives, so a
+/// single-literal log call can bypass `ufmt` completely.
+#[doc(hidden)]
+pub const fn is_plain_literal(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' || bytes[i] == b'}' {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Check runtime level, acquire the console lock, and emit the `[LEVEL] ` tag.
+#[doc(hidden)]
+#[inline(never)]
+pub fn begin_record(level: Level) -> Option<ConsoleWriter> {
+    if !log_enabled(level) {
+        return None;
+    }
+    let mut w = writer();
+    let _ = <ConsoleWriter as ufmt::uWrite>::write_str(&mut w, level.tag());
+    Some(w)
+}
+
+/// Terminate a log record with `\r\n`, flush the console, and release the lock.
+#[doc(hidden)]
+#[inline(never)]
+pub fn end_record(mut writer: ConsoleWriter) {
+    let _ = <ConsoleWriter as ufmt::uWrite>::write_str(&mut writer, "\n");
+    flush();
+    drop(writer);
+}
+
+/// Emit a complete unformatted log line in a single out-of-line call.
+#[doc(hidden)]
+#[inline(never)]
+pub fn log_str(level: Level, msg: &str) {
+    if let Some(mut w) = begin_record(level) {
+        let _ = <ConsoleWriter as ufmt::uWrite>::write_str(&mut w, msg);
+        end_record(w);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Macros
 // ---------------------------------------------------------------------------
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __emit_log {
+    ($level:expr, $msg:literal $(,)?) => {{
+        if const { $crate::build_enabled($level) } {
+            if const { $crate::is_plain_literal($msg) } {
+                $crate::log_str($level, $msg);
+            } else if let Some(mut _w) = $crate::begin_record($level) {
+                let _ = ::ufmt::uwrite!(_w, $msg);
+                $crate::end_record(_w);
+            }
+        }
+    }};
+    ($level:expr, $($args:tt)*) => {{
+        if const { $crate::build_enabled($level) } {
+            if let Some(mut _w) = $crate::begin_record($level) {
+                let _ = ::ufmt::uwrite!(_w, $($args)*);
+                $crate::end_record(_w);
+            }
+        }
+    }};
+}
 
 /// Log at `ERROR` level.
 ///
@@ -973,16 +1056,9 @@ pub fn hex_dump(data: &[u8]) {
 /// ```
 #[macro_export]
 macro_rules! error {
-    ($($args:tt)*) => {{
-        if const { $crate::build_enabled($crate::Level::Error) }
-            && $crate::log_enabled($crate::Level::Error)
-        {
-            let mut _w = $crate::writer();
-            let _ = ::ufmt::uwrite!(_w, "[ERROR] ");
-            let _ = ::ufmt::uwriteln!(_w, $($args)*);
-            $crate::flush();
-        }
-    }};
+    ($($args:tt)*) => {
+        $crate::__emit_log!($crate::Level::Error, $($args)*)
+    };
 }
 
 /// Log at `WARN` level.
@@ -992,16 +1068,9 @@ macro_rules! error {
 /// ```
 #[macro_export]
 macro_rules! warn {
-    ($($args:tt)*) => {{
-        if const { $crate::build_enabled($crate::Level::Warn) }
-            && $crate::log_enabled($crate::Level::Warn)
-        {
-            let mut _w = $crate::writer();
-            let _ = ::ufmt::uwrite!(_w, "[WARN ] ");
-            let _ = ::ufmt::uwriteln!(_w, $($args)*);
-            $crate::flush();
-        }
-    }};
+    ($($args:tt)*) => {
+        $crate::__emit_log!($crate::Level::Warn, $($args)*)
+    };
 }
 
 /// Log at `INFO` level.
@@ -1011,16 +1080,9 @@ macro_rules! warn {
 /// ```
 #[macro_export]
 macro_rules! info {
-    ($($args:tt)*) => {{
-        if const { $crate::build_enabled($crate::Level::Info) }
-            && $crate::log_enabled($crate::Level::Info)
-        {
-            let mut _w = $crate::writer();
-            let _ = ::ufmt::uwrite!(_w, "[INFO ] ");
-            let _ = ::ufmt::uwriteln!(_w, $($args)*);
-            $crate::flush();
-        }
-    }};
+    ($($args:tt)*) => {
+        $crate::__emit_log!($crate::Level::Info, $($args)*)
+    };
 }
 
 /// Log at `DEBUG` level.
@@ -1030,16 +1092,9 @@ macro_rules! info {
 /// ```
 #[macro_export]
 macro_rules! debug {
-    ($($args:tt)*) => {{
-        if const { $crate::build_enabled($crate::Level::Debug) }
-            && $crate::log_enabled($crate::Level::Debug)
-        {
-            let mut _w = $crate::writer();
-            let _ = ::ufmt::uwrite!(_w, "[DEBUG] ");
-            let _ = ::ufmt::uwriteln!(_w, $($args)*);
-            $crate::flush();
-        }
-    }};
+    ($($args:tt)*) => {
+        $crate::__emit_log!($crate::Level::Debug, $($args)*)
+    };
 }
 
 /// Log at `TRACE` level.
@@ -1049,14 +1104,7 @@ macro_rules! debug {
 /// ```
 #[macro_export]
 macro_rules! trace {
-    ($($args:tt)*) => {{
-        if const { $crate::build_enabled($crate::Level::Trace) }
-            && $crate::log_enabled($crate::Level::Trace)
-        {
-            let mut _w = $crate::writer();
-            let _ = ::ufmt::uwrite!(_w, "[TRACE] ");
-            let _ = ::ufmt::uwriteln!(_w, $($args)*);
-            $crate::flush();
-        }
-    }};
+    ($($args:tt)*) => {
+        $crate::__emit_log!($crate::Level::Trace, $($args)*)
+    };
 }

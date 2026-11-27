@@ -78,17 +78,7 @@ impl Resolved {
             .transpose()?;
         let mut plan = crate::host_plan::load(root, source, board, &selection)?;
         plan.validate_compiler_selections(&selection)?;
-        let environment = [
-            ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
-            ("FSTART_LOG_LEVEL", &selection.log_level),
-        ];
-        for (key, value) in environment {
-            if let Some(value) = value {
-                for unit in &mut plan.units {
-                    unit.environment_values.insert(key.into(), value.clone());
-                }
-            }
-        }
+        apply_selection_environment(&mut plan.units, &selection);
         let mut build = Self::new(root, board, source, plan)?;
         build.blobs = blobs;
         Ok(build)
@@ -160,7 +150,7 @@ impl Resolved {
         &self.plan.options
     }
     pub fn artifact_dir(&self, root: &Path, board: &str, release: bool) -> Result<PathBuf, String> {
-        let digest = format!("{:x}", Sha256::digest(self.json()?));
+        let digest = crate::hex_digest(Sha256::digest(self.json()?));
         Ok(root
             .join("target/fstart-build")
             .join(board)
@@ -204,7 +194,7 @@ impl Resolved {
         let directory = self
             .artifact_dir(root, &board.board, release)?
             .join(&unit.name)
-            .join(format!("{:x}", hash.finalize()));
+            .join(crate::hex_digest(hash.finalize()));
         let records = files
             .iter()
             .map(|file| {
@@ -514,7 +504,7 @@ impl Resolved {
                 }
             }
         }
-        Ok(format!("{:x}", hash.finalize())[..16].into())
+        Ok(crate::hex_digest(hash.finalize())[..16].into())
     }
 }
 
@@ -634,6 +624,25 @@ fn execute(
             )
             .map_err(|e| e.to_string())?;
             Ok(artifacts.into_iter().collect())
+        }
+    }
+}
+
+/// Apply build-selection environment overrides to every unit that has not
+/// explicitly pinned the key (for example, SMM units pin `FSTART_LOG_LEVEL=off`
+/// to satisfy their panic-free link audit).
+fn apply_selection_environment(units: &mut [CompilationUnit], selection: &BuildSelection) {
+    let environment = [
+        ("FSTART_SMBIOS_DATE", &selection.smbios_release_date),
+        ("FSTART_LOG_LEVEL", &selection.log_level),
+    ];
+    for (key, value) in environment {
+        if let Some(value) = value {
+            for unit in units.iter_mut() {
+                unit.environment_values
+                    .entry(key.into())
+                    .or_insert_with(|| value.clone());
+            }
         }
     }
 }

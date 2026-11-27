@@ -161,7 +161,12 @@ impl Selection {
             unit.features.join(","),
         ]);
         if let Some(std) = &unit.build_std {
-            args.extend(["-Z".into(), format!("build-std={std}")]);
+            args.extend([
+                "-Z".into(),
+                format!("build-std={std}"),
+                "-Z".into(),
+                "build-std-features=optimize_for_size".into(),
+            ]);
         }
         if custom_target {
             args.push("-Zjson-target-spec".into());

@@ -30,7 +30,7 @@ fn fixture(root: &Path, revision: &str) {
     fs::write(root.join("board.bundle.zip"), data).unwrap();
     write_json(&root.join("catalog.json"), &serde_json::json!({
         "format_version": FORMAT_VERSION, "revision": revision,
-        "builds": [{"asset": "board.bundle.zip", "size": data.len(), "sha256": format!("{:x}", Sha256::digest(data)), "image_error": null}],
+        "builds": [{"asset": "board.bundle.zip", "size": data.len(), "sha256": hex_digest(&Sha256::digest(data)), "image_error": null}],
         "extra_catalog_metadata": "preserved",
     })).unwrap();
     fs::write(root.join("image-web.zip"), b"sdk").unwrap();

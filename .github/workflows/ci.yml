@@ -87,6 +87,10 @@ jobs:
           bindings="$smoke/node/fstart_image_web.js"
           fbuild=target/release/fbuild
           node ci/test-web.mjs "$smoke/bundles" "$bindings" "$fbuild"
+          # Exercise the actual nightly payload on a stock 1 MiB flash.
+          "$fbuild" bundle --board intel-d510mo --payload uefi-ui \
+            --out "$smoke/d510mo" --revision "$(git rev-parse HEAD)"
+          node ci/test-web.mjs "$smoke/d510mo" "$bindings" "$fbuild"
           FSTART_REQUIRE_INPUT_CASE=1 node ci/test-web.mjs "$smoke/input" \
             "$bindings" "$fbuild"
           "$fbuild" bundle --board gigabyte-mj11-ec1 --payload uefi \

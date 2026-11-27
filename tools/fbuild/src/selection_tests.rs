@@ -223,4 +223,10 @@ fn remap_path_prefixes_cover_workspace_cargo_and_rustup() {
         serde_json::from_value(recorded["build_remap_rustflags"].clone()).unwrap();
     assert!(recorded.iter().all(|flag| build_flags.contains(flag)));
     assert!(!recorded.is_empty());
+    assert!(
+        selection
+            .args
+            .windows(2)
+            .any(|args| args == ["-Z", "build-std-features=optimize_for_size"])
+    );
 }

@@ -46,7 +46,7 @@ ufmt = "0.2"
 pca9535 = { version = "2", default-features = false }
 eeprom24x = "0.7.2"
 xca9548a = "1"
-heapless = { version = "0.8", default-features = false }
+heapless = { workspace = true }
 
 [dev-dependencies]
 embedded-hal-mock = { version = "0.11", default-features = false, features = ["eh1"] }

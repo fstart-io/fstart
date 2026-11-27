@@ -26,3 +26,13 @@ pub mod size_report;
 pub mod sizes;
 pub mod swtpm;
 pub mod tpm_log;
+
+pub(crate) fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write;
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}

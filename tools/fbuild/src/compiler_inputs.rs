@@ -114,7 +114,7 @@ impl Input {
             source: self.source.clone(),
             snapshot: snapshot.clone(),
             bytes: self.data.len(),
-            sha256: format!("{:x}", Sha256::digest(&self.data)),
+            sha256: crate::hex_digest(Sha256::digest(&self.data)),
         };
         Ok((snapshot, record))
     }

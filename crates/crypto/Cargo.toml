@@ -6,8 +6,8 @@ license.workspace = true
 
 [features]
 default = []
-ed25519 = ["dep:ed25519-dalek"]
-ecdsa-p256 = ["dep:p256"]
+ed25519 = ["dep:ed25519-dalek", "dep:sha2-010"]
+ecdsa-p256 = ["dep:p256", "dep:sha2-010"]
 sha2-digest = ["dep:sha2"]
 sha3-digest = ["dep:sha3"]
 # SHA-1/256/384/512 by TPM algorithm ID, for the PCR banks of measured boot.
@@ -17,6 +17,10 @@ all = ["ed25519", "ecdsa-p256", "sha2-digest", "sha3-digest"]
 [dependencies]
 fstart-core = { workspace = true }
 sha2 = { workspace = true, optional = true }
+# ed25519-dalek 2 and p256 0.13 still depend on sha2 0.10; activate its
+# force-soft-compact feature so SHA-512 stays ~1 KiB instead of pulling the
+# ~15 KiB unrolled/runtime-dispatch backend into CAR/bootblock stages.
+sha2-010 = { package = "sha2", version = "0.10", default-features = false, features = ["force-soft-compact"], optional = true }
 sha3 = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }

@@ -34,17 +34,17 @@ unimplemented = "warn"
 serde = { version = "1", default-features = false, features = ["derive"] }
 
 # Crypto (RustCrypto)
-sha2 = { version = "0.10", default-features = false, features = ["force-soft-compact"] }
+sha2 = { version = "0.11", default-features = false }
 sha3 = { version = "0.10", default-features = false }
-sha1 = { version = "0.10", default-features = false, features = ["force-soft"] }
-ed25519-dalek = { version = "2", default-features = false, features = ["fast"] }
+sha1 = { version = "0.11", default-features = false }
+ed25519-dalek = { version = "2", default-features = false }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 # Embedded / no_std utilities
 embedded-hal = { version = "1", default-features = false }
 embedded-io = { version = "0.6", default-features = false }
 embedded-storage = { version = "0.3", default-features = false }
-heapless = { version = "0.8", default-features = false, features = ["portable-atomic"] }
+heapless = { version = "0.9", default-features = false, features = ["portable-atomic"] }
 linked_list_allocator = { version = "0.10.6", default-features = false }
 konst = { version = "0.4", default-features = false, features = ["iter"] }
 ufmt = { version = "0.2", default-features = false }
@@ -70,8 +70,8 @@ aspeed-hal = { git = "https://github.com/kyanitecomputer/aspeed-rs", rev = "5849
 
 # CrabEFI's EFI types and X.509 parsing, for host tools; the same revision
 # as crabefi-core in crates/boot.
-crabefi-efi-types = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "c6682553189cfb30e451b90351fae01fe7140433" }
-crabefi-pkcs7 = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "c6682553189cfb30e451b90351fae01fe7140433" }
+crabefi-efi-types = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8" }
+crabefi-pkcs7 = { git = "https://github.com/ArthurHeymans/CrabEFI.git", rev = "4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8" }
 
 # Device tree
 dtoolkit = { version = "0.1", default-features = false }

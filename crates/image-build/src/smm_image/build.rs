@@ -179,14 +179,17 @@ fn build_image(
         .ok_or(BuildError::Overflow)?
         .checked_next_multiple_of(16)
         .ok_or(BuildError::Overflow)?;
-    let stubs_offset = handler_offset
+    let stub_offset = handler_offset
         .checked_add(handler.initialized.len())
         .ok_or(BuildError::Overflow)?
         .checked_next_multiple_of(16)
         .ok_or(BuildError::Overflow)?;
     let stub_size = stub.bytes.len();
-    let fixups_offset = stubs_offset
-        .checked_add(stub_size * options.entry_count as usize)
+    // Every CPU descriptor shares the same read-only stub template; the
+    // installer copies it into each CPU's SMRAM slot and patches per-CPU
+    // SmmEntryParams in SMRAM.
+    let fixups_offset = stub_offset
+        .checked_add(stub_size)
         .ok_or(BuildError::Overflow)?;
     let image_size = fixups_offset
         .checked_add(4 * handler.fixups.len())
@@ -266,18 +269,18 @@ fn build_image(
     header
         .write_to_prefix(&mut image)
         .expect("header space reserved");
+    let shared_entry = EntryDescriptor {
+        stub_offset: as_u32(stub_offset)?,
+        stub_size: as_u32(stub_size)?,
+        entry_offset: 0,
+        params_offset: as_u32(stub.params_offset)?,
+    };
     for i in 0..options.entry_count as usize {
-        let stub_offset = stubs_offset + i * stub_size;
-        EntryDescriptor {
-            stub_offset: as_u32(stub_offset)?,
-            stub_size: as_u32(stub_size)?,
-            entry_offset: 0,
-            params_offset: as_u32(stub.params_offset)?,
-        }
-        .write_to_prefix(&mut image[entries_offset + i * desc_size..])
-        .expect("descriptor space reserved");
-        image[stub_offset..stub_offset + stub_size].copy_from_slice(&stub.bytes);
+        shared_entry
+            .write_to_prefix(&mut image[entries_offset + i * desc_size..])
+            .expect("descriptor space reserved");
     }
+    image[stub_offset..stub_offset + stub_size].copy_from_slice(&stub.bytes);
     for (i, fixup) in handler.fixups.iter().enumerate() {
         let at = fixups_offset + 4 * i;
         image[at..at + 4].copy_from_slice(&fixup.to_le_bytes());
@@ -1748,13 +1751,31 @@ mod tests {
         assert!(header.handler_mem_size > 0x40);
         assert_eq!(header.runtime_size as usize, size_of::<SmmRuntime>());
         assert_ne!(header.module_args_offset, 0);
+        let first_stub_offset = header.entry(&built.image, 0).unwrap().stub_offset;
         for i in 0..4 {
             let entry = header.entry(&built.image, i).unwrap();
+            assert_eq!(entry.stub_offset, first_stub_offset);
             assert!(
                 entry.stub_size as usize
                     >= entry.params_offset as usize + size_of::<SmmEntryParams>()
             );
         }
+        let single = build_image(
+            ImageOptions {
+                entry_count: 1,
+                stack_size: 0x400,
+                coreboot_module_args: true,
+                coreboot_header: false,
+            },
+            &test_handler(),
+            &stub,
+        )
+        .unwrap();
+        assert_eq!(
+            built.image.len() - single.image.len(),
+            3 * size_of::<EntryDescriptor>(),
+            "extra CPU descriptors must share the single stub template"
+        );
         let generated = built.coreboot_header.unwrap();
         assert!(generated.contains("FSTART_SMM_HANDLER_LOAD_SIZE 3u"));
         assert!(generated.contains("FSTART_SMM_HANDLER_ALIGNMENT 4096u"));

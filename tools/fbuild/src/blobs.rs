@@ -45,14 +45,14 @@ pub(crate) fn from_donor(
     let board = source.package["metadata"]["fstart"]["board"]
         .as_str()
         .ok_or("the board has no name")?;
-    let digest = format!("{:x}", Sha256::digest(&image));
+    let digest = crate::hex_digest(Sha256::digest(&image));
     // A changed table names other files: extract again.
     let tables = serde_json::to_vec(&[
         &source.package["metadata"]["fstart"],
         &source.platform["metadata"]["fstart"],
     ])
     .map_err(|e| e.to_string())?;
-    let tables = format!("{:x}", Sha256::digest(&tables));
+    let tables = crate::hex_digest(Sha256::digest(&tables));
     let dir = root.join("target/fstart-blobs").join(board).join(format!(
         "{}-{}",
         &digest[..16],
@@ -122,7 +122,7 @@ fn extract_from(
             missing.join(", ")
         ));
     }
-    let sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    let sha256 = |bytes: &[u8]| crate::hex_digest(Sha256::digest(bytes));
     let quote = |s: &str| serde_json::to_string(s).unwrap();
     if let Some(member) = &member {
         eprintln!("[fstart] {member} of {}", rom.display());
