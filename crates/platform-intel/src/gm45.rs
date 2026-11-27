@@ -14,6 +14,7 @@ pub use fstart_driver_intel::ich9::{
 };
 pub use fstart_driver_intel::southbridge::ehci_debug::EhciController;
 use fstart_driver_intel::southbridge::gpio_ich as gpio;
+use fstart_driver_intel::southbridge::pirq::PinRoute;
 pub use fstart_driver_intel::southbridge::pirq::PirqRouting;
 
 pub const GM45_MCHBAR: u64 = 0xFED1_4000;
@@ -47,6 +48,7 @@ pub struct Gm45Ich9Config {
     /// Board-verified RCBA interrupt routing; required by the ICH9 driver.
     pub pirq: Option<PirqRouting>,
     pub preserve_hardware_pirq: bool,
+    pub pci_bridge_routes: &'static [PinRoute],
     pub pirq_routing: [u8; 8],
     pub lpc_decode: LpcDecodeConfig,
     pub gpe0_en: u32,
@@ -92,6 +94,7 @@ impl Gm45Ich9Config {
             disable_lan: false,
             pirq: None,
             preserve_hardware_pirq: false,
+            pci_bridge_routes: &[],
             pirq_routing: [0x80; 8],
             lpc_decode: LpcDecodeConfig::new(),
             gpe0_en: 0,
@@ -149,6 +152,7 @@ impl Gm45Ich9Config {
         config.smbus_base = ICH9_SMBUS_BASE;
         config.pirq = self.pirq;
         config.preserve_hardware_pirq = self.preserve_hardware_pirq;
+        config.pci_bridge_routes = self.pci_bridge_routes;
         config.pirq_routing = self.pirq_routing;
         config.pcie_ports = self.pcie_ports;
         config.pcie_slots = self.pcie_slots;
@@ -213,10 +217,13 @@ impl Gm45Ich9Config {
         self
     }
 
+    /// Preserve the root-bus router and describe the board's separate
+    /// conventional PCI bus wiring behind 00:1e.0.
     #[must_use]
-    pub const fn preserve_hardware_pirq(mut self) -> Self {
+    pub const fn preserve_hardware_pirq(mut self, pci_bridge_routes: &'static [PinRoute]) -> Self {
         self.pirq = None;
         self.preserve_hardware_pirq = true;
+        self.pci_bridge_routes = pci_bridge_routes;
         self
     }
 
@@ -224,6 +231,7 @@ impl Gm45Ich9Config {
     pub const fn pirq(mut self, routing: PirqRouting) -> Self {
         self.pirq = Some(routing);
         self.preserve_hardware_pirq = false;
+        self.pci_bridge_routes = &[];
         self
     }
 

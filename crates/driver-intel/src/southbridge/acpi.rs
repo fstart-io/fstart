@@ -482,11 +482,13 @@ pub fn smbus_node(devfn: u8) -> Vec<u8> {
 pub fn pci_bridge_node(devfn: u8, routing: &super::pirq::PirqRouting) -> Vec<u8> {
     let adr = adr(devfn);
     let mut body: Vec<u8> = acpi_dsl! { Name("_ADR", #{dword adr}); }.into();
-    body.extend(fstart_acpi::pirq::prt_name_aml(
-        routing
-            .bridge_bus_routes()
-            .map(|(slot, pin, gsi)| (slot, pin.index(), gsi)),
-    ));
+    if !routing.bridge_routes.is_empty() {
+        body.extend(fstart_acpi::pirq::prt_name_aml(
+            routing
+                .bridge_bus_routes()
+                .map(|(slot, pin, gsi)| (slot, pin.index(), gsi)),
+        ));
+    }
     fstart_acpi::aml_linker::device_vec("PCIB", &body).expect("PCIB device emission")
 }
 

@@ -7,6 +7,7 @@ use fstart_core::{
 };
 use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
 use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
+use fstart_driver_intel::southbridge::pirq::{PinRoute, Pirq};
 use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
 use fstart_platform_intel::facts::PciSubsystemId;
 use fstart_platform_intel::gm45::{
@@ -185,6 +186,20 @@ pub const T400_H8: fstart_driver_lenovo::h8::H8Config = {
     }
 };
 
+/// Conventional PCI wiring from coreboot `lenovo/t400/acpi/ich9_pci_irqs.asl`.
+const PCI_BRIDGE_ROUTES: &[PinRoute] = {
+    use Pirq::{A, B, C, D};
+    [
+        PinRoute::slot(0, [A, B, C, D]),
+        PinRoute::slot(1, [B, C, D, A]),
+        PinRoute::slot(2, [C, D, A, B]),
+        PinRoute::slot(3, [A, B, C, D]),
+        PinRoute::slot(4, [A, B, C, D]),
+        PinRoute::slot(5, [B, C, D, A]),
+    ]
+    .as_flattened()
+};
+
 pub static T400_PLATFORM: Gm45Ich9Platform = {
     let base = Gm45Ich9Config::new()
         .laptop()
@@ -200,7 +215,7 @@ pub static T400_PLATFORM: Gm45Ich9Platform = {
         // Socket P supports quad-core Penryn CPUs (coreboot socket_p MAX_CPUS=4).
         .max_cpus(4)
         .spd_addresses([0x50, 0, 0x51, 0])
-        .preserve_hardware_pirq()
+        .preserve_hardware_pirq(PCI_BRIDGE_ROUTES)
         .pirq_routing([0x0b, 0x0b, 0x0b, 0x0b, 0x80, 0x80, 0x80, 0x80])
         .gpe0_en(0x0100_0000)
         .gpi_routing([

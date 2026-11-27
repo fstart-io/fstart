@@ -263,6 +263,9 @@ pub struct IntelIch9Config {
     /// Keep reset/strap DxxIP/DxxIR values and derive ACPI routes by readback,
     /// as coreboot i82801ix does. Mutually exclusive with an explicit map.
     pub preserve_hardware_pirq: bool,
+    /// Conventional PCI wiring when preserving the root-bus router. An
+    /// explicit `pirq` map supplies its own `bridge_routes` instead.
+    pub pci_bridge_routes: &'static [crate::southbridge::pirq::PinRoute],
     /// Northbridge DMIBAR base address, used as the RCBA upstream RCRB target.
     pub dmibar: u64,
     /// PIRQ routing (A..H) for PIC mode.
@@ -325,6 +328,7 @@ impl IntelIch9Config {
             rcba: 0xFED1_C000,
             pirq: None,
             preserve_hardware_pirq: false,
+            pci_bridge_routes: &[],
             dmibar: 0xFED1_8000,
             pirq_routing: [0x0b, 0x0b, 0x0b, 0x0b, 0x80, 0x80, 0x80, 0x80],
             gpe0_en: 0,
@@ -1371,8 +1375,8 @@ impl IntelIch9 {
             return;
         }
         let routing = self.config.pirq.as_ref().expect("ICH9 routing validated");
+        // D30IP/D30IR are read-only on ICH9: the bridge has no local INTx.
         rcba.regs().d31ip.set(routing.ip_value(0x1f));
-        rcba.regs().d30ip.set(routing.ip_value(0x1e));
         rcba.regs().d29ip.set(routing.ip_value(0x1d));
         rcba.regs().d28ip.set(routing.ip_value(0x1c));
         rcba.regs().d27ip.set(routing.ip_value(0x1b));
@@ -1380,7 +1384,6 @@ impl IntelIch9 {
         rcba.regs().d25ip.set(routing.ip_value(0x19));
 
         rcba.regs().d31ir.set(routing.ir_value(0x1f));
-        rcba.regs().d30ir.set(routing.ir_value(0x1e));
         rcba.regs().d29ir.set(routing.ir_value(0x1d));
         rcba.regs().d28ir.set(routing.ir_value(0x1c));
         rcba.regs().d27ir.set(routing.ir_value(0x1b));
