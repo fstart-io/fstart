@@ -10,10 +10,12 @@
 //! `fstart-amdfw-format` crate. Signed AMD blobs are copied unchanged,
 //! never re-signed.
 pub mod apcb;
+pub mod apcb_tokens;
 pub mod assembly;
 pub mod blobs;
 pub mod config;
 pub mod halved_flash;
+pub mod ish;
 pub mod levels;
 pub mod psp_app;
 pub mod reset;
