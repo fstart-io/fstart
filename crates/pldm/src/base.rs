@@ -140,9 +140,9 @@ impl BaseResponder {
                 if data.len() != 6 {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
-                let handle = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
                 let op_flag = data[4];
-                if op_flag != 0x01 || handle != 0 {
+                // DSP0240 §8.4: GetFirstPart (0x01) ignores data_transfer_handle.
+                if op_flag != 0x01 {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
                 }
                 let pldm_type = data[5];

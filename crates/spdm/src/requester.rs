@@ -363,6 +363,9 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if resp.len() < total {
             return Err(Error::ShortBuffer);
         }
+        if !crate::secured::opaque_selects_version_1_1(&resp[106..before_sig]) {
+            return Err(Error::VersionMismatch);
+        }
         let req_sid = u16::from_le_bytes([req[4], req[5]]);
         let rsp_sid = u16::from_le_bytes([body[0], body[1]]);
         let session_id = (u32::from(rsp_sid) << 16) | u32::from(req_sid);

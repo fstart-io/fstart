@@ -86,9 +86,13 @@ impl<T: PacketTransport, const MAX_MSG: usize, const SLOTS: usize> Endpoint<T, M
         if !eid_ok {
             return false;
         }
-        // Drop TO=0 responses for tags we did not allocate.
-        if !hdr.tag_owner && self.live_tags[(hdr.msg_tag & 0x07) as usize].is_none() {
-            return false;
+        // Drop TO=0 responses for unallocated tags or mismatched unicast peers
+        // (allow null-EID discovery requests to match the peer's assigned EID).
+        if !hdr.tag_owner {
+            match self.live_tags[(hdr.msg_tag & 0x07) as usize] {
+                Some(expected) if expected == hdr.src_eid || expected == EID_NULL => {}
+                _ => return false,
+            }
         }
         true
     }
@@ -102,11 +106,7 @@ impl<T: PacketTransport, const MAX_MSG: usize, const SLOTS: usize> Endpoint<T, M
                 return Ok(candidate);
             }
         }
-        // All 8 tags occupied: evict the next_tag slot as fallback.
-        let tag = self.next_tag & 0x07;
-        self.live_tags[tag as usize] = Some(dst_eid);
-        self.next_tag = tag.wrapping_add(1) & 0x07;
-        Ok(tag)
+        Err(Error::NoAvailableTag)
     }
 
     /// Receive the next message; if it is an incoming MCTP Control request
@@ -189,9 +189,12 @@ impl<T: PacketTransport, const MAX_MSG: usize, const SLOTS: usize> MctpChannel
         let mtu = self.transport.mtu();
         let mut pkt_buf = [0u8; 512];
         if mtu > pkt_buf.len() - HEADER_LEN {
+            if tag_owner {
+                self.live_tags[msg_tag as usize] = None;
+            }
             return Err(Error::BufferTooSmall);
         }
-        let mut packetizer = Packetizer::new(
+        let mut packetizer = match Packetizer::new(
             MessageMeta {
                 dst_eid,
                 src_eid: self.control.eid(),
@@ -202,9 +205,22 @@ impl<T: PacketTransport, const MAX_MSG: usize, const SLOTS: usize> MctpChannel
             },
             mtu,
             payload,
-        )?;
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                if tag_owner {
+                    self.live_tags[msg_tag as usize] = None;
+                }
+                return Err(e);
+            }
+        };
         while let Some(len) = packetizer.next_packet(&mut pkt_buf)? {
-            self.transport.send_packet(&pkt_buf[..len])?;
+            if let Err(e) = self.transport.send_packet(&pkt_buf[..len]) {
+                if tag_owner {
+                    self.live_tags[msg_tag as usize] = None;
+                }
+                return Err(e);
+            }
         }
         Ok(msg_tag)
     }

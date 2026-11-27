@@ -139,15 +139,15 @@ pub fn doe_exchange<A: ConfigRegionAccess>(
 
     let _cap = unsafe { access.read(addr, cap_offset + REG_CAP) };
 
-    // Ensure mailbox is clean (neither Busy nor Error latched).
+    // Ensure mailbox is clean (neither Busy, Error, nor stale Data Object Ready).
     let st = unsafe { access.read(addr, cap_offset + REG_STATUS) };
-    if (st & STATUS_ERROR) != 0 {
+    if (st & (STATUS_ERROR | STATUS_DATA_READY)) != 0 {
         abort_and_wait(access, addr, cap_offset, max_polls)?;
     } else if (st & STATUS_BUSY) != 0 {
         let mut ready = false;
         for _ in 0..max_polls {
             let s = unsafe { access.read(addr, cap_offset + REG_STATUS) };
-            if (s & STATUS_ERROR) != 0 {
+            if (s & (STATUS_ERROR | STATUS_DATA_READY)) != 0 {
                 abort_and_wait(access, addr, cap_offset, max_polls)?;
                 ready = true;
                 break;

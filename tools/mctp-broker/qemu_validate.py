@@ -64,25 +64,40 @@ def verify_pcapng(pcap_path: Path) -> int:
     mctp_packets = 0
     while off + 12 <= len(data):
         btype, blen = struct.unpack_from("<II", data, off)
-        assert blen >= 12 and off + blen <= len(data), f"malformed block at {off}"
+        if blen < 12 or (blen & 3) != 0 or off + blen > len(data):
+            raise RuntimeError(f"malformed pcapng block at {off} (len={blen})")
+        trailer_len = struct.unpack_from("<I", data, off + blen - 4)[0]
+        if trailer_len != blen:
+            raise RuntimeError(f"pcapng trailing length mismatch at {off}: {trailer_len} != {blen}")
         if btype == 0x0A0D0D0A:
             saw_shb = True
         elif btype == 0x00000001:
+            if blen < 20:
+                raise RuntimeError("truncated pcapng IDB")
             link_type = struct.unpack_from("<H", data, off + 8)[0]
-            assert link_type == 276, f"expected LINKTYPE_LINUX_SLL2 (276), got {link_type}"
+            if link_type != 276:
+                raise RuntimeError(f"expected LINKTYPE_LINUX_SLL2 (276), got {link_type}")
             saw_idb = True
         elif btype == 0x00000006:
+            if blen < 32:
+                raise RuntimeError("truncated pcapng EPB")
             cap_len = struct.unpack_from("<I", data, off + 20)[0]
+            if 28 + cap_len > blen - 4:
+                raise RuntimeError(f"EPB cap_len {cap_len} exceeds block length {blen}")
             pkt = data[off + 28 : off + 28 + cap_len]
-            assert len(pkt) >= 24, f"short SLL2+MCTP packet ({len(pkt)}B)"
+            if len(pkt) < 24:
+                raise RuntimeError(f"short SLL2+MCTP packet ({len(pkt)}B)")
             proto = struct.unpack_from(">H", pkt, 0)[0]
-            assert proto == 0x00FA, f"expected ETH_P_MCTP (0x00FA), got {proto:#x}"
-            assert (pkt[20] & 0x0F) == 0x01, f"bad MCTP version byte {pkt[20]:#x}"
+            if proto != 0x00FA:
+                raise RuntimeError(f"expected ETH_P_MCTP (0x00FA), got {proto:#x}")
+            if (pkt[20] & 0x0F) != 0x01:
+                raise RuntimeError(f"bad MCTP version byte {pkt[20]:#x}")
             mctp_packets += 1
         off += blen
-    assert saw_shb and saw_idb and mctp_packets >= 10, (
-        f"pcapng incomplete: shb={saw_shb}, idb={saw_idb}, mctp_packets={mctp_packets}"
-    )
+    if not (saw_shb and saw_idb and mctp_packets >= 10):
+        raise RuntimeError(
+            f"pcapng incomplete: shb={saw_shb}, idb={saw_idb}, mctp_packets={mctp_packets}"
+        )
     return mctp_packets
 
 

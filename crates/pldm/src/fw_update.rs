@@ -267,7 +267,7 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
                 resp[8..10].copy_from_slice(&0u16.to_le_bytes()); // component_count
                 resp[10] = 0x01; // ASCII
                 resp[11] = 0; // active_comp_image_set_ver_str_len
-                resp[12] = 0x01; // ASCII
+                resp[12] = 0x00; // Unknown (no pending image, DSP0267 §10.2)
                 resp[13] = 0; // pending_comp_image_set_ver_str_len
                 Ok(14)
             }
@@ -279,13 +279,15 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
                     return write_completion(hdr, CompletionCode::InvalidLength as u8, resp);
                 }
                 let req_max = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                if req_max < 32 {
+                let num_components = u16::from_le_bytes([data[4], data[5]]);
+                // Single-component FirmwareDevice contract: require num_components == 1.
+                if req_max < 32 || num_components != 1 {
                     return write_completion(hdr, CompletionCode::InvalidData as u8, resp);
                 }
                 if resp.len() < 7 {
                     return Err(Error::BufferTooSmall);
                 }
-                self.max_transfer_size = req_max.min(512);
+                self.max_transfer_size = req_max.min(256);
                 self.expected_component = None;
                 self.applied_components = 0;
                 self.transition(FdState::LearnComponents);
@@ -511,7 +513,9 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
         Ok(4)
     }
 
-    /// Build `VerifyComplete` (FD -> UA) and transition `Verify -> Apply`.
+    /// Build `VerifyComplete` (FD -> UA). Per DSP0267 §11.8, only transitions
+    /// `Verify -> Apply` when `verify_result == 0x00` (`VerifySuccess`); a
+    /// failed verification stays in `Verify` until `CancelUpdate`.
     pub fn build_verify_complete(
         &mut self,
         instance_id: u8,
@@ -531,14 +535,18 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
         );
         out[..3].copy_from_slice(&hdr.to_bytes());
         out[3] = verify_result;
-        self.transition(FdState::Apply);
+        if verify_result == 0x00 {
+            self.transition(FdState::Apply);
+        }
         Ok(4)
     }
 
-    /// Build `ApplyComplete` (FD -> UA) and transition `Apply -> ReadyXfer`.
+    /// Build `ApplyComplete` (FD -> UA). Only records an applied component and
+    /// transitions `Apply -> ReadyXfer` when `apply_result == 0x00` (`ApplySuccess`).
     pub fn build_apply_complete(
         &mut self,
         instance_id: u8,
+        apply_result: u8,
         out: &mut [u8],
     ) -> Result<usize, Error> {
         if self.state != FdState::Apply {
@@ -553,10 +561,12 @@ impl<const MAX_IMAGE: usize> FirmwareDevice<MAX_IMAGE> {
             FwUpdateCommand::ApplyComplete as u8,
         );
         out[..3].copy_from_slice(&hdr.to_bytes());
-        out[3] = 0x00; // ApplySuccess
+        out[3] = apply_result;
         out[4..6].copy_from_slice(&0u16.to_le_bytes()); // activation methods modification
-        self.applied_components = self.applied_components.saturating_add(1);
-        self.transition(FdState::ReadyXfer);
+        if apply_result == 0x00 {
+            self.applied_components = self.applied_components.saturating_add(1);
+            self.transition(FdState::ReadyXfer);
+        }
         Ok(6)
     }
 }

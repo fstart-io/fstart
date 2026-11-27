@@ -528,7 +528,9 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
         let req_opaque_len = u16::from_le_bytes([body[100], body[101]]) as usize;
-        if body.len() < 102 + req_opaque_len {
+        if body.len() < 102 + req_opaque_len
+            || !crate::secured::opaque_offers_version_1_1(&body[102..102 + req_opaque_len])
+        {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
         let req_session_id = u16::from_le_bytes([body[0], body[1]]);

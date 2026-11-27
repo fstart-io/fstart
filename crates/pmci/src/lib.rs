@@ -31,6 +31,10 @@ impl From<fstart_mctp::Error> for PldmMctpError {
     }
 }
 
+/// Maximum inner payload bytes that fit in a DSP0276 Secured MCTP record on
+/// a default 512-byte [`fstart_mctp::Endpoint`] (`512 - 8 header - 2 app_len - 16 tag - 1 msg_type = 485`).
+pub const SECURED_MCTP_MAX_PAYLOAD: usize = 485;
+
 /// Perform a synchronous PLDM request/response exchange over any
 /// [`MctpChannel`] (plain MCTP or [`SecuredMctpChannel`]).
 pub fn pldm_exchange<'a, C: MctpChannel>(
@@ -40,10 +44,14 @@ pub fn pldm_exchange<'a, C: MctpChannel>(
     rx_buf: &'a mut [u8],
 ) -> Result<(u8, &'a [u8]), PldmMctpError> {
     let (req_hdr, _) = PldmHeader::parse(req)?;
+    if !req_hdr.rq || req_hdr.datagram {
+        return Err(PldmError::InvalidHeader.into());
+    }
     let tag = channel.send_message(dst_eid, MessageType::Pldm as u8, None, req)?;
     let msg = channel.recv_message(rx_buf)?;
     if msg.src_eid != dst_eid
         || msg.msg_type != MessageType::Pldm as u8
+        || msg.integrity_check
         || msg.tag_owner
         || msg.msg_tag != tag
     {
@@ -85,11 +93,11 @@ impl<C: MctpChannel> MctpChannel for SecuredMctpChannel<'_, C> {
         {
             return Err(fstart_mctp::Error::InvalidHeader);
         }
-        let mut app = [0u8; 512];
-        let mut enc = [0u8; 576];
-        if 1 + payload.len() > app.len() {
+        if payload.len() > SECURED_MCTP_MAX_PAYLOAD {
             return Err(fstart_mctp::Error::BufferTooSmall);
         }
+        let mut app = [0u8; 1 + SECURED_MCTP_MAX_PAYLOAD];
+        let mut enc = [0u8; 512];
         app[0] = msg_type & 0x7F;
         app[1..1 + payload.len()].copy_from_slice(payload);
         let elen = self

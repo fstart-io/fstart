@@ -123,15 +123,26 @@ fn pldm_firmware_update_full_state_machine() {
         4
     );
     assert_eq!(pldm.fw_update.state(), FdState::Verify);
+    // Failed verify must remain in Verify (cannot advance to Apply)
     assert_eq!(
         pldm.fw_update
-            .build_verify_complete(11, 0, &mut req)
+            .build_verify_complete(11, 0x01, &mut req)
+            .unwrap(),
+        4
+    );
+    assert_eq!(pldm.fw_update.state(), FdState::Verify);
+
+    assert_eq!(
+        pldm.fw_update
+            .build_verify_complete(12, 0x00, &mut req)
             .unwrap(),
         4
     );
     assert_eq!(pldm.fw_update.state(), FdState::Apply);
     assert_eq!(
-        pldm.fw_update.build_apply_complete(12, &mut req).unwrap(),
+        pldm.fw_update
+            .build_apply_complete(13, 0x00, &mut req)
+            .unwrap(),
         6
     );
     assert_eq!(pldm.fw_update.state(), FdState::ReadyXfer);

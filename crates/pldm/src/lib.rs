@@ -59,8 +59,8 @@ pub enum CompletionCode {
     InvalidPldmTypeInRequestData = 0x83,
     /// Base / FW Update: Invalid PLDM version (DSP0240) / Invalid state for command (DSP0267).
     InvalidStateForCommand = 0x84,
-    /// Firmware Update: Incomplete update on ActivateFirmware (DSP0267).
-    IncompleteUpdate = 0x87,
+    /// Firmware Update: Incomplete update on ActivateFirmware (DSP0267 = 0x85).
+    IncompleteUpdate = 0x85,
 }
 
 /// Errors returned by PLDM encoding or decoding.

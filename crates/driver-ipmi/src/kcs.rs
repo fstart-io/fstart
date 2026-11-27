@@ -816,5 +816,21 @@ mod tests {
             Err(Error::Short)
         );
         assert!(empty_bmc.into_inner().writes.is_empty());
+
+        // Stalled read phase times out and aborts the interface back to Idle.
+        let stalled = RefCell::new(Bmc {
+            answer: mctp_kcs_rsp,
+            stall_read: true,
+            ..Bmc::default()
+        });
+        let mut iface = kcs(&stalled).with_poll_budget(64);
+        assert_eq!(
+            iface.raw_transaction(&mctp_kcs_req, &mut buf),
+            Err(Error::Timeout)
+        );
+        assert!(iface.idle());
+        let stalled = stalled.into_inner();
+        assert!(stalled.writes.contains(&(true, GET_STATUS_ABORT)));
+        assert_eq!((stalled.state, stalled.output), (IDLE, None));
     }
 }

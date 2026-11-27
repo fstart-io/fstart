@@ -100,6 +100,8 @@ pub enum Error {
     MessageTooLarge,
     /// All concurrent reassembly slots are occupied.
     NoReassemblySlot,
+    /// All 8 outbound requester message tags are currently in use.
+    NoAvailableTag,
     /// Transport layer I/O failure.
     Transport,
     /// Operation timed out waiting for a packet or message.

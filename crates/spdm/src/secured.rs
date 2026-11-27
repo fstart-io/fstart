@@ -19,13 +19,16 @@ use zeroize::Zeroize;
 
 /// DSP0277 §6.1 `OpaqueDataFmt1` SupportedVersion list (advertising DSP0277 1.1)
 /// sent in `KEY_EXCHANGE`.
+///
+/// Unpadded `OpaqueElementDataLen = 5` (`SMDataVersion(1) + SMDataID(1) +
+/// VersionCount(1) + Version(2)`), followed by 3 zero alignment pad bytes.
 pub const OPAQUE_SUPPORTED_VERSION_1_1: [u8; 16] = [
     0x01, 0x00, 0x00, 0x00, // TotalElements=1, Reserved[3]=0
     0x00, 0x00, // ID=DMTF(0x00), VendorLen=0
-    0x06, 0x00, // OpaqueElementDataLen=6
+    0x05, 0x00, // OpaqueElementDataLen=5
     0x01, 0x01, // SMDataVersion=1, SMDataID=SupportedVersion(1)
-    0x01, 0x00, 0x11, 0x00, // VersionCount=1, Version=1.1 (0x1100 LE) + 1B pad
-    0x00, 0x00, // 4-byte alignment padding
+    0x01, 0x00, 0x11, // VersionCount=1, Version=1.1 (0x1100 LE)
+    0x00, 0x00, 0x00, // 3-byte alignment padding to 4B boundary
 ];
 
 /// DSP0277 §6.1 `OpaqueDataFmt1` VersionSelection (selecting DSP0277 1.1)
@@ -37,6 +40,45 @@ pub const OPAQUE_SELECTED_VERSION_1_1: [u8; 12] = [
     0x01, 0x00, // SMDataVersion=1, SMDataID=VersionSelection(0)
     0x00, 0x11, // SelectedVersion=1.1 (0x1100 LE)
 ];
+
+/// Validate that a `KEY_EXCHANGE` opaque data field advertises DSP0277 1.1 (`0x1100`).
+pub fn opaque_offers_version_1_1(opaque: &[u8]) -> bool {
+    if opaque.len() < 13 || opaque[0] == 0 || opaque[4] != 0x00 || opaque[5] != 0x00 {
+        return false;
+    }
+    let elem_len = u16::from_le_bytes([opaque[6], opaque[7]]) as usize;
+    if elem_len < 5 || 8 + elem_len > opaque.len() {
+        return false;
+    }
+    let elem = &opaque[8..8 + elem_len];
+    if elem[0] != 0x01 || elem[1] != 0x01 {
+        return false;
+    }
+    let count = elem[2] as usize;
+    if 3 + count * 2 > elem.len() {
+        return false;
+    }
+    for i in 0..count {
+        let ver = u16::from_le_bytes([elem[3 + i * 2], elem[4 + i * 2]]);
+        if ver == 0x1100 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Validate that a `KEY_EXCHANGE_RSP` opaque data field selects DSP0277 1.1 (`0x1100`).
+pub fn opaque_selects_version_1_1(opaque: &[u8]) -> bool {
+    if opaque.len() < 12 || opaque[0] == 0 || opaque[4] != 0x00 || opaque[5] != 0x00 {
+        return false;
+    }
+    let elem_len = u16::from_le_bytes([opaque[6], opaque[7]]) as usize;
+    if elem_len < 4 || 8 + elem_len > opaque.len() {
+        return false;
+    }
+    let elem = &opaque[8..8 + elem_len];
+    elem[0] == 0x01 && elem[1] == 0x00 && u16::from_le_bytes([elem[2], elem[3]]) == 0x1100
+}
 
 /// Encapsulation rules that differ between MCTP (DSP0276) and PCIe DOE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
