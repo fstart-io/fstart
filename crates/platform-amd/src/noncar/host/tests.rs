@@ -197,9 +197,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "182d456320abe2262f679cdceb649037d43e1fa4cc255efaa652c139beaa75c8",
-            "854d15c6760522388f04e0358366a5c91f44f779911ed3bcb4baa42f3b9136cd",
-            "7f5e2df2a8697767e89aa0e060f4abd56fbeaee2f2c6e187c93989ab688604d7",
+            "4013a7b62dd5eff28d8d689cf1b18779df12d7355c893f9074885514b6294476",
+            "6b90784ecdab6d4742fde255cc1f88a4b774e4b69589cc9795941e4bffa0c23c",
+            "ced50dfbeb54ed038a268a31404517568b276760dec4bd708a800646484235f2",
         ]
     );
 }
