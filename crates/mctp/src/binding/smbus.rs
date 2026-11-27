@@ -10,10 +10,20 @@
 
 use crate::binding::crc8_smbus;
 use crate::{Error, HEADER_LEN};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub const COMMAND_CODE: u8 = 0x0F;
 /// Maximum raw MCTP packet bytes fitting in an SMBus block write (byte_count <= 255).
 pub const MAX_PACKET_LEN: usize = 254;
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct SmbusFrameHeader {
+    dst_addr_rw: u8,
+    command_code: u8,
+    byte_count: u8,
+    src_addr_ro: u8,
+}
 
 /// Decoded SMBus MCTP frame header metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,37 +46,39 @@ pub fn encode(
     if mctp_packet.len() < HEADER_LEN || mctp_packet.len() > MAX_PACKET_LEN {
         return Err(Error::InvalidFrame);
     }
-    let total = 4 + mctp_packet.len() + 1;
+    let hdr_len = core::mem::size_of::<SmbusFrameHeader>();
+    let total = hdr_len + mctp_packet.len() + 1;
     if out.len() < total {
         return Err(Error::BufferTooSmall);
     }
-    out[0] = dst_addr << 1;
-    out[1] = COMMAND_CODE;
-    out[2] = (1 + mctp_packet.len()) as u8;
-    out[3] = (src_addr << 1) | 0x01;
-    out[4..4 + mctp_packet.len()].copy_from_slice(mctp_packet);
-    let pec = crc8_smbus(&out[..total - 1]);
-    out[total - 1] = pec;
+    let hdr = SmbusFrameHeader {
+        dst_addr_rw: dst_addr << 1,
+        command_code: COMMAND_CODE,
+        byte_count: (1 + mctp_packet.len()) as u8,
+        src_addr_ro: (src_addr << 1) | 0x01,
+    };
+    hdr.write_to_prefix(out)
+        .map_err(|_| Error::BufferTooSmall)?;
+    out[hdr_len..hdr_len + mctp_packet.len()].copy_from_slice(mctp_packet);
+    out[total - 1] = crc8_smbus(&out[..total - 1]);
     Ok(total)
 }
 
 /// Decode a complete SMBus frame (starting with `(dst_addr << 1)` and ending
 /// with PEC). Returns `(SmbusMeta, mctp_packet_slice)`.
 pub fn decode(frame: &[u8]) -> Result<(SmbusMeta, &[u8]), Error> {
-    if frame.len() < 4 + HEADER_LEN + 1 {
+    let (hdr, rest) = SmbusFrameHeader::ref_from_prefix(frame).map_err(|_| Error::ShortBuffer)?;
+    if rest.len() < HEADER_LEN + 1 {
         return Err(Error::ShortBuffer);
     }
-    if (frame[0] & 0x01) != 0 {
+    if (hdr.dst_addr_rw & 0x01) != 0 || hdr.command_code != COMMAND_CODE {
         return Err(Error::InvalidFrame);
     }
-    if frame[1] != COMMAND_CODE {
-        return Err(Error::InvalidFrame);
-    }
-    let byte_count = frame[2] as usize;
+    let byte_count = hdr.byte_count as usize;
     if byte_count < 1 + HEADER_LEN || frame.len() != 3 + byte_count + 1 {
         return Err(Error::InvalidFrame);
     }
-    if (frame[3] & 0x01) == 0 {
+    if (hdr.src_addr_ro & 0x01) == 0 {
         // DSP0237 §6.1: bit 0 of source slave address must be 1.
         return Err(Error::InvalidFrame);
     }
@@ -75,8 +87,8 @@ pub fn decode(frame: &[u8]) -> Result<(SmbusMeta, &[u8]), Error> {
         return Err(Error::BadChecksum);
     }
     let meta = SmbusMeta {
-        dst_addr: frame[0] >> 1,
-        src_addr: frame[3] >> 1,
+        dst_addr: hdr.dst_addr_rw >> 1,
+        src_addr: hdr.src_addr_ro >> 1,
     };
-    Ok((meta, &frame[4..frame.len() - 1]))
+    Ok((meta, &rest[..rest.len() - 1]))
 }

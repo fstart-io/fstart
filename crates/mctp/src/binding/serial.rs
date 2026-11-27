@@ -8,12 +8,31 @@
 //! before escaping.
 
 use crate::binding::fcs16_serial_update;
-use crate::{Error, HEADER_LEN};
+use crate::{BASELINE_MTU, Error, HEADER_LEN};
+use zerocopy::big_endian::U16 as BeU16;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub const FRAME_FLAG: u8 = 0x7E;
 pub const FRAME_ESCAPE: u8 = 0x7D;
 pub const PROTOCOL_REVISION: u8 = 0x01;
-pub const MAX_PACKET_LEN: usize = 255;
+/// DSP0253 §6.1: baseline serial MTU is 64 bytes (+ 4-byte MCTP header = 68),
+/// which also guarantees `byte_count` never collides with `0x7D` / `0x7E`.
+pub const MAX_PACKET_LEN: usize = HEADER_LEN + BASELINE_MTU;
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct SerialFrameHeader {
+    flag: u8,
+    revision: u8,
+    byte_count: u8,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct SerialFrameTrailer {
+    fcs: BeU16,
+    flag: u8,
+}
 
 /// Encode a single raw MCTP packet (4-byte header + payload) into a DSP0253
 /// serial frame in `out`. Returns the total encoded frame length.
@@ -21,37 +40,43 @@ pub fn encode(mctp_packet: &[u8], out: &mut [u8]) -> Result<usize, Error> {
     if mctp_packet.len() < HEADER_LEN || mctp_packet.len() > MAX_PACKET_LEN {
         return Err(Error::InvalidFrame);
     }
-    let byte_count = mctp_packet.len() as u8;
+    let hdr = SerialFrameHeader {
+        flag: FRAME_FLAG,
+        revision: PROTOCOL_REVISION,
+        byte_count: mctp_packet.len() as u8,
+    };
     let fcs = fcs16_serial_update(
-        fcs16_serial_update(0xFFFF, &[PROTOCOL_REVISION, byte_count]),
+        fcs16_serial_update(0xFFFF, &hdr.as_bytes()[1..]),
         mctp_packet,
     );
-
-    let mut pos = 0;
-    let mut push = |b: u8| -> Result<(), Error> {
-        if pos >= out.len() {
-            return Err(Error::BufferTooSmall);
-        }
-        out[pos] = b;
-        pos += 1;
-        Ok(())
+    let trailer = SerialFrameTrailer {
+        fcs: BeU16::new(fcs),
+        flag: FRAME_FLAG,
     };
 
-    push(FRAME_FLAG)?;
-    push(PROTOCOL_REVISION)?;
-    push(byte_count)?;
+    hdr.write_to_prefix(out)
+        .map_err(|_| Error::BufferTooSmall)?;
+    let mut pos = core::mem::size_of::<SerialFrameHeader>();
     for &b in mctp_packet {
         if b == FRAME_FLAG || b == FRAME_ESCAPE {
-            push(FRAME_ESCAPE)?;
-            push(b ^ 0x20)?;
+            if pos + 2 > out.len() {
+                return Err(Error::BufferTooSmall);
+            }
+            out[pos] = FRAME_ESCAPE;
+            out[pos + 1] = b ^ 0x20;
+            pos += 2;
         } else {
-            push(b)?;
+            if pos >= out.len() {
+                return Err(Error::BufferTooSmall);
+            }
+            out[pos] = b;
+            pos += 1;
         }
     }
-    push((fcs >> 8) as u8)?;
-    push((fcs & 0xFF) as u8)?;
-    push(FRAME_FLAG)?;
-    Ok(pos)
+    trailer
+        .write_to_prefix(&mut out[pos..])
+        .map_err(|_| Error::BufferTooSmall)?;
+    Ok(pos + core::mem::size_of::<SerialFrameTrailer>())
 }
 
 /// Decode a single complete DSP0253 serial frame into `out`. Returns the raw
@@ -134,11 +159,12 @@ impl SerialDecoder {
                 Ok(None)
             }
             State::WaitLen => {
-                if (byte as usize) < HEADER_LEN {
+                let len = byte as usize;
+                if !(HEADER_LEN..=MAX_PACKET_LEN).contains(&len) {
                     self.reset();
                     return Err(Error::InvalidFrame);
                 }
-                self.expected_len = byte as usize;
+                self.expected_len = len;
                 self.pos = 0;
                 self.state = State::Body;
                 Ok(None)
