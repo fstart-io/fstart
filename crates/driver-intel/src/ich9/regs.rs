@@ -268,7 +268,7 @@ register_structs! {
         (0x20e4 => pub cir_20e4: MmioReadWrite<u16, CIR_20E4_REG::Register>),
         (0x20e6 => _reserved19),
         (0x3100 => pub d31ip: MmioReadWrite<u32>),
-        (0x3104 => pub d30ip: MmioReadWrite<u32>),
+        (0x3104 => _d30ip), // Read-only: the PCI bridge has no interrupt pin.
         (0x3108 => pub d29ip: MmioReadWrite<u32>),
         (0x310c => pub d28ip: MmioReadWrite<u32>),
         (0x3110 => pub d27ip: MmioReadWrite<u32>),
@@ -276,7 +276,7 @@ register_structs! {
         (0x3118 => pub d25ip: MmioReadWrite<u32>),
         (0x311c => _reserved20),
         (0x3140 => pub d31ir: MmioReadWrite<u16>),
-        (0x3142 => pub d30ir: MmioReadWrite<u16>),
+        (0x3142 => _d30ir), // Read-only: not a route for downstream slots.
         (0x3144 => pub d29ir: MmioReadWrite<u16>),
         (0x3146 => pub d28ir: MmioReadWrite<u16>),
         (0x3148 => pub d27ir: MmioReadWrite<u16>),

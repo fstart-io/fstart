@@ -169,7 +169,9 @@ impl SouthbridgeAcpi for IntelIch9 {
             use crate::southbridge::pirq::{PciPin, PinRoute, Pirq};
             // Devices 1..3 are outside the RCBA router: coreboot's
             // map_pirq uses the hardwired pin-to-PIRQ A..D identity there.
-            let slots = [1, 2, 3, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f];
+            // D30IR is reserved on ICH9 (datasheet §10.1.64). Device 30
+            // has no local INTx; its secondary bus uses board wiring.
+            let slots = [1, 2, 3, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1f];
             #[cfg(target_os = "none")]
             let ir = {
                 let r = self.rcba().regs();
@@ -182,16 +184,15 @@ impl SouthbridgeAcpi for IntelIch9 {
                     r.d27ir.get(),
                     r.d28ir.get(),
                     r.d29ir.get(),
-                    r.d30ir.get(),
                     r.d31ir.get(),
                 ]
             };
             #[cfg(not(target_os = "none"))]
-            let ir = [0x3210u16; 10];
+            let ir = [0x3210u16; 9];
             // The tables are built once per cold boot; the routes stay
             // with them like the board's static routing would.
             Some(&*alloc::boxed::Box::leak(alloc::boxed::Box::new(
-                core::array::from_fn::<_, 40, _>(|index| {
+                core::array::from_fn::<_, 36, _>(|index| {
                     let pin = PciPin::ALL[index % 4];
                     PinRoute {
                         slot: slots[index / 4],
@@ -207,7 +208,7 @@ impl SouthbridgeAcpi for IntelIch9 {
         let hardware_routing = crate::southbridge::pirq::PirqRouting {
             slot_pins: &[],
             pin_routes: hardware_routes.map_or(&[], |r| &r[..]),
-            bridge_routes: &[],
+            bridge_routes: config.pci_bridge_routes,
         };
         let routing = config.pirq.as_ref().unwrap_or(&hardware_routing);
 
@@ -251,6 +252,7 @@ impl SouthbridgeAcpi for IntelIch9 {
         body.extend_from_slice(&fstart_acpi::pirq::prt_name_aml(
             routing
                 .root_bus_routes()
+                .filter(|&(slot, _, _)| slot != ich9::PCI_BRIDGE_DEV)
                 .map(|(slot, pin, gsi)| (slot, pin.index(), gsi)),
         ));
 
@@ -284,15 +286,7 @@ impl SouthbridgeAcpi for IntelIch9 {
         body.extend_from_slice(&acpi_fragments::sata_node(ich9::SATA));
         body.extend_from_slice(&acpi_fragments::smbus_node(ich9::SMBUS));
 
-        // Downstream slot wiring belongs to the board, not the ICH9.
-        let pci_bridge_adr = fstart_acpi::pci_root::adr(ich9::PCI_BRIDGE);
-        let pcib: Vec<u8> = acpi_dsl! {
-            Device("PCIB") {
-                Name("_ADR", #{dword pci_bridge_adr});
-            }
-        }
-        .into();
-        body.extend_from_slice(&pcib);
+        body.extend_from_slice(&acpi_fragments::pci_bridge_node(ich9::PCI_BRIDGE, routing));
 
         let lpc_adr = fstart_acpi::pci_root::adr(ich9::LPC);
         let mut lpcb: Vec<u8> = acpi_dsl! {
@@ -355,6 +349,32 @@ mod tests {
             &super::super::tests::ROUTING,
         );
         assert!(aml.windows(5).any(|bytes| bytes == [0x0c, 22, 0, 0, 0]));
+    }
+
+    #[test]
+    fn pci_bridge_routes_are_separate_from_preserved_ich9_router() {
+        use crate::southbridge::pirq::{PinRoute, Pirq};
+        static BRIDGE_ROUTES: [PinRoute; 4] =
+            PinRoute::slot(0, [Pirq::A, Pirq::B, Pirq::C, Pirq::D]);
+        static CONFIG: IntelIch9Config = IntelIch9Config {
+            preserve_hardware_pirq: true,
+            pci_bridge_routes: &BRIDGE_ROUTES,
+            ..IntelIch9Config::new()
+        };
+        let south = IntelIch9::new_from_config(&CONFIG).expect("ICH9 config is valid");
+        let aml = south.dsdt_aml(&CONFIG, &AcpiPath::SB.child("PCI0"));
+
+        let mut expected = adr_name_aml(0x001e_0000).to_vec();
+        expected.extend(fstart_acpi::pirq::prt_name_aml(
+            (0u8..4).map(|pin| (0, pin, 16 + pin)),
+        ));
+        let bridge = fstart_acpi::aml_linker::device_vec("PCIB", &expected).unwrap();
+        assert!(aml.windows(bridge.len()).any(|bytes| bytes == bridge));
+        // A PCI route address for the bridge itself must not exist in _PRT.
+        assert!(
+            !aml.windows(5)
+                .any(|bytes| bytes == [0x0c, 0xff, 0xff, 0x1e, 0])
+        );
     }
 
     #[test]

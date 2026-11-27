@@ -124,7 +124,7 @@ impl Pirq {
     }
 }
 
-/// One RCBA `DxxIR` field: the PIRQ line a slot's interrupt pin is wired to.
+/// The PIRQ line a PCI slot's interrupt pin is routed or wired to.
 #[derive(Clone, Copy, Debug)]
 pub struct PinRoute {
     pub slot: u8,
@@ -136,6 +136,17 @@ impl PinRoute {
     #[must_use]
     pub const fn new(slot: u8, pin: PciPin, line: Pirq) -> Self {
         Self { slot, pin, line }
+    }
+
+    /// Routes for a slot's four interrupt pins, in INTA#–INTD# order.
+    #[must_use]
+    pub const fn slot(slot: u8, [a, b, c, d]: [Pirq; 4]) -> [Self; 4] {
+        [
+            Self::new(slot, PciPin::A, a),
+            Self::new(slot, PciPin::B, b),
+            Self::new(slot, PciPin::C, c),
+            Self::new(slot, PciPin::D, d),
+        ]
     }
 }
 

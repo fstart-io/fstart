@@ -2,6 +2,7 @@
 use fstart_core::{FlashLayout, Platform, X86LegacyFlashLayout, hstr};
 use fstart_driver_intel::gma::framebuffer::FramebufferConfig;
 use fstart_driver_intel::gma::{FallbackMode, OutputConfig, Port};
+use fstart_driver_intel::southbridge::pirq::{PciPin, PinRoute, Pirq};
 use fstart_driver_intel::southbridge::{gpio_ich as gpio, hda};
 use fstart_driver_superio::ite8720f::{BusSelect, GpioDirection, GpioPinConfig, PullUp};
 use fstart_driver_superio::*;
@@ -20,6 +21,18 @@ pub const HWM_BASE: u16 = 0x290;
 pub const SUPERIO_GPIO_BASE: u16 = 0x800;
 pub const FLASH_SIZE: u32 = 0x8_0000;
 pub const FLASH: FlashLayout = FlashLayout::X86Legacy(X86LegacyFlashLayout { size: FLASH_SIZE });
+
+/// Conventional PCI wiring from coreboot `gigabyte/ga-d510ud/acpi/ich7_pci_irqs.asl`.
+const GA_D510UD_PIRQ: PirqRouting = PirqRouting {
+    bridge_routes: &[
+        PinRoute::new(0, PciPin::A, Pirq::F),
+        PinRoute::new(0, PciPin::B, Pirq::G),
+        PinRoute::new(0, PciPin::C, Pirq::H),
+        PinRoute::new(0, PciPin::D, Pirq::E),
+        PinRoute::new(1, PciPin::A, Pirq::D),
+    ],
+    ..fstart_driver_intel::southbridge::pirq::ICH7_PINEVIEW_ROUTING
+};
 
 pub static GA_D510UD_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     // early_init.c `get_mb_spd_addrmap()`.
@@ -45,6 +58,7 @@ pub static GA_D510UD_PLATFORM: PineviewIch7Platform = PineviewIch7Config::new()
     .pcie_port(0, true)
     .pcie_port(1, true)
     .pirq_routing([11; 8])
+    .pirq(GA_D510UD_PIRQ)
     .lpc_fixed_io(LpcFixedIoDecode {
         com_a: LpcSerialDecode::Com1,
         com_b: LpcSerialDecode::Com2,
@@ -292,6 +306,17 @@ mod tests {
         assert_eq!(sb.gpe0_en, 0x441);
         assert_eq!(sb.sata.unwrap().ports, 3);
         assert_eq!(sb.pirq_routing, [11; 8]);
+    }
+
+    #[test]
+    fn pci_bridge_routes_match_board_wiring() {
+        assert!(GA_D510UD_PLATFORM.southbridge.pirq.bridge_bus_routes().eq([
+            (0, PciPin::A, 21),
+            (0, PciPin::B, 22),
+            (0, PciPin::C, 23),
+            (0, PciPin::D, 20),
+            (1, PciPin::A, 19),
+        ]));
     }
 
     #[test]
