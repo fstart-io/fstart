@@ -35,6 +35,15 @@ pub struct VbiosImage<'a> {
 
 #[repr(C)]
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct VfctTablePrefix {
+    table_uuid: [u8; 16],
+    vbios_image_offset: U32,
+    lib1_image_offset: U32,
+    reserved: [U32; 4],
+}
+
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct ImageHeader {
     bus: U32,
     device: U32,
@@ -46,8 +55,9 @@ struct ImageHeader {
     revision: U32,
     length: U32,
 }
+const _: () = assert!(size_of::<VfctTablePrefix>() == 40);
 const _: () = assert!(size_of::<ImageHeader>() == 28);
-const HEADER_SIZE: u32 = 76;
+const HEADER_SIZE: u32 = 36 + size_of::<VfctTablePrefix>() as u32;
 
 /// Build a revision-1 VFCT with one or more images, in input order.
 ///
@@ -86,8 +96,16 @@ pub fn build_vfct(uuid: [u8; 16], images: &[VbiosImage<'_>]) -> Result<Vec<u8>, 
         crate::OEM_TABLE_ID,
         crate::OEM_REVISION,
     );
-    table.write_bytes(36, &uuid);
-    table.write_u32(52, HEADER_SIZE); // Table-relative first VBIOS image offset.
+    table.write_bytes(
+        36,
+        VfctTablePrefix {
+            table_uuid: uuid,
+            vbios_image_offset: U32::new(HEADER_SIZE),
+            lib1_image_offset: U32::ZERO,
+            reserved: [U32::ZERO; 4],
+        }
+        .as_bytes(),
+    );
     for image in images {
         table.append(ImageHeader {
             bus: U32::new(u32::from(image.bus)),

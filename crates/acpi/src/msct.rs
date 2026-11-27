@@ -18,7 +18,16 @@ pub struct DomainCapacity {
 }
 
 #[derive(IntoBytes, Immutable)]
-#[repr(C, packed)]
+#[repr(C)]
+struct MsctBody {
+    offset_prox_dom_info: U32,
+    max_prox_domains: U32,
+    max_clock_domains: U32,
+    max_physical_address: U64,
+}
+
+#[derive(IntoBytes, Immutable)]
+#[repr(C)]
 struct DomainInfo {
     revision: u8,
     length: u8,
@@ -28,7 +37,7 @@ struct DomainInfo {
     memory: U64,
 }
 
-const HEADER: u32 = 56;
+const HEADER: u32 = 36 + core::mem::size_of::<MsctBody>() as u32;
 
 /// Build the MSCT (revision 1). `max_clock_domains` and the domain count
 /// are written as "maximum minus one" like the spec requires.
@@ -46,10 +55,16 @@ pub fn build_msct(
         crate::OEM_REVISION,
     );
     let max_domain = domains.iter().map(|d| d.domain).max().unwrap_or(0);
-    sdt.write_u32(36, HEADER);
-    sdt.write_u32(40, max_domain);
-    sdt.write_u32(44, max_clock_domains.saturating_sub(1));
-    sdt.write_u64(48, max_physical_address);
+    sdt.write_bytes(
+        36,
+        MsctBody {
+            offset_prox_dom_info: HEADER.into(),
+            max_prox_domains: max_domain.into(),
+            max_clock_domains: max_clock_domains.saturating_sub(1).into(),
+            max_physical_address: max_physical_address.into(),
+        }
+        .as_bytes(),
+    );
     domains.iter().for_each(|d| {
         sdt.append_slice(
             DomainInfo {

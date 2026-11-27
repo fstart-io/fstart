@@ -277,20 +277,21 @@ const ALIAS_RANGE_START: u8 = 0x43;
 const SPECIAL: u8 = 0x48;
 const ACPI_HID: u8 = 0xf0;
 
+/// IVRS table body prefix after the 36-byte SDT header (12 bytes).
+#[derive(IntoBytes, Immutable)]
+#[repr(C)]
+struct IvrsTablePrefix {
+    iv_info: U32,
+    reserved: [u8; 8],
+}
+
 /// Build the IVRS, `None` without an IOMMU. IVinfo comes from the first one.
 pub fn build_ivrs(config: &IvrsConfig) -> Option<Vec<u8>> {
     let first = config.iommus.first()?;
-    let body: Vec<u8> = iv_info(&first.registers)
-        .to_le_bytes()
-        .into_iter()
-        .chain([0; 8])
-        .chain(
-            config
-                .iommus
-                .iter()
-                .flat_map(|iommu| blocks(iommu, config.acpi_hid)),
-        )
-        .collect();
+    let prefix = IvrsTablePrefix {
+        iv_info: U32::new(iv_info(&first.registers)),
+        reserved: [0; 8],
+    };
     let mut sdt = Sdt::new(
         *b"IVRS",
         36,
@@ -299,7 +300,10 @@ pub fn build_ivrs(config: &IvrsConfig) -> Option<Vec<u8>> {
         crate::OEM_TABLE_ID,
         crate::OEM_REVISION,
     );
-    sdt.append_slice(&body);
+    sdt.append_slice(prefix.as_bytes());
+    for iommu in config.iommus {
+        sdt.append_slice(&blocks(iommu, config.acpi_hid));
+    }
     Some(crate::serialize(&sdt))
 }
 

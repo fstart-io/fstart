@@ -8,53 +8,46 @@
 //! Required by SBSA for ARM server platforms.
 
 use acpi_tables::sdt::Sdt;
+use zerocopy::little_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+use crate::WireGas;
 
 // ---------------------------------------------------------------------------
-// Wire-format structs — #[repr(C, packed)] mirrors the DBG2 spec layout.
+// Wire-format structs — alignment-one LE zerocopy mirrors of the DBG2 spec.
 // ---------------------------------------------------------------------------
 
 /// DBG2 fields after the 36-byte ACPI SDT header.
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct Dbg2Header {
-    devices_offset: u32,
-    devices_count: u32,
+    devices_offset: U32,
+    devices_count: U32,
 }
 
 /// DBG2 debug device info fixed structure (22 bytes).
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 struct DeviceInfoFixed {
     revision: u8,
-    length: u16,
+    length: U16,
     address_count: u8,
-    namespace_string_length: u16,
-    namespace_string_offset: u16,
-    oem_data_length: u16,
-    oem_data_offset: u16,
-    port_type: u16,
-    port_subtype: u16,
-    _reserved: u16,
-    base_address_offset: u16,
-    address_size_offset: u16,
-}
-
-/// ACPI Generic Address Structure (GAS, 12 bytes).
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
-struct Gas {
-    space_id: u8,
-    bit_width: u8,
-    bit_offset: u8,
-    access_size: u8,
-    address: u64,
+    namespace_string_length: U16,
+    namespace_string_offset: U16,
+    oem_data_length: U16,
+    oem_data_offset: U16,
+    port_type: U16,
+    port_subtype: U16,
+    _reserved: U16,
+    base_address_offset: U16,
+    address_size_offset: U16,
 }
 
 const ACPI_HDR: usize = 36;
 const DBG2_HEADER_SIZE: usize = ACPI_HDR + core::mem::size_of::<Dbg2Header>();
 const DEVICE_INFO_FIXED_SIZE: usize = core::mem::size_of::<DeviceInfoFixed>();
-const GAS_SIZE: usize = core::mem::size_of::<Gas>();
-const ADDR_SIZE_FIELD: usize = 4;
+const GAS_SIZE: usize = core::mem::size_of::<WireGas>();
+const ADDR_SIZE_FIELD: usize = core::mem::size_of::<U32>();
 
 /// Port types.
 #[allow(dead_code)]
@@ -116,13 +109,13 @@ fn build_mmio(config: &Dbg2MmioConfig<'_>, subtype: u16) -> Sdt {
     );
 
     // DBG2 header.
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         ACPI_HDR,
-        &Dbg2Header {
-            devices_offset: DBG2_HEADER_SIZE as u32,
-            devices_count: 1,
-        },
+        Dbg2Header {
+            devices_offset: U32::new(DBG2_HEADER_SIZE as u32),
+            devices_count: U32::new(1),
+        }
+        .as_bytes(),
     );
 
     // Offsets relative to the start of the device info structure.
@@ -133,47 +126,46 @@ fn build_mmio(config: &Dbg2MmioConfig<'_>, subtype: u16) -> Sdt {
     let dev_off = DBG2_HEADER_SIZE;
 
     // Debug device info (fixed portion).
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         dev_off,
-        &DeviceInfoFixed {
+        DeviceInfoFixed {
             revision: 0,
-            length: device_info_len as u16,
+            length: U16::new(device_info_len as u16),
             address_count: 1,
-            namespace_string_length: ns_len as u16,
-            namespace_string_offset: ns_off,
-            oem_data_length: 0,
-            oem_data_offset: 0,
-            port_type: port_type::SERIAL,
-            port_subtype: subtype,
-            _reserved: 0,
-            base_address_offset: base_addr_off,
-            address_size_offset: addr_size_off,
-        },
+            namespace_string_length: U16::new(ns_len as u16),
+            namespace_string_offset: U16::new(ns_off),
+            oem_data_length: U16::ZERO,
+            oem_data_offset: U16::ZERO,
+            port_type: U16::new(port_type::SERIAL),
+            port_subtype: U16::new(subtype),
+            _reserved: U16::ZERO,
+            base_address_offset: U16::new(base_addr_off),
+            address_size_offset: U16::new(addr_size_off),
+        }
+        .as_bytes(),
     );
 
     // GAS (Generic Address Structure) for the MMIO base address.
-    crate::write_struct(
-        &mut sdt,
+    sdt.write_bytes(
         dev_off + base_addr_off as usize,
-        &Gas {
-            space_id: 0, // SystemMemory
-            bit_width: 32,
-            bit_offset: 0,
-            access_size: 3, // DWord
-            address: config.base_addr,
-        },
+        WireGas::new(
+            0,  // SystemMemory
+            32, // bit_width
+            0,  // bit_offset
+            3,  // DWord
+            config.base_addr,
+        )
+        .as_bytes(),
     );
 
     // Address size (u32).
-    sdt.write_u32(dev_off + addr_size_off as usize, config.addr_size);
+    sdt.write_bytes(
+        dev_off + addr_size_off as usize,
+        U32::new(config.addr_size).as_bytes(),
+    );
 
-    // Namespace string (NUL-terminated).
-    let ns_abs = dev_off + ns_off as usize;
-    for (i, &b) in ns_bytes.iter().enumerate() {
-        sdt.write_u8(ns_abs + i, b);
-    }
-    // NUL terminator is already zero from Sdt initialization.
+    // Namespace string (NUL-terminated; trailing zero is already initialized).
+    sdt.write_bytes(dev_off + ns_off as usize, ns_bytes);
 
     sdt.update_checksum();
     sdt

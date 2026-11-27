@@ -13,58 +13,68 @@ const RSDP_V1_LEN: usize = 20;
 
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 #[repr(C)]
-struct Rsdp {
-    signature: [u8; 8],
-    checksum: u8,
-    oem_id: [u8; 6],
-    revision: u8,
-    rsdt_addr: U32<LE>,
-    length: U32<LE>,
-    xsdt_addr: U64<LE>,
-    extended_checksum: u8,
-    reserved: [u8; 3],
+pub struct Rsdp {
+    pub signature: [u8; 8],
+    pub checksum: u8,
+    pub oem_id: [u8; 6],
+    pub revision: u8,
+    pub rsdt_addr: U32<LE>,
+    pub length: U32<LE>,
+    pub xsdt_addr: U64<LE>,
+    pub extended_checksum: u8,
+    pub reserved: [u8; 3],
 }
 
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 #[repr(C)]
-struct SdtHeader {
-    signature: [u8; 4],
-    length: U32<LE>,
-    revision: u8,
-    checksum: u8,
-    oem_id: [u8; 6],
-    oem_table_id: [u8; 8],
-    oem_revision: U32<LE>,
-    creator_id: [u8; 4],
-    creator_revision: U32<LE>,
+pub struct SdtHeader {
+    pub signature: [u8; 4],
+    pub length: U32<LE>,
+    pub revision: u8,
+    pub checksum: u8,
+    pub oem_id: [u8; 6],
+    pub oem_table_id: [u8; 8],
+    pub oem_revision: U32<LE>,
+    pub creator_id: [u8; 4],
+    pub creator_revision: U32<LE>,
 }
 
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 #[repr(transparent)]
-struct XsdtEntry(U64<LE>);
+pub struct XsdtEntry(pub U64<LE>);
 
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 #[repr(C)]
-struct FadtPrefix {
-    header: SdtHeader,
-    firmware_ctrl: U32<LE>,
-    dsdt: U32<LE>,
-    through_x_firmware_ctrl: [u8; 88],
-    x_firmware_ctrl: U64<LE>,
+pub struct FadtPrefix {
+    pub header: SdtHeader,
+    pub firmware_ctrl: U32<LE>,
+    pub dsdt: U32<LE>,
+    pub _pad0: [u8; 68],
+    pub flags: U32<LE>,
+    pub _pad1: [u8; 16],
+    pub x_firmware_ctrl: U64<LE>,
 }
 
 #[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
 #[repr(C)]
-struct FacsPrefix {
-    signature: [u8; 4],
-    length: U32<LE>,
-    hardware_signature: U32<LE>,
-    waking_vector: U32<LE>,
+pub struct FadtV2Prefix {
+    pub prefix: FadtPrefix,
+    pub x_dsdt: U64<LE>,
+}
+
+#[derive(Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned)]
+#[repr(C)]
+pub struct FacsPrefix {
+    pub signature: [u8; 4],
+    pub length: U32<LE>,
+    pub hardware_signature: U32<LE>,
+    pub waking_vector: U32<LE>,
 }
 
 const _: () = assert!(core::mem::size_of::<Rsdp>() == 36);
 const _: () = assert!(core::mem::size_of::<SdtHeader>() == 36);
 const _: () = assert!(core::mem::size_of::<FadtPrefix>() == 140);
+const _: () = assert!(core::mem::size_of::<FadtV2Prefix>() == 148);
 const _: () = assert!(core::mem::size_of::<FacsPrefix>() == 16);
 
 fn checksum_ok(bytes: &[u8]) -> bool {

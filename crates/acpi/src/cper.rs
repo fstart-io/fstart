@@ -6,6 +6,105 @@
 //! section type and cannot carry a section.
 
 use alloc::vec::Vec;
+use zerocopy::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct GenericErrorStatusHeader {
+    block_status: U32,
+    raw_data_offset: U32,
+    raw_data_length: U32,
+    data_length: U32,
+    error_severity: U32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct GenericErrorDataEntryHeader {
+    section_type: [u8; 16],
+    error_severity: U32,
+    revision: U16,
+    validation_bits: u8,
+    flags: u8,
+    error_data_length: U32,
+    fru_id: [u8; 16],
+    fru_text: [u8; 20],
+    timestamp: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct ProcessorIaPrefix {
+    validation: U64,
+    lapic_id: U64,
+    cpuid: [U64; 6],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct ProcessorIaErrorInfo {
+    err_type: [u8; 16],
+    reserved: [u8; 48],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct ProcessorIaContextHeader {
+    context_type: U16,
+    array_size: U16,
+    msr_address: U32,
+    mm_register_address: U64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct PlatformMemorySection {
+    validation: U64,
+    error_status: U64,
+    physical_address: U64,
+    physical_address_mask: U64,
+    node: U16,
+    card: U16,
+    module: U16,
+    bank: U16,
+    device: U16,
+    row: U16,
+    column: U16,
+    bit_position: U16,
+    requestor_id: U64,
+    responder_id: U64,
+    target_id: U64,
+    memory_error_type: u8,
+    extended: u8,
+    rank_number: U16,
+    card_handle: U16,
+    module_handle: U16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct ProcessorGenericSection {
+    validation: U64,
+    processor_type: u8,
+    processor_isa: u8,
+    error_type: u8,
+    operation: u8,
+    flags: u8,
+    level: u8,
+    reserved: U16,
+    cpu_version: U64,
+    cpu_brand: [u8; 48],
+    tail: [u8; 120],
+}
+
+const _: () = assert!(core::mem::size_of::<GenericErrorStatusHeader>() == STATUS_HEADER);
+const _: () = assert!(core::mem::size_of::<GenericErrorDataEntryHeader>() == ENTRY_HEADER);
+const _: () = assert!(core::mem::size_of::<ProcessorIaPrefix>() == 64);
+const _: () = assert!(core::mem::size_of::<ProcessorIaErrorInfo>() == 64);
+const _: () = assert!(core::mem::size_of::<ProcessorIaContextHeader>() == 16);
+const _: () = assert!(core::mem::size_of::<PlatformMemorySection>() == 80);
+const _: () = assert!(core::mem::size_of::<ProcessorGenericSection>() == 192);
 
 /// Error severity (ACPI 6.5 table 18.11, UEFI N.2.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -110,21 +209,33 @@ pub fn status_block(entries: &[Entry]) -> Vec<u8> {
         .unwrap_or(Severity::Informational);
     let data_length: usize = entries.iter().map(Entry::encoded_len).sum();
     let mut out = Vec::with_capacity(STATUS_HEADER + data_length);
-    for value in [block_status, 0, 0, data_length as u32, severity as u32] {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
+    out.extend_from_slice(
+        GenericErrorStatusHeader {
+            block_status: U32::new(block_status),
+            raw_data_offset: U32::ZERO,
+            raw_data_length: U32::ZERO,
+            data_length: U32::new(data_length as u32),
+            error_severity: U32::new(severity as u32),
+        }
+        .as_bytes(),
+    );
     for entry in entries {
-        out.extend_from_slice(&entry.section);
-        out.extend_from_slice(&(entry.severity as u32).to_le_bytes());
         // Revision 3.0; validation bit 1: the FRU text. No FRU ID or
         // timestamp.
-        out.extend_from_slice(&0x300u16.to_le_bytes());
-        out.push(u8::from(entry.fru_text.is_some()) << 1);
-        out.push(0);
-        out.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
-        out.extend_from_slice(&[0; 16]);
-        out.extend_from_slice(&entry.fru_text.unwrap_or([0; 20]));
-        out.extend_from_slice(&[0; 8]);
+        out.extend_from_slice(
+            GenericErrorDataEntryHeader {
+                section_type: entry.section,
+                error_severity: U32::new(entry.severity as u32),
+                revision: U16::new(0x300),
+                validation_bits: u8::from(entry.fru_text.is_some()) << 1,
+                flags: 0,
+                error_data_length: U32::new(entry.data.len() as u32),
+                fru_id: [0; 16],
+                fru_text: entry.fru_text.unwrap_or([0; 20]),
+                timestamp: [0; 8],
+            }
+            .as_bytes(),
+        );
         out.extend_from_slice(&entry.data);
     }
     out
@@ -144,24 +255,42 @@ pub fn processor_ia(apic_id: u64, cpuid: [u32; 4], msr: u32, registers: &[u64]) 
     // LAPIC ID and CPUID valid (bits 0, 1); one error information (bits
     // 7:2), one context (bits 13:8).
     let validation: u64 = 1 | 1 << 1 | 1 << 2 | 1 << 8;
-    out.extend_from_slice(&validation.to_le_bytes());
-    out.extend_from_slice(&apic_id.to_le_bytes());
-    let mut id = [0u8; 48];
-    for (slot, value) in id.chunks_mut(8).zip(cpuid) {
-        slot[..4].copy_from_slice(&value.to_le_bytes());
-    }
-    out.extend_from_slice(&id);
+    out.extend_from_slice(
+        ProcessorIaPrefix {
+            validation: U64::new(validation),
+            lapic_id: U64::new(apic_id),
+            cpuid: [
+                U64::new(u64::from(cpuid[0])),
+                U64::new(u64::from(cpuid[1])),
+                U64::new(u64::from(cpuid[2])),
+                U64::new(u64::from(cpuid[3])),
+                U64::ZERO,
+                U64::ZERO,
+            ],
+        }
+        .as_bytes(),
+    );
     // The error information: its type only.
-    out.extend_from_slice(&MS_CHECK);
-    out.extend_from_slice(&[0; 48]);
+    out.extend_from_slice(
+        ProcessorIaErrorInfo {
+            err_type: MS_CHECK,
+            reserved: [0; 48],
+        }
+        .as_bytes(),
+    );
     // The context: MSR registers.
     let size = 8 * registers.len();
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&(size as u16).to_le_bytes());
-    out.extend_from_slice(&msr.to_le_bytes());
-    out.extend_from_slice(&0u64.to_le_bytes());
-    for register in registers {
-        out.extend_from_slice(&register.to_le_bytes());
+    out.extend_from_slice(
+        ProcessorIaContextHeader {
+            context_type: U16::new(1),
+            array_size: U16::new(size as u16),
+            msr_address: U32::new(msr),
+            mm_register_address: U64::ZERO,
+        }
+        .as_bytes(),
+    );
+    for &register in registers {
+        out.extend_from_slice(U64::new(register).as_bytes());
     }
     // Context structures are 16-byte aligned.
     out.resize(out.len().next_multiple_of(16), 0);
@@ -190,29 +319,46 @@ pub const MEMORY_MAP_OUT: u8 = 15;
 
 /// A platform memory error section (UEFI N.2.5, 80 bytes).
 pub fn platform_memory(error: &MemoryError) -> Vec<u8> {
-    let mut out = alloc::vec![0u8; 80];
     let mut validation = 0u64;
-    let mut put = |bit: u32, at: usize, bytes: &[u8]| {
-        validation |= 1 << bit;
-        out[at..at + bytes.len()].copy_from_slice(bytes);
-    };
-    if let Some(status) = error.status {
-        put(0, 8, &status.to_le_bytes());
+    if error.status.is_some() {
+        validation |= 1 << 0;
     }
-    if let Some(node) = error.node {
-        put(3, 32, &node.to_le_bytes());
+    if error.node.is_some() {
+        validation |= 1 << 3;
     }
-    if let Some(card) = error.card {
-        put(4, 34, &card.to_le_bytes());
+    if error.card.is_some() {
+        validation |= 1 << 4;
     }
-    if let Some(module) = error.module {
-        put(5, 36, &module.to_le_bytes());
+    if error.module.is_some() {
+        validation |= 1 << 5;
     }
-    if let Some(kind) = error.kind {
-        put(14, 72, &[kind]);
+    if error.kind.is_some() {
+        validation |= 1 << 14;
     }
-    out[..8].copy_from_slice(&validation.to_le_bytes());
-    out
+    PlatformMemorySection {
+        validation: U64::new(validation),
+        error_status: U64::new(error.status.unwrap_or(0)),
+        physical_address: U64::ZERO,
+        physical_address_mask: U64::ZERO,
+        node: U16::new(error.node.unwrap_or(0)),
+        card: U16::new(error.card.unwrap_or(0)),
+        module: U16::new(error.module.unwrap_or(0)),
+        bank: U16::ZERO,
+        device: U16::ZERO,
+        row: U16::ZERO,
+        column: U16::ZERO,
+        bit_position: U16::ZERO,
+        requestor_id: U64::ZERO,
+        responder_id: U64::ZERO,
+        target_id: U64::ZERO,
+        memory_error_type: error.kind.unwrap_or(0),
+        extended: 0,
+        rank_number: U16::ZERO,
+        card_handle: U16::ZERO,
+        module_handle: U16::ZERO,
+    }
+    .as_bytes()
+    .to_vec()
 }
 
 /// A processor generic error section (UEFI N.2.4.1, 192 bytes) of an
@@ -221,16 +367,24 @@ pub fn platform_memory(error: &MemoryError) -> Vec<u8> {
 /// target, requestor or responder address: a caller with data it cannot
 /// name as one keeps it in a section of its own.
 pub fn processor_generic(version: u32, brand: &[u8; 48]) -> Vec<u8> {
-    let mut out = alloc::vec![0u8; 192];
-    // Processor type, ISA, error type, operation, CPU version, brand (the
-    // vendors' 2CFh without its target address).
-    out[..8].copy_from_slice(&0xcfu64.to_le_bytes());
-    // IA32/x64, x64.
-    out[8] = 0;
-    out[9] = 2;
-    out[16..20].copy_from_slice(&version.to_le_bytes());
-    out[24..72].copy_from_slice(brand);
-    out
+    ProcessorGenericSection {
+        // Processor type, ISA, error type, operation, CPU version, brand (the
+        // vendors' 2CFh without its target address).
+        validation: U64::new(0xcf),
+        // IA32/x64, x64.
+        processor_type: 0,
+        processor_isa: 2,
+        error_type: 0,
+        operation: 0,
+        flags: 0,
+        level: 0,
+        reserved: U16::ZERO,
+        cpu_version: U64::new(u64::from(version)),
+        cpu_brand: *brand,
+        tail: [0; 120],
+    }
+    .as_bytes()
+    .to_vec()
 }
 
 #[cfg(test)]

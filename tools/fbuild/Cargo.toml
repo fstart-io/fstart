@@ -10,6 +10,7 @@ base64ct = { version = "1.8", features = ["alloc"] }
 byteorder = "1.5"
 fstart-crypto = { workspace = true, features = ["pcr-banks"] }
 object = { workspace = true }
+fstart-acpi = { workspace = true }
 fstart-core = { workspace = true, features = ["host"] }
 fstart-image-build = { workspace = true }
 fstart-tcg = { workspace = true }
@@ -20,7 +21,6 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 zerocopy = { workspace = true }
 
 [dev-dependencies]
-fstart-acpi = { workspace = true }
 fstart-platform-qemu = { workspace = true, features = ["host"] }
 object = { workspace = true, features = ["write_std"] }
 tempfile = "3.27"

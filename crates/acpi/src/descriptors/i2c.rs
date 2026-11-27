@@ -11,6 +11,9 @@
 //! [`Aml`]: acpi_tables::Aml
 
 use acpi_tables::{Aml, AmlSink};
+use tock_registers::register_bitfields;
+use zerocopy::little_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// Serial Bus Connection Descriptor tag byte.
 const SERIAL_BUS_DESCRIPTOR_TAG: u8 = 0x8E;
@@ -23,6 +26,40 @@ const I2C_SERIAL_BUS_TYPE: u8 = 0x01;
 
 /// I2C type-specific data length (connection speed + slave address).
 const I2C_TYPE_DATA_LENGTH: u16 = 6;
+
+register_bitfields![u8,
+    /// Serial Bus General Flags (offset 0x06, 8 bits).
+    GeneralFlags [
+        SLAVE_MODE OFFSET(0) NUMBITS(1) [],
+        CONSUMER OFFSET(1) NUMBITS(1) []
+    ]
+];
+
+register_bitfields![u16,
+    /// I2C Type-Specific Flags (offset 0x07, 16 bits).
+    I2cTypeFlags [
+        ADDRESS_10BIT OFFSET(0) NUMBITS(1) []
+    ]
+];
+
+/// Common Serial Bus Connection header + I2C type-specific data (18 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct I2cSerialBusHeader {
+    tag: u8,
+    data_length: U16,
+    revision_id: u8,
+    resource_source_index: u8,
+    serial_bus_type: u8,
+    general_flags: u8,
+    type_flags: U16,
+    type_revision_id: u8,
+    type_data_length: U16,
+    connection_speed: U32,
+    slave_address: U16,
+}
+
+const _: () = assert!(core::mem::size_of::<I2cSerialBusHeader>() == 18);
 
 /// I2C Serial Bus Connection Descriptor.
 ///
@@ -69,31 +106,34 @@ impl Aml for I2cSerialBus<'_> {
         //        = common_header_remainder(9) + type_data(6) + resource_source
         let data_length = 9 + I2C_TYPE_DATA_LENGTH as usize + resource_source_size;
 
-        // General Flags: bit 1 = consumer/producer (bit 0 = slave mode)
-        let general_flags: u8 = if self.consumer { 0x02 } else { 0x00 };
+        let general_flags = if self.consumer {
+            GeneralFlags::CONSUMER::SET.value
+        } else {
+            0
+        };
+        let type_flags = if self.address_10bit {
+            I2cTypeFlags::ADDRESS_10BIT::SET.value
+        } else {
+            0
+        };
 
-        // Type-Specific Flags: bit 0 = 10-bit addressing
-        let type_flags: u16 = if self.address_10bit { 1 } else { 0 };
-
-        // Common header
-        sink.byte(SERIAL_BUS_DESCRIPTOR_TAG);
-        sink.word(data_length as u16);
-        sink.byte(SERIAL_BUS_REVISION_ID);
-        sink.byte(0x00); // Resource Source Index
-        sink.byte(I2C_SERIAL_BUS_TYPE);
-        sink.byte(general_flags);
-        sink.word(type_flags);
-        sink.byte(0x01); // Type-Specific Revision ID
-        sink.word(I2C_TYPE_DATA_LENGTH);
-
-        // Type-specific data: I2C
-        sink.dword(self.connection_speed);
-        sink.word(self.slave_address);
+        let header = I2cSerialBusHeader {
+            tag: SERIAL_BUS_DESCRIPTOR_TAG,
+            data_length: U16::new(data_length as u16),
+            revision_id: SERIAL_BUS_REVISION_ID,
+            resource_source_index: 0,
+            serial_bus_type: I2C_SERIAL_BUS_TYPE,
+            general_flags,
+            type_flags: U16::new(type_flags),
+            type_revision_id: 0x01,
+            type_data_length: U16::new(I2C_TYPE_DATA_LENGTH),
+            connection_speed: U32::new(self.connection_speed),
+            slave_address: U16::new(self.slave_address),
+        };
+        sink.vec(header.as_bytes());
 
         // Resource Source Name (null-terminated ASCII)
-        for &b in self.resource_source.as_bytes() {
-            sink.byte(b);
-        }
+        sink.vec(self.resource_source.as_bytes());
         sink.byte(0);
     }
 }

@@ -3,27 +3,43 @@
 extern crate alloc;
 use crate::sp3::einj::*;
 use alloc::vec::Vec;
-use fstart_acpi::{Aml, sdt::Sdt};
+use fstart_acpi::einj::{EinjInstruction, EinjTableBody, EinjTriggerHeader};
+use fstart_acpi::{Aml, WireGas, sdt::Sdt};
+use zerocopy::IntoBytes;
+use zerocopy::little_endian::{U32, U64};
 
 /// One serialization instruction (ACPI WHEA header). No preserved bits:
 /// each memory GAS refers to a dedicated full-width parameter word.
-fn instruction(action: u8, opcode: u8, io: bool, address: u64, value: u64) -> [u8; 32] {
-    let mut bytes = [0; 32];
-    bytes[0] = action;
-    bytes[1] = opcode;
-    bytes[4] = u8::from(io);
-    bytes[5] = if io { 8 } else { 64 };
-    bytes[7] = if io { 1 } else { 4 };
-    bytes[8..16].copy_from_slice(&address.to_le_bytes());
-    bytes[16..24].copy_from_slice(&value.to_le_bytes());
-    bytes[24..32].copy_from_slice(&(if io { 0xffu64 } else { u64::MAX }).to_le_bytes());
-    bytes
+fn instruction(action: u8, opcode: u8, io: bool, address: u64, value: u64) -> EinjInstruction {
+    EinjInstruction {
+        action,
+        instruction: opcode,
+        flags: 0,
+        reserved: 0,
+        register: WireGas::new(
+            u8::from(io),
+            if io { 8 } else { 64 },
+            0,
+            if io { 1 } else { 4 },
+            address,
+        ),
+        value: U64::new(value),
+        mask: U64::new(if io { 0xff } else { u64::MAX }),
+    }
 }
 
 pub fn table() -> Vec<u8> {
     let mut sdt = Sdt::new(*b"EINJ", 48, 1, *b"FSTART", *b"SP3 EINJ", 1);
-    sdt.write_u32(36, 48);
-    sdt.write_u32(44, 9);
+    sdt.write_bytes(
+        36,
+        EinjTableBody {
+            header_size: U32::new(48),
+            flags: 0,
+            reserved: [0; 3],
+            entry_count: U32::new(9),
+        }
+        .as_bytes(),
+    );
     for entry in [
         instruction(0, 3, true, 0xb2, SW_BEGIN.into()),
         instruction(1, 0, false, BASE + TRIGGER_POINTER, 0),
@@ -37,7 +53,7 @@ pub fn table() -> Vec<u8> {
         // structure directly; no firmware pointer is read from shared RAM.
         instruction(8, 2, false, BASE + PARAMETERS, 0),
     ] {
-        sdt.append_slice(&entry);
+        sdt.append_slice(entry.as_bytes());
     }
     let mut bytes = Vec::new();
     sdt.to_aml_bytes(&mut bytes);
@@ -48,11 +64,23 @@ pub fn table() -> Vec<u8> {
 /// for correctable memory errors. The SMM handler patches the selected
 /// line before returning EXECUTE_OPERATION.
 pub fn trigger(address: u64) -> [u8; 48] {
+    #[repr(C)]
+    #[derive(Clone, Copy, zerocopy::IntoBytes, zerocopy::Immutable)]
+    struct SingleTrigger {
+        header: EinjTriggerHeader,
+        entry: EinjInstruction,
+    }
+    let wire = SingleTrigger {
+        header: EinjTriggerHeader {
+            header_size: U32::new(16),
+            revision: U32::ZERO,
+            table_size: U32::new(48),
+            entry_count: U32::new(1),
+        },
+        entry: instruction(0xff, 0, false, address, 0),
+    };
     let mut bytes = [0; 48];
-    bytes[..4].copy_from_slice(&16u32.to_le_bytes());
-    bytes[8..12].copy_from_slice(&48u32.to_le_bytes());
-    bytes[12..16].copy_from_slice(&1u32.to_le_bytes());
-    bytes[16..].copy_from_slice(&instruction(0xff, 0, false, address, 0));
+    bytes.copy_from_slice(wire.as_bytes());
     bytes
 }
 

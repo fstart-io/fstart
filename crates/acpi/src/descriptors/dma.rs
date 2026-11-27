@@ -4,6 +4,19 @@
 //! channel, and transfer width separately (used by Intel Serial IO).
 
 use acpi_tables::{Aml, AmlSink};
+use zerocopy::little_endian::U16;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+struct FixedDmaDescriptor {
+    tag: u8,
+    request: U16,
+    channel: U16,
+    width: u8,
+}
+
+const _: () = assert!(core::mem::size_of::<FixedDmaDescriptor>() == 6);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -25,9 +38,12 @@ pub struct FixedDma {
 
 impl Aml for FixedDma {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        sink.byte(0x55);
-        sink.word(self.request);
-        sink.word(self.channel);
-        sink.byte(self.width as u8);
+        let desc = FixedDmaDescriptor {
+            tag: 0x55,
+            request: U16::new(self.request),
+            channel: U16::new(self.channel),
+            width: self.width as u8,
+        };
+        sink.vec(desc.as_bytes());
     }
 }
