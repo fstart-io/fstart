@@ -52,7 +52,112 @@ impl Summary {
     }
 }
 
-/// Link the selected boards and run their host library tests in order.
+struct BoardReport {
+    link: String,
+    payload: String,
+    units: String,
+    host: String,
+    sizes: String,
+    failed: bool,
+}
+
+fn build_one_board(
+    board: &str,
+    size_dir: Option<&std::path::Path>,
+    github: bool,
+    group: bool,
+) -> BoardReport {
+    if github && group {
+        println!("::group::{board}");
+    }
+    let start = Instant::now();
+    let mut units = Vec::new();
+    let mut payload = "—".to_string();
+    let mut link = "Not run".into();
+    let mut host = "Not run".into();
+    let mut sizes = size_dir.map_or("Not requested", |_| "Not run").to_string();
+    let result = (|| {
+        let manifest = manifest_for(board).inspect_err(|e| link = format!("Not run: {e}"))?;
+        let root = build_board::workspace_root().inspect_err(|e| link = format!("Not run: {e}"))?;
+        // Serialize repeated occurrences of the same board ID so stage.elf /
+        // stage.bin are not rewritten while sizes::append reads them.
+        let board_lock = fbuild::path_lock(&root.join("target/fstart-build").join(&manifest.board));
+        let _board_guard = board_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let selection = fbuild::payload::PlanArgs::default().selection(None);
+        let resolved = Resolved::load(&root, &manifest, selection)
+            .inspect_err(|e| link = format!("Not run: resolve plan: {e}"))?;
+        payload = resolved.payload().into();
+        // Firmware units live in `target/fstart-units/` while host library
+        // tests live in `target/`, so they can run concurrently.
+        let (build_result, test_result) = std::thread::scope(|scope| {
+            let test_handle = scope.spawn(|| fbuild::board_tool::test_library(&manifest));
+            let build_result =
+                resolved.build_with_units(&root, &manifest, true, |unit, artifacts| {
+                    let kinds = artifacts.keys().map(String::as_str).collect::<Vec<_>>();
+                    units.push(format!(
+                        "{} ({}; {})",
+                        unit.name,
+                        unit.target,
+                        kinds.join(", ")
+                    ));
+                });
+            let test_result = test_handle
+                .join()
+                .unwrap_or_else(|_| Err("board library test worker panicked".into()));
+            (build_result, test_result)
+        });
+        match &test_result {
+            Ok(()) => host = "Pass".into(),
+            Err(e) => host = format!("Fail: {e}"),
+        }
+        let build = build_result.inspect_err(|e| link = format!("Fail: {e}"))?;
+        link = "Pass".into();
+        if let Some(dir) = size_dir {
+            let filename = format!("stage-sizes-{board}.jsonl");
+            fbuild::sizes::append(&dir.join(&filename), &manifest.board, &build.stages)
+                .inspect_err(|e| sizes = format!("Fail: {e}"))?;
+            sizes = format!("Written: {filename}");
+        }
+        test_result?;
+        Ok::<_, String>(())
+    })();
+    if github && group {
+        println!("::endgroup::");
+    }
+    let seconds = start.elapsed().as_secs();
+    let failed = match result {
+        Ok(()) => {
+            println!("PASS {board} ({seconds}s)");
+            false
+        }
+        Err(e) => {
+            println!("FAIL {board} ({seconds}s): {e}");
+            if github {
+                println!("::error title={board}::{e}");
+            }
+            true
+        }
+    };
+    let units = if units.is_empty() {
+        "—".into()
+    } else {
+        units.join("; ")
+    };
+    BoardReport {
+        link,
+        payload,
+        units,
+        host,
+        sizes,
+        failed,
+    }
+}
+
+/// Link the selected boards and run their host library tests.
+///
+/// The first board warms the shared Cargo target directories; remaining boards
+/// then run in parallel across a bounded worker pool while preserving input
+/// order in the summary table.
 pub fn build_boards(boards: &[String], size_dir: Option<PathBuf>) -> Result<(), String> {
     let mut summary = Summary::new(
         "Release builds and host library tests",
@@ -83,71 +188,53 @@ pub fn build_boards(boards: &[String], size_dir: Option<PathBuf>) -> Result<(), 
         }
     };
     let github = std::env::var_os("GITHUB_ACTIONS").is_some();
-    let mut failed = Vec::new();
-    for board in boards {
-        if github {
-            println!("::group::{board}");
-        }
-        let start = Instant::now();
-        let mut units = Vec::new();
-        let mut payload = "—".to_string();
-        let mut link = "Not run".into();
-        let mut host = "Not run".into();
-        let mut sizes = size_dir
-            .as_ref()
-            .map_or("Not requested", |_| "Not run")
-            .to_string();
-        let result = (|| {
-            let manifest = manifest_for(board).inspect_err(|e| link = format!("Not run: {e}"))?;
-            let root =
-                build_board::workspace_root().inspect_err(|e| link = format!("Not run: {e}"))?;
-            let selection = fbuild::payload::PlanArgs::default().selection(None);
-            let resolved = Resolved::load(&root, &manifest, selection)
-                .inspect_err(|e| link = format!("Not run: resolve plan: {e}"))?;
-            payload = resolved.payload().into();
-            let build = resolved
-                .build_with_units(&root, &manifest, true, |unit, artifacts| {
-                    let kinds = artifacts.keys().map(String::as_str).collect::<Vec<_>>();
-                    units.push(format!(
-                        "{} ({}; {})",
-                        unit.name,
-                        unit.target,
-                        kinds.join(", ")
-                    ));
-                })
-                .inspect_err(|e| link = format!("Fail: {e}"))?;
-            link = "Pass".into();
-            if let Some(dir) = &size_dir {
-                let filename = format!("stage-sizes-{board}.jsonl");
-                fbuild::sizes::append(&dir.join(&filename), &manifest.board, &build.stages)
-                    .inspect_err(|e| sizes = format!("Fail: {e}"))?;
-                sizes = format!("Written: {filename}");
+    let mut reports: Vec<Option<BoardReport>> = (0..boards.len()).map(|_| None).collect();
+    if let Some((first, rest)) = boards.split_first() {
+        reports[0] = Some(build_one_board(first, size_dir.as_deref(), github, true));
+        let workers = fbuild::default_parallelism().min(rest.len());
+        if workers <= 1 {
+            for (idx, board) in rest.iter().enumerate() {
+                reports[idx + 1] = Some(build_one_board(board, size_dir.as_deref(), github, true));
             }
-            fbuild::board_tool::test_library(&manifest)
-                .inspect_err(|e| host = format!("Fail: {e}"))?;
-            host = "Pass".into();
-            Ok::<_, String>(())
-        })();
-        if github {
-            println!("::endgroup::");
-        }
-        let seconds = start.elapsed().as_secs();
-        match result {
-            Ok(()) => println!("PASS {board} ({seconds}s)"),
-            Err(e) => {
-                println!("FAIL {board} ({seconds}s): {e}");
-                if github {
-                    println!("::error title={board}::{e}");
-                }
-                failed.push(board.as_str());
-            }
-        }
-        let units = if units.is_empty() {
-            "—".into()
         } else {
-            units.join("; ")
-        };
-        summary.row(&[board, &link, &payload, &units, &host, &sizes]);
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let slots: Vec<std::sync::Mutex<Option<BoardReport>>> = (0..rest.len())
+                .map(|_| std::sync::Mutex::new(None))
+                .collect();
+            let size_ref = size_dir.as_deref();
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    scope.spawn(|| {
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= rest.len() {
+                                break;
+                            }
+                            let report = build_one_board(&rest[i], size_ref, github, false);
+                            *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(report);
+                        }
+                    });
+                }
+            });
+            for (idx, slot) in slots.into_iter().enumerate() {
+                reports[idx + 1] = slot.into_inner().unwrap_or_else(|e| e.into_inner());
+            }
+        }
+    }
+    let mut failed = Vec::new();
+    for (board, report) in boards.iter().zip(reports) {
+        let report = report.expect("every board produced a report");
+        if report.failed {
+            failed.push(board.as_str());
+        }
+        summary.row(&[
+            board,
+            &report.link,
+            &report.payload,
+            &report.units,
+            &report.host,
+            &report.sizes,
+        ]);
     }
     summary.0.push_str(concat!(
         "\nSee the command log (the **Build and test boards** step in CI) for compiler diagnostics ",

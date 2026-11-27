@@ -316,12 +316,64 @@ impl Resolved {
         release: bool,
         mut linked: impl FnMut(&CompilationUnit, &Artifacts),
     ) -> Result<crate::build_board::BuildResult, String> {
-        let mut artifacts = BTreeMap::new();
-        for unit in self.plan.order()? {
-            let selection = self.prepare(root, board, unit, &artifacts, release)?;
-            let output = execute(root, unit, &selection, false)?;
-            linked(unit, &output);
-            artifacts.insert(unit.name.clone(), output);
+        let ordered = self.plan.order()?;
+        let mut remaining: Vec<&CompilationUnit> = ordered;
+        let mut artifacts: BTreeMap<String, Artifacts> = BTreeMap::new();
+        while !remaining.is_empty() {
+            let mut ready = Vec::new();
+            let mut deferred = Vec::new();
+            for unit in remaining {
+                if unit
+                    .bindings
+                    .iter()
+                    .all(|b| artifacts.contains_key(&b.producer))
+                {
+                    ready.push(unit);
+                } else {
+                    deferred.push(unit);
+                }
+            }
+            if ready.is_empty() {
+                return Err("compilation unit dependency cycle".into());
+            }
+            let prepared: Vec<(&CompilationUnit, Selection)> = ready
+                .into_iter()
+                .map(|unit| Ok((unit, self.prepare(root, board, unit, &artifacts, release)?)))
+                .collect::<Result<_, String>>()?;
+            let outputs: Vec<(&CompilationUnit, Result<Artifacts, String>)> = if prepared.len() == 1
+            {
+                let (unit, selection) = &prepared[0];
+                vec![(*unit, execute(root, unit, selection, false))]
+            } else {
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = prepared
+                        .iter()
+                        .map(|(unit, selection)| {
+                            let unit = *unit;
+                            (
+                                unit,
+                                scope.spawn(move || execute(root, unit, selection, false)),
+                            )
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|(unit, h)| {
+                            (
+                                unit,
+                                h.join()
+                                    .unwrap_or_else(|_| Err("unit build worker panicked".into())),
+                            )
+                        })
+                        .collect()
+                })
+            };
+            for (unit, result) in outputs {
+                let output = result?;
+                linked(unit, &output);
+                artifacts.insert(unit.name.clone(), output);
+            }
+            remaining = deferred;
         }
         let stages = self
             .plan
@@ -546,6 +598,9 @@ fn execute(
     selection: &Selection,
     checking: bool,
 ) -> Result<Artifacts, String> {
+    let target_dir = selection.target_dir(root);
+    let target_lock = crate::target_dir_lock(&target_dir);
+    let _guard = target_lock.lock().unwrap_or_else(|e| e.into_inner());
     eprintln!("[fstart] building {} ({})", unit.name, unit.target);
     let output = selection
         .command(!checking)

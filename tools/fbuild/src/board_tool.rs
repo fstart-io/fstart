@@ -42,6 +42,8 @@ pub fn test_library(manifest: &crate::board_manifest::BoardManifest) -> Result<(
     if !manifest.variant_features.is_empty() {
         command.args(["--features", &manifest.variant_features.join(",")]);
     }
+    let target_lock = crate::target_dir_lock(&root.join("target"));
+    let _target_guard = target_lock.lock().unwrap_or_else(|e| e.into_inner());
     let status = command
         .status()
         .map_err(|e| format!("board library tests: {e}"))?;
