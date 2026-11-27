@@ -15,8 +15,9 @@ use fstart_pci::doe::{DoeProtocol, doe_exchange, find_doe_capability};
 use fstart_pci::{PciAddress, PciEcam};
 use fstart_pldm::base::encode_get_tid_req;
 use fstart_pldm::platform::encode_get_sensor_reading_req;
+use fstart_pmci::SecuredMctpChannel;
 use fstart_spdm::crypto::DeterministicRng;
-use fstart_spdm::{SecuredMctpChannel, SessionTransport, SpdmCode, SpdmKeyPair, SpdmRequester};
+use fstart_spdm::{SessionTransport, SpdmCode, SpdmKeyPair, SpdmRequester};
 
 /// Run PCIe DOE SPDM validation (if a DOE-capable PCIe device is attached) and
 /// Serial MCTP+PLDM+SPDM validation (if a BMC responder is attached to COM2).

@@ -133,6 +133,7 @@ fstart-options = { path = "crates/options" }
 fstart-payload = { path = "crates/payload" }
 fstart-pci = { path = "crates/pci" }
 fstart-pldm = { path = "crates/pldm" }
+fstart-pmci = { path = "crates/pmci" }
 fstart-platform-amd = { path = "crates/platform-amd" }
 fstart-platform-aspeed = { path = "crates/platform-aspeed" }
 fstart-platform-intel = { path = "crates/platform-intel" }

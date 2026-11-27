@@ -15,10 +15,10 @@ use fstart_mctp::{
 use fstart_pldm::PldmResponder;
 use fstart_pldm::base::encode_get_tid_req;
 use fstart_pldm::platform::{NumericSensor, encode_get_sensor_reading_req};
+use fstart_pmci::SecuredMctpChannel;
 use fstart_spdm::crypto::{DeterministicRng, sha256};
 use fstart_spdm::{
-    MeasurementBlock, SecuredMctpChannel, SessionTransport, SpdmCode, SpdmKeyPair, SpdmRequester,
-    SpdmResponder,
+    MeasurementBlock, SessionTransport, SpdmCode, SpdmKeyPair, SpdmRequester, SpdmResponder,
 };
 use pcapng::PcapNgWriter;
 use std::io::{self, Read, Write};

@@ -15,7 +15,11 @@ pub mod secured;
 pub use crypto::{Rng, Sha256Transcript, SpdmKeyPair};
 pub use requester::SpdmRequester;
 pub use responder::{MeasurementBlock, SpdmResponder};
-pub use secured::{SecuredMctpChannel, SecuredSession, SessionPhase, SessionTransport};
+pub use secured::{SecuredSession, SessionPhase, SessionTransport};
+
+/// DSP0276 inner MCTP message type byte for SPDM messages inside a secured
+/// MCTP record (defined here so `fstart-spdm` does not depend on `fstart-mctp`).
+pub(crate) const MCTP_MSG_TYPE_SPDM: u8 = 0x05;
 
 /// SPDM version byte encoding (`major << 4 | minor`).
 pub const SPDM_VERSION_1_0: u8 = 0x10;
@@ -145,13 +149,6 @@ pub enum Error {
     SequenceOverflow,
     SessionInactive,
     RemoteError(u8),
-    Mctp(fstart_mctp::Error),
-}
-
-impl From<fstart_mctp::Error> for Error {
-    fn from(e: fstart_mctp::Error) -> Self {
-        Self::Mctp(e)
-    }
 }
 
 /// Write a 4-byte SPDM `ERROR` response into `out`.

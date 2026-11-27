@@ -145,7 +145,7 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         if pt_len < prefix_len + SpdmHeader::LEN {
             return Err(Error::ShortBuffer);
         }
-        if prefix_len == 1 && (pt_in[0] & 0x7F) != fstart_mctp::MessageType::Spdm as u8 {
+        if prefix_len == 1 && (pt_in[0] & 0x7F) != crate::MCTP_MSG_TYPE_SPDM {
             return Err(Error::InvalidMessage);
         }
         let spdm_req = &pt_in[prefix_len..pt_len];
@@ -154,7 +154,7 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
 
         let mut pt_out = [0u8; 512];
         if prefix_len == 1 {
-            pt_out[0] = fstart_mctp::MessageType::Spdm as u8;
+            pt_out[0] = crate::MCTP_MSG_TYPE_SPDM;
         }
         let spdm_out = &mut pt_out[prefix_len..];
 

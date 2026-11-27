@@ -10,8 +10,9 @@ use fstart_mctp::{
 };
 use fstart_pldm::PldmResponder;
 use fstart_pldm::platform::NumericSensor;
+use fstart_pmci::SecuredMctpChannel;
 use fstart_spdm::crypto::DeterministicRng;
-use fstart_spdm::{SecuredMctpChannel, SessionTransport, SpdmKeyPair, SpdmResponder};
+use fstart_spdm::{SessionTransport, SpdmKeyPair, SpdmResponder};
 
 /// AST2500 UART1 MMIO base (separate from UART5 debug console at `0x1E78_4000`).
 const AST2500_UART1_BASE: u64 = 0x1E78_3000;

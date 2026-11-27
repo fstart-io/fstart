@@ -416,7 +416,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let mut t = t_orig.clone();
         let mut pt = [0u8; 40];
         if prefix_len == 1 {
-            pt[0] = fstart_mctp::MessageType::Spdm as u8;
+            pt[0] = crate::MCTP_MSG_TYPE_SPDM;
         }
         let spdm = &mut pt[prefix_len..prefix_len + 4 + HASH_LEN];
         spdm[0..4].copy_from_slice(&[self.version, SpdmCode::Finish as u8, 0, 0]);
@@ -444,7 +444,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if pt_len < prefix_len + 4 {
             return Err(Error::ShortBuffer);
         }
-        if prefix_len == 1 && (pt[0] & 0x7F) != fstart_mctp::MessageType::Spdm as u8 {
+        if prefix_len == 1 && (pt[0] & 0x7F) != crate::MCTP_MSG_TYPE_SPDM {
             return Err(Error::InvalidMessage);
         }
         let spdm = &pt[prefix_len..pt_len];
@@ -471,7 +471,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let prefix_len = usize::from(self.transport == SessionTransport::Mctp);
         let mut pt = [0u8; 8];
         if prefix_len == 1 {
-            pt[0] = fstart_mctp::MessageType::Spdm as u8;
+            pt[0] = crate::MCTP_MSG_TYPE_SPDM;
         }
         pt[prefix_len..prefix_len + 4].copy_from_slice(&[self.version, code as u8, param1, param2]);
         let n = sess.encrypt(&pt[..prefix_len + 4], secured_out)?;
@@ -504,7 +504,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if pt_len < prefix_len + 4 {
             return Err(Error::ShortBuffer);
         }
-        if prefix_len == 1 && (pt[0] & 0x7F) != fstart_mctp::MessageType::Spdm as u8 {
+        if prefix_len == 1 && (pt[0] & 0x7F) != crate::MCTP_MSG_TYPE_SPDM {
             return Err(Error::InvalidMessage);
         }
         let (hdr, _) = SpdmHeader::parse(&pt[prefix_len..pt_len])?;

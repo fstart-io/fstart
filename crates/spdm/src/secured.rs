@@ -15,7 +15,6 @@ use crate::crypto::{
     AEAD_IV_LEN, AEAD_KEY_LEN, AEAD_TAG_LEN, HASH_LEN, aes256_gcm_decrypt_in_place,
     aes256_gcm_encrypt_in_place, hkdf_expand_spdm, hkdf_extract_sha256, record_iv,
 };
-use fstart_mctp::{MctpChannel, MessageType, ReceivedMessage};
 use zeroize::Zeroize;
 
 /// DSP0277 §6.1 `OpaqueDataFmt1` SupportedVersion list (advertising DSP0277 1.1)
@@ -341,84 +340,5 @@ impl SecuredSession {
         }
         out.copy_within(2..2 + app_len, 0);
         Ok(app_len)
-    }
-}
-
-/// Wraps an [`MctpChannel`] with an active [`SecuredSession`] so upper layers
-/// (e.g. PLDM) can run transparently over Secured MCTP (Message Type `0x06`,
-/// DSP0276).
-pub struct SecuredMctpChannel<'a, C> {
-    pub inner: &'a mut C,
-    pub session: &'a mut SecuredSession,
-}
-
-impl<C: MctpChannel> MctpChannel for SecuredMctpChannel<'_, C> {
-    fn send_message(
-        &mut self,
-        dst_eid: u8,
-        msg_type: u8,
-        reply_tag: Option<u8>,
-        payload: &[u8],
-    ) -> Result<u8, fstart_mctp::Error> {
-        if (msg_type & 0x7F) == MessageType::SecuredMsg as u8
-            || self.session.phase != SessionPhase::Application
-        {
-            return Err(fstart_mctp::Error::InvalidHeader);
-        }
-        let mut app = [0u8; 512];
-        let mut enc = [0u8; 576];
-        if 1 + payload.len() > app.len() {
-            return Err(fstart_mctp::Error::BufferTooSmall);
-        }
-        app[0] = msg_type & 0x7F;
-        app[1..1 + payload.len()].copy_from_slice(payload);
-        let elen = self
-            .session
-            .encrypt(&app[..1 + payload.len()], &mut enc)
-            .map_err(|_| fstart_mctp::Error::Transport)?;
-        self.inner.send_message(
-            dst_eid,
-            MessageType::SecuredMsg as u8,
-            reply_tag,
-            &enc[..elen],
-        )
-    }
-
-    fn recv_message<'b>(
-        &mut self,
-        buf: &'b mut [u8],
-    ) -> Result<ReceivedMessage<'b>, fstart_mctp::Error> {
-        if self.session.phase != SessionPhase::Application {
-            return Err(fstart_mctp::Error::InvalidHeader);
-        }
-        let mut enc_buf = [0u8; 576];
-        let msg = self.inner.recv_message(&mut enc_buf)?;
-        if msg.msg_type != MessageType::SecuredMsg as u8 {
-            return Err(fstart_mctp::Error::InvalidHeader);
-        }
-        let mut dec_buf = [0u8; 512];
-        let dlen = self
-            .session
-            .decrypt(msg.payload, &mut dec_buf)
-            .map_err(|_| fstart_mctp::Error::BadChecksum)?;
-        if dlen == 0 {
-            return Err(fstart_mctp::Error::ShortBuffer);
-        }
-        let inner_type = dec_buf[0] & 0x7F;
-        let inner_ic = (dec_buf[0] & 0x80) != 0;
-        let inner_len = dlen - 1;
-        if buf.len() < inner_len {
-            return Err(fstart_mctp::Error::BufferTooSmall);
-        }
-        buf[..inner_len].copy_from_slice(&dec_buf[1..dlen]);
-        Ok(ReceivedMessage {
-            src_eid: msg.src_eid,
-            dst_eid: msg.dst_eid,
-            msg_type: inner_type,
-            integrity_check: inner_ic,
-            tag_owner: msg.tag_owner,
-            msg_tag: msg.msg_tag,
-            payload: &buf[..inner_len],
-        })
     }
 }

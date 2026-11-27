@@ -1,6 +1,6 @@
 [package]
 name = "fstart-spdm"
-description = "Sans-IO no_std SPDM 1.2 (DSP0274) and Secured Messages (DSP0277) over MCTP and PCIe DOE"
+description = "Sans-IO no_std SPDM 1.2 (DSP0274) and Secured Messages (DSP0277)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,15 +8,11 @@ publish = false
 
 [dependencies]
 aes-gcm = { workspace = true }
-fstart-mctp = { workspace = true }
 hkdf = { workspace = true }
 hmac = { workspace = true }
 p256 = { workspace = true }
 sha2 = { workspace = true }
 zeroize = { workspace = true }
-
-[dev-dependencies]
-fstart-pldm = { workspace = true }
 
 [lints]
 workspace = true

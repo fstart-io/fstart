@@ -35,7 +35,7 @@ bundle-q35 = [
 ]
 # Opt-in QEMU validation requester (PCIe DOE + COM2 Serial); off by default so
 # ordinary q35 boots never probe COM2 or transmit unsolicited SPDM/MCTP traffic.
-mctp-validate = ["dep:fstart-mctp", "dep:fstart-pldm", "dep:fstart-spdm"]
+mctp-validate = ["dep:fstart-mctp", "dep:fstart-pldm", "dep:fstart-pmci", "dep:fstart-spdm"]
 # TIS TPM 1.2/2.0 (swtpm) and TCG measured boot into QEMU's TPM log area.
 tpm = ["dep:fstart-driver-tpm", "dep:fstart-tcg", "fstart-stage?/tcg", "fstart-payload?/tcg"]
 # Q35 TSEG/SMM chipset ops (no SMM panic handler: safe inside the stage build).
@@ -68,6 +68,7 @@ fstart-driver-uart = { workspace = true, optional = true }
 fstart-driver-tpm = { workspace = true, optional = true }
 fstart-mctp = { workspace = true, optional = true }
 fstart-pldm = { workspace = true, optional = true }
+fstart-pmci = { workspace = true, optional = true }
 fstart-spdm = { workspace = true, optional = true }
 fstart-tcg = { workspace = true, optional = true }
 dtoolkit = { workspace = true, optional = true }

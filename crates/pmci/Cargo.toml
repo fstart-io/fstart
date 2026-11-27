@@ -1,0 +1,15 @@
+[package]
+name = "fstart-pmci"
+description = "DMTF PMCI bindings layering PLDM (DSP0241) and SPDM/Secured Messages (DSP0275/DSP0276) onto MCTP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fstart-mctp = { workspace = true }
+fstart-pldm = { workspace = true }
+fstart-spdm = { workspace = true }
+
+[lints]
+workspace = true

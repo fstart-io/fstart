@@ -10,6 +10,7 @@ publish = false
 clap = { workspace = true }
 fstart-mctp = { workspace = true }
 fstart-pldm = { workspace = true }
+fstart-pmci = { workspace = true }
 fstart-spdm = { workspace = true }
 
 [lints]

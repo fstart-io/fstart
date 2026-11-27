@@ -12,8 +12,6 @@ pub mod base;
 pub mod fw_update;
 pub mod platform;
 
-use fstart_mctp::{MctpChannel, MessageType};
-
 /// Standard PLDM message types (DSP0245).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -65,7 +63,7 @@ pub enum CompletionCode {
     IncompleteUpdate = 0x87,
 }
 
-/// Errors returned by PLDM encoding, decoding, or transport exchange.
+/// Errors returned by PLDM encoding or decoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     ShortBuffer,
@@ -74,13 +72,6 @@ pub enum Error {
     InvalidData,
     UnexpectedResponse,
     Completion(u8),
-    Mctp(fstart_mctp::Error),
-}
-
-impl From<fstart_mctp::Error> for Error {
-    fn from(e: fstart_mctp::Error) -> Self {
-        Self::Mctp(e)
-    }
 }
 
 /// 3-byte PLDM message header (DSP0240 §7).
@@ -158,40 +149,6 @@ pub fn write_completion(req_hdr: PldmHeader, cc: u8, resp: &mut [u8]) -> Result<
     resp[..3].copy_from_slice(&rhdr.to_bytes());
     resp[3] = cc;
     Ok(4)
-}
-
-/// Perform a synchronous PLDM request/response exchange over an [`MctpChannel`].
-///
-/// Sends `req` (which must start with a valid [`PldmHeader`]), waits for the
-/// matching PLDM response from `dst_eid`, validates instance ID / type /
-/// command code, and returns `(completion_code, response_body_slice)`.
-pub fn exchange<'a, C: MctpChannel>(
-    channel: &mut C,
-    dst_eid: u8,
-    req: &[u8],
-    rx_buf: &'a mut [u8],
-) -> Result<(u8, &'a [u8]), Error> {
-    let (req_hdr, _) = PldmHeader::parse(req)?;
-    let tag = channel.send_message(dst_eid, MessageType::Pldm as u8, None, req)?;
-    let msg = channel.recv_message(rx_buf)?;
-    if msg.src_eid != dst_eid
-        || msg.msg_type != MessageType::Pldm as u8
-        || msg.tag_owner
-        || msg.msg_tag != tag
-    {
-        return Err(Error::UnexpectedResponse);
-    }
-    let (resp_hdr, rest) = PldmHeader::parse(msg.payload)?;
-    if resp_hdr.rq
-        || resp_hdr.datagram
-        || resp_hdr.instance_id != req_hdr.instance_id
-        || resp_hdr.pldm_type != req_hdr.pldm_type
-        || resp_hdr.command_code != req_hdr.command_code
-    {
-        return Err(Error::UnexpectedResponse);
-    }
-    let (&cc, body) = rest.split_first().ok_or(Error::ShortBuffer)?;
-    Ok((cc, body))
 }
 
 /// Combined PLDM responder dispatching Type 0 (Base), Type 2 (Platform), and

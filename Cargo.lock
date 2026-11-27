@@ -1762,6 +1762,7 @@ dependencies = [
  "clap",
  "fstart-mctp",
  "fstart-pldm",
+ "fstart-pmci",
  "fstart-spdm",
 ]
 
@@ -1856,6 +1857,7 @@ dependencies = [
  "fstart-memtest",
  "fstart-payload",
  "fstart-pldm",
+ "fstart-pmci",
  "fstart-spdm",
  "fstart-stage",
  "fstart-timestamp",
@@ -1915,6 +1917,7 @@ dependencies = [
  "fstart-payload",
  "fstart-pci",
  "fstart-pldm",
+ "fstart-pmci",
  "fstart-smm",
  "fstart-spdm",
  "fstart-stage",
@@ -1960,8 +1963,14 @@ dependencies = [
 [[package]]
 name = "fstart-pldm"
 version = "0.1.0"
+
+[[package]]
+name = "fstart-pmci"
+version = "0.1.0"
 dependencies = [
  "fstart-mctp",
+ "fstart-pldm",
+ "fstart-spdm",
 ]
 
 [[package]]
@@ -2006,8 +2015,6 @@ name = "fstart-spdm"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
- "fstart-mctp",
- "fstart-pldm",
  "hkdf",
  "hmac",
  "p256",
