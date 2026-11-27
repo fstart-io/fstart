@@ -1,7 +1,9 @@
-//! Multi-transport MCTP/PLDM/SPDM broker, Wireshark `pcapng` (`LINKTYPE_MCTP`)
-//! tap, and QEMU `spdm-emu` DOE server.
+//! Multi-transport MCTP/PLDM/SPDM broker, Wireshark `pcapng`
+//! (`LINKTYPE_LINUX_SLL2` / `ETH_P_MCTP`) tap, QEMU `spdm-emu` DOE server,
+//! and bare-metal QEMU validation runner.
 
 mod pcapng;
+mod qemu_validate;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use fstart_mctp::binding::{i3c, kcs, pcie_vdm, serial, smbus};
@@ -59,7 +61,7 @@ impl From<CliTransport> for TransportKind {
 #[derive(Subcommand)]
 enum Command {
     /// Bridge two QEMU chardev Unix sockets (e.g. BMC UART <-> Host UART) and
-    /// record every MCTP packet to a Wireshark pcapng file (LINKTYPE_MCTP=291).
+    /// record every MCTP packet to a Wireshark pcapng file (SLL2 / ETH_P_MCTP).
     Bridge {
         #[arg(long)]
         bmc_sock: PathBuf,
@@ -80,6 +82,16 @@ enum Command {
     /// SMBus, I3C, KCS, PCIe VDM) and emit a Wireshark pcapng capture.
     SelfTest {
         #[arg(long)]
+        pcap: PathBuf,
+    },
+    /// Run bare-metal QEMU validation: Host qemu-q35 PCIe DOE + Dual-QEMU
+    /// ast2500-evb BMC <-> qemu-q35 Host Serial MCTP/PLDM/SPDM.
+    QemuValidate {
+        #[arg(long)]
+        q35_bios: Option<PathBuf>,
+        #[arg(long)]
+        bmc_flash: Option<PathBuf>,
+        #[arg(long, default_value = "/tmp/dual-qemu-serial.pcapng")]
         pcap: PathBuf,
     },
 }
@@ -583,7 +595,7 @@ fn run_self_test(pcap_path: PathBuf) -> io::Result<()> {
         eprintln!("PASS: {kind:?} (MCTP Control + SPDM 1.2 + PLDM-over-Secured-MCTP)");
     }
     eprintln!(
-        "Wrote Wireshark LINKTYPE_MCTP pcapng to {}",
+        "Wrote Wireshark SLL2 ETH_P_MCTP pcapng to {}",
         pcap_path.display()
     );
     Ok(())
@@ -600,5 +612,10 @@ fn main() -> io::Result<()> {
         } => run_bridge(bmc_sock, host_sock, transport.into(), pcap),
         Command::SpdmEmu { port } => run_spdm_emu(port),
         Command::SelfTest { pcap } => run_self_test(pcap),
+        Command::QemuValidate {
+            q35_bios,
+            bmc_flash,
+            pcap,
+        } => qemu_validate::run(q35_bios, bmc_flash, pcap),
     }
 }
