@@ -12,10 +12,12 @@ fstart-crypto = { workspace = true, features = ["pcr-banks"] }
 object = { workspace = true }
 fstart-core = { workspace = true, features = ["host"] }
 fstart-image-build = { workspace = true }
+fstart-tcg = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
 sha2 = { workspace = true }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
+zerocopy = { workspace = true }
 
 [dev-dependencies]
 fstart-acpi = { workspace = true }

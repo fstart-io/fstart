@@ -2,11 +2,14 @@
 //! Shares bank hashing and event constants with firmware; wire fixtures in tests
 //! are independent of the firmware's event-log writer.
 use base64ct::{Base64, Encoding};
-use byteorder::{LittleEndian as LE, ReadBytesExt};
 use fstart_core::services::measure::kind::*;
 use fstart_crypto::pcr::{self, BankHasher, MAX_DIGEST_SIZE};
+use fstart_tcg::event::FirmwareBlobRange;
+use fstart_tcg::log::{AlgorithmSize, PcrEvent, PcrEvent2Prefix, SpecIdEventPrefix};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
+use zerocopy::little_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Error>;
@@ -88,45 +91,59 @@ fn take<'a>(input: &mut &'a [u8], count: usize) -> Result<&'a [u8]> {
     Ok(data)
 }
 
+fn take_ref<'a, T: FromBytes + KnownLayout + Immutable + Unaligned>(
+    input: &mut &'a [u8],
+) -> Result<&'a T> {
+    let (value, rest) = T::ref_from_prefix(input).map_err(|_| "truncated event log")?;
+    *input = rest;
+    Ok(value)
+}
+
 fn parse_log(mut log: &[u8]) -> Result<Vec<Event<'_>>> {
-    let pcr = log.read_u32::<LE>()?;
-    let kind = log.read_u32::<LE>()?;
-    let digest = take(&mut log, 20)?.to_vec();
-    let size = log.read_u32::<LE>()? as usize;
+    let first_hdr = take_ref::<PcrEvent>(&mut log)?;
+    let pcr = first_hdr.pcr_index.get();
+    let kind = first_hdr.event_type.get();
+    let digest = first_hdr.digest.to_vec();
+    let size = first_hdr.event_size.get() as usize;
     let spec = take(&mut log, size)?;
+    let (spec_prefix, mut spec_rest) =
+        SpecIdEventPrefix::ref_from_prefix(spec).map_err(|_| "missing Spec ID event")?;
     if pcr != 0
         || kind != EV_NO_ACTION
         || ![
-            b"Spec ID Event00\0",
-            b"Spec ID Event02\0",
-            b"Spec ID Event03\0",
+            *b"Spec ID Event00\0",
+            *b"Spec ID Event02\0",
+            *b"Spec ID Event03\0",
         ]
-        .iter()
-        .any(|s| spec.starts_with(*s))
+        .contains(&spec_prefix.signature)
     {
         return Err("missing Spec ID event".into());
     }
-    let agile = spec.starts_with(b"Spec ID Event03\0");
+    let agile = spec_prefix.signature == *b"Spec ID Event03\0";
     let mut sizes = BTreeMap::from([(pcr::ALG_SHA1, 20usize)]);
     let mut first = BTreeMap::from([(pcr::ALG_SHA1, digest)]);
     if agile {
-        let mut algorithms = spec.get(24..).ok_or("truncated Spec ID event")?;
-        let count = algorithms.read_u32::<LE>()?;
+        let count = take_ref::<U32>(&mut spec_rest)
+            .map_err(|_| "truncated Spec ID event")?
+            .get();
         if !(1..=BANKS.len() as u32).contains(&count) {
             return Err("invalid Spec ID algorithm list".into());
         }
         sizes.clear();
         first.clear();
         for _ in 0..count {
-            let alg = algorithms.read_u16::<LE>()?;
-            let size = usize::from(algorithms.read_u16::<LE>()?);
+            let entry =
+                take_ref::<AlgorithmSize>(&mut spec_rest).map_err(|_| "truncated Spec ID event")?;
+            let alg = entry.algorithm_id.get();
+            let size = usize::from(entry.digest_size.get());
             if pcr::digest_size(alg) != Some(size) || sizes.insert(alg, size).is_some() {
                 return Err("invalid Spec ID algorithm or digest size".into());
             }
             first.insert(alg, vec![0; size]);
         }
-        let vendor_size = usize::from(algorithms.read_u8()?);
-        if algorithms.len() != vendor_size {
+        let vendor_size =
+            usize::from(*take_ref::<u8>(&mut spec_rest).map_err(|_| "truncated Spec ID event")?);
+        if spec_rest.len() != vendor_size {
             return Err("invalid Spec ID vendor info length".into());
         }
     }
@@ -137,16 +154,15 @@ fn parse_log(mut log: &[u8]) -> Result<Vec<Event<'_>>> {
         data: spec,
     }];
     while !log.is_empty() {
-        let pcr = log.read_u32::<LE>()?;
-        let kind = log.read_u32::<LE>()?;
         let mut digests = BTreeMap::new();
-        if agile {
-            let count = log.read_u32::<LE>()?;
+        let (pcr, kind, size) = if agile {
+            let prefix = take_ref::<PcrEvent2Prefix>(&mut log)?;
+            let count = prefix.digest_count.get();
             if !(1..=sizes.len() as u32).contains(&count) {
                 return Err("invalid event digest count".into());
             }
             for _ in 0..count {
-                let alg = log.read_u16::<LE>()?;
+                let alg = take_ref::<U16>(&mut log)?.get();
                 let size = *sizes.get(&alg).ok_or("unknown event algorithm")?;
                 if digests
                     .insert(alg, take(&mut log, size)?.to_vec())
@@ -155,10 +171,17 @@ fn parse_log(mut log: &[u8]) -> Result<Vec<Event<'_>>> {
                     return Err("duplicate event algorithm".into());
                 }
             }
+            let size = take_ref::<U32>(&mut log)?.get() as usize;
+            (prefix.pcr_index.get(), prefix.event_type.get(), size)
         } else {
-            digests.insert(pcr::ALG_SHA1, take(&mut log, 20)?.to_vec());
-        }
-        let size = log.read_u32::<LE>()? as usize;
+            let hdr = take_ref::<PcrEvent>(&mut log)?;
+            digests.insert(pcr::ALG_SHA1, hdr.digest.to_vec());
+            (
+                hdr.pcr_index.get(),
+                hdr.event_type.get(),
+                hdr.event_size.get() as usize,
+            )
+        };
         events.push(Event {
             pcr,
             kind,
@@ -197,7 +220,9 @@ fn describe(kind: u32, data: &[u8]) -> (String, String) {
     };
     let text = match kind {
         EV_POST_CODE2 | EV_EFI_PLATFORM_FIRMWARE_BLOB2 | EV_S_CRTM_CONTENTS
-            if !data.is_empty() && usize::from(data[0]) + 17 == data.len() =>
+            if !data.is_empty()
+                && usize::from(data[0]) + 1 + core::mem::size_of::<FirmwareBlobRange>()
+                    == data.len() =>
         {
             String::from_utf8_lossy(&data[1..1 + usize::from(data[0])]).into_owned()
         }

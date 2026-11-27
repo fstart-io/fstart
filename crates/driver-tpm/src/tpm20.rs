@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The TPM 2.0 commands platform firmware sends (TPM 2.0 Library part 3).
 
-use crate::{BUFFER_SIZE, Command, Error, Reader, Transport, alg, execute};
+use crate::{BUFFER_SIZE, Command, Error, Reader, TpmResponseHeader, Transport, alg, execute};
+use zerocopy::big_endian::{U16, U32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 use zeroize::Zeroize;
 
 const ST_NO_SESSIONS: u16 = 0x8001;
@@ -96,9 +98,60 @@ impl Banks {
     }
 }
 
+/// An empty password authorization area (`authorizationSize` + `TPMS_AUTH_COMMAND`).
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+#[repr(C)]
+struct PasswordSession {
+    auth_size: U32,
+    session_handle: U32,
+    nonce_size: U16,
+    session_attributes: u8,
+    hmac_size: U16,
+}
+
+impl PasswordSession {
+    const EMPTY: Self = Self {
+        auth_size: U32::new(9),
+        session_handle: U32::new(RS_PW),
+        nonce_size: U16::new(0),
+        session_attributes: 0,
+        hmac_size: U16::new(0),
+    };
+}
+
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+#[repr(C)]
+struct GetCapabilityRequest {
+    capability: U32,
+    property: U32,
+    property_count: U32,
+}
+
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct GetCapabilityPcrPrefix {
+    more_data: u8,
+    capability: U32,
+    count: U32,
+}
+
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
+struct PcrSelectionPrefix {
+    hash: U16,
+    size_of_select: u8,
+}
+
+#[derive(Clone, Copy, IntoBytes, Immutable)]
+#[repr(C)]
+struct HierarchyControlBody {
+    enable: U32,
+    state: u8,
+}
+
 /// An empty password authorization (`TPMS_AUTH_COMMAND`).
 fn password_session(command: &mut Command) {
-    command.u32(9).u32(RS_PW).sized(&[]).u8(0).sized(&[]);
+    command.write(&PasswordSession::EMPTY);
 }
 
 fn run<T: Transport + ?Sized>(tpm: &mut T, command: &mut Command) -> Result<(), Error> {
@@ -117,7 +170,9 @@ pub fn startup<T: Transport + ?Sized>(tpm: &mut T, kind: StartupType) -> Result<
     // transport errors.
     let result = execute(tpm, command.finish()?, &mut response).map(|_| ());
     if let Ok(()) | Err(Error::Code(_)) = result {
-        let tag = u16::from_be_bytes([response[0], response[1]]);
+        let (hdr, _) =
+            TpmResponseHeader::ref_from_prefix(&response).map_err(|_| Error::Response)?;
+        let tag = hdr.tag.get();
         if tag != ST_NO_SESSIONS && tag != ST_SESSIONS {
             return Err(Error::Code(rc::BAD_TAG));
         }
@@ -157,18 +212,21 @@ pub fn self_test<T: Transport + ?Sized>(tpm: &mut T, full: bool) -> Result<(), E
 /// `TPM_CAP_PCRS`).
 pub fn pcr_banks<T: Transport + ?Sized>(tpm: &mut T) -> Result<Banks, Error> {
     let mut command = Command::new(ST_NO_SESSIONS, CC_GET_CAPABILITY);
-    command.u32(CAP_PCRS).u32(0).u32(1);
+    command.write(&GetCapabilityRequest {
+        capability: U32::new(CAP_PCRS),
+        property: U32::new(0),
+        property_count: U32::new(1),
+    });
     let mut response = [0; BUFFER_SIZE];
     let mut body = Reader::new(execute(tpm, command.finish()?, &mut response)?);
-    let _more = body.u8()?;
-    if body.u32()? != CAP_PCRS {
+    let prefix = body.read::<GetCapabilityPcrPrefix>()?;
+    if prefix.capability.get() != CAP_PCRS {
         return Err(Error::Response);
     }
     let mut banks = Banks::default();
-    for _ in 0..body.u32()? {
-        let hash = body.u16()?;
-        let size = body.u8()?;
-        let select = body.bytes(size.into())?;
+    for _ in 0..prefix.count.get() {
+        let sel = body.read::<PcrSelectionPrefix>()?;
+        let select = body.bytes(sel.size_of_select.into())?;
         // pcrSelect: bit n of byte m is PCR 8m + n; firmware's PCRs are
         // all below 32.
         let pcrs = select
@@ -177,7 +235,7 @@ pub fn pcr_banks<T: Transport + ?Sized>(tpm: &mut T) -> Result<Banks, Error> {
             .enumerate()
             .fold(0u32, |mask, (i, &bits)| mask | u32::from(bits) << (8 * i));
         if pcrs != 0 {
-            banks.push(hash, pcrs)?;
+            banks.push(sel.hash.get(), pcrs)?;
         }
     }
     Ok(banks)
@@ -233,7 +291,10 @@ pub fn hierarchy_control<T: Transport + ?Sized>(
     let mut command = Command::new(ST_SESSIONS, CC_HIERARCHY_CONTROL);
     command.u32(auth);
     password_session(&mut command);
-    command.u32(enable).u8(state.into());
+    command.write(&HierarchyControlBody {
+        enable: U32::new(enable),
+        state: state.into(),
+    });
     run(tpm, &mut command)
 }
 

@@ -12,6 +12,7 @@ fstart-crypto = { workspace = true, features = ["pcr-banks"] }
 fstart-driver-tpm = { workspace = true }
 fstart-log = { workspace = true }
 ufmt = { workspace = true }
+zerocopy = { workspace = true }
 zeroize = { workspace = true }
 
 [lints]

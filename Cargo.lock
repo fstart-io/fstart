@@ -654,12 +654,14 @@ dependencies = [
  "fstart-crypto",
  "fstart-image-build",
  "fstart-platform-qemu",
+ "fstart-tcg",
  "object 0.37.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "toml",
+ "zerocopy",
 ]
 
 [[package]]
@@ -1571,6 +1573,7 @@ dependencies = [
  "embedded-hal",
  "fstart-core",
  "tock-registers",
+ "zerocopy",
  "zeroize",
 ]
 
@@ -1952,6 +1955,7 @@ dependencies = [
  "fstart-driver-tpm",
  "fstart-log",
  "ufmt",
+ "zerocopy",
  "zeroize",
 ]
 
