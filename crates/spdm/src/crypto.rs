@@ -158,17 +158,20 @@ pub fn hkdf_expand_spdm(
     let ver_str: [u8; 8] = [b's', b'p', b'd', b'm', major, b'.', minor, b' '];
 
     let mut info = [0u8; 128];
-    let len_bytes = (out.len() as u16).to_le_bytes();
+    let prefix = crate::wire::SpdmBinStrPrefix {
+        length: zerocopy::little_endian::U16::new(out.len() as u16),
+        version: ver_str,
+    };
+    let prefix_len = core::mem::size_of::<crate::wire::SpdmBinStrPrefix>();
     let ctx_len = context.map_or(0, <[u8]>::len);
-    let total = 2 + ver_str.len() + label.len() + ctx_len;
+    let total = prefix_len + label.len() + ctx_len;
     if total > info.len() {
         return Err(Error::BufferTooSmall);
     }
-    info[0..2].copy_from_slice(&len_bytes);
-    info[2..10].copy_from_slice(&ver_str);
-    info[10..10 + label.len()].copy_from_slice(label);
+    zerocopy::IntoBytes::write_to_prefix(&prefix, &mut info).map_err(|_| Error::BufferTooSmall)?;
+    info[prefix_len..prefix_len + label.len()].copy_from_slice(label);
     if let Some(ctx) = context {
-        info[10 + label.len()..total].copy_from_slice(ctx);
+        info[prefix_len + label.len()..total].copy_from_slice(ctx);
     }
     hk.expand(&info[..total], out).map_err(|_| Error::Crypto)
 }

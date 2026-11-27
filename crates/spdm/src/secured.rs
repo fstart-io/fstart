@@ -488,7 +488,9 @@ impl SecuredSession {
         aes256_gcm_decrypt_in_place(&rx.key, &iv, aad, &mut out[..pt_len], &tag)?;
 
         rx.seq_num = expected_seq.checked_add(1).ok_or(Error::SequenceOverflow)?;
-        let app_len = u16::from_le_bytes([out[0], out[1]]) as usize;
+        let (app_len_le, _) =
+            LeU16::read_from_prefix(&out[..pt_len]).map_err(|_| Error::ShortBuffer)?;
+        let app_len = app_len_le.get() as usize;
         if 2 + app_len > pt_len {
             return Err(Error::InvalidMessage);
         }

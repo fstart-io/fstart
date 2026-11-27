@@ -5,11 +5,19 @@ use crate::crypto::{
     sha256, spdm12_signing_digest, verify_p256_prehash,
 };
 use crate::secured::{OPAQUE_SUPPORTED_VERSION_1_1, SecuredSession, SessionTransport};
+use crate::wire::{
+    AlgStructEntry, AlgorithmsResponseBody, CapabilitiesBody, CertificateResponsePrefix,
+    ChallengeAuthPrefix, GetCertificateBody, GetMeasurementsBody, KeyExchangeReqPrefix,
+    KeyExchangeRspPrefix, MeasurementsPrefix, MeasurementsSuffix, NegotiateAlgorithmsBody,
+    VersionResponsePrefix,
+};
 use crate::{
     AEAD_AES_256_GCM, BASE_ASYM_ECDSA_ECC_NIST_P256, BASE_HASH_SHA_256, CAP_CERT, CAP_CHAL,
     CAP_ENCRYPT, CAP_HBEAT, CAP_KEY_EX, CAP_KEY_UPD, CAP_MAC, DHE_SECP256R1, Error,
     KEY_SCHEDULE_SPDM, SPDM_VERSION_1_0, SPDM_VERSION_1_2, SpdmCode, SpdmHeader,
 };
+use zerocopy::little_endian::{U16 as LeU16, U32 as LeU32};
+use zerocopy::{FromBytes, IntoBytes};
 
 /// Sans-IO SPDM 1.2 Requester supporting discovery, certificate retrieval,
 /// challenge authentication, signed measurements, and secured sessions.
@@ -49,9 +57,6 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
     }
 
     pub fn build_get_version(&mut self, out: &mut [u8]) -> Result<usize, Error> {
-        if out.len() < 4 {
-            return Err(Error::BufferTooSmall);
-        }
         self.vca = Sha256Transcript::new();
         self.m_transcript = Sha256Transcript::new();
         self.peer_cert_len = 0;
@@ -59,9 +64,11 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         self.eph = None;
         self.kx_transcript = None;
         self.session = None;
-        out[..4].copy_from_slice(&[SPDM_VERSION_1_0, SpdmCode::GetVersion as u8, 0, 0]);
-        self.vca.update(&out[..4]);
-        Ok(4)
+        SpdmHeader::new(SPDM_VERSION_1_0, SpdmCode::GetVersion, 0, 0)
+            .write_to_prefix(out)
+            .map_err(|_| Error::BufferTooSmall)?;
+        self.vca.update(&out[..SpdmHeader::LEN]);
+        Ok(SpdmHeader::LEN)
     }
 
     pub fn handle_version(&mut self, resp: &[u8]) -> Result<u8, Error> {
@@ -69,44 +76,48 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if hdr.code == SpdmCode::Error as u8 {
             return Err(Error::RemoteError(hdr.param1));
         }
-        if hdr.code != SpdmCode::Version as u8 || body.len() < 4 {
+        if hdr.code != SpdmCode::Version as u8 {
             return Err(Error::InvalidMessage);
         }
-        let count = body[1] as usize;
-        if body.len() < 2 + count * 2 {
-            return Err(Error::ShortBuffer);
-        }
-        let mut found_12 = false;
-        for i in 0..count {
-            let entry = u16::from_le_bytes([body[2 + i * 2], body[3 + i * 2]]);
-            if (entry >> 8) as u8 == SPDM_VERSION_1_2 {
-                found_12 = true;
-            }
-        }
-        if !found_12 {
+        let (pfx, rest) =
+            VersionResponsePrefix::ref_from_prefix(body).map_err(|_| Error::InvalidMessage)?;
+        let count = pfx.version_number_entry_count as usize;
+        let (entries, _) =
+            <[LeU16]>::ref_from_prefix_with_elems(rest, count).map_err(|_| Error::ShortBuffer)?;
+        if !entries
+            .iter()
+            .any(|e| ((e.get() >> 8) as u8) == SPDM_VERSION_1_2)
+        {
             return Err(Error::VersionMismatch);
         }
-        let exact_len = 6 + count * 2;
+        let exact_len = SpdmHeader::LEN + core::mem::size_of::<VersionResponsePrefix>() + count * 2;
         self.version = SPDM_VERSION_1_2;
         self.vca.update(&resp[..exact_len]);
         Ok(self.version)
     }
 
     pub fn build_get_capabilities(&mut self, out: &mut [u8]) -> Result<usize, Error> {
-        if out.len() < 20 {
+        let total = SpdmHeader::LEN + core::mem::size_of::<CapabilitiesBody>();
+        if out.len() < total {
             return Err(Error::BufferTooSmall);
         }
         let caps =
             CAP_CERT | CAP_CHAL | CAP_ENCRYPT | CAP_MAC | CAP_KEY_EX | CAP_HBEAT | CAP_KEY_UPD;
-        out[0..4].copy_from_slice(&[self.version, SpdmCode::GetCapabilities as u8, 0, 0]);
-        out[4] = 0;
-        out[5] = 20;
-        out[6..8].copy_from_slice(&0u16.to_le_bytes());
-        out[8..12].copy_from_slice(&caps.to_le_bytes());
-        out[12..16].copy_from_slice(&4096u32.to_le_bytes());
-        out[16..20].copy_from_slice(&4096u32.to_le_bytes());
-        self.vca.update(&out[..20]);
-        Ok(20)
+        SpdmHeader::new(self.version, SpdmCode::GetCapabilities, 0, 0)
+            .write_to_prefix(out)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let body = CapabilitiesBody {
+            reserved: 0,
+            ct_exponent: 20,
+            reserved2: LeU16::new(0),
+            flags: LeU32::new(caps),
+            data_transfer_size: LeU32::new(4096),
+            max_spdm_msg_size: LeU32::new(4096),
+        };
+        body.write_to_prefix(&mut out[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        self.vca.update(&out[..total]);
+        Ok(total)
     }
 
     pub fn handle_capabilities(&mut self, resp: &[u8]) -> Result<u32, Error> {
@@ -114,48 +125,65 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if hdr.code == SpdmCode::Error as u8 {
             return Err(Error::RemoteError(hdr.param1));
         }
-        if hdr.code != SpdmCode::Capabilities as u8 || body.len() < 16 {
+        if hdr.code != SpdmCode::Capabilities as u8 {
             return Err(Error::InvalidMessage);
         }
-        let flags = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
-        self.vca.update(&resp[..20]);
-        Ok(flags)
+        let (caps, _) =
+            CapabilitiesBody::ref_from_prefix(body).map_err(|_| Error::InvalidMessage)?;
+        let exact_len = SpdmHeader::LEN + core::mem::size_of::<CapabilitiesBody>();
+        self.vca.update(&resp[..exact_len]);
+        Ok(caps.flags.get())
     }
 
     pub fn build_negotiate_algorithms(&mut self, out: &mut [u8]) -> Result<usize, Error> {
-        if out.len() < 44 {
+        let algs = [
+            AlgStructEntry {
+                alg_type: 0x02,
+                alg_count: 0x20,
+                alg_supported: LeU16::new(DHE_SECP256R1),
+            },
+            AlgStructEntry {
+                alg_type: 0x03,
+                alg_count: 0x20,
+                alg_supported: LeU16::new(AEAD_AES_256_GCM),
+            },
+            AlgStructEntry {
+                alg_type: 0x05,
+                alg_count: 0x20,
+                alg_supported: LeU16::new(KEY_SCHEDULE_SPDM),
+            },
+        ];
+        let body_off = SpdmHeader::LEN;
+        let algs_off = body_off + core::mem::size_of::<NegotiateAlgorithmsBody>();
+        let total = algs_off + core::mem::size_of_val(&algs);
+        if out.len() < total {
             return Err(Error::BufferTooSmall);
         }
-        out[0..4].copy_from_slice(&[self.version, SpdmCode::NegotiateAlgorithms as u8, 3, 0]);
-        out[4..6].copy_from_slice(&44u16.to_le_bytes());
-        out[6] = 0x01; // DMTF measurement spec
-        out[7] = 0x02; // OpaqueDataFmt1
-        out[8..12].copy_from_slice(&BASE_ASYM_ECDSA_ECC_NIST_P256.to_le_bytes());
-        out[12..16].copy_from_slice(&BASE_HASH_SHA_256.to_le_bytes());
-        out[16..28].fill(0);
-        out[28] = 0; // ExtAsymCount
-        out[29] = 0; // ExtHashCount
-        out[30..32].copy_from_slice(&0u16.to_le_bytes());
-        out[32..36].copy_from_slice(&[
-            0x02,
-            0x20,
-            (DHE_SECP256R1 & 0xFF) as u8,
-            (DHE_SECP256R1 >> 8) as u8,
-        ]);
-        out[36..40].copy_from_slice(&[
-            0x03,
-            0x20,
-            (AEAD_AES_256_GCM & 0xFF) as u8,
-            (AEAD_AES_256_GCM >> 8) as u8,
-        ]);
-        out[40..44].copy_from_slice(&[
-            0x05,
-            0x20,
-            (KEY_SCHEDULE_SPDM & 0xFF) as u8,
-            (KEY_SCHEDULE_SPDM >> 8) as u8,
-        ]);
-        self.vca.update(&out[..44]);
-        Ok(44)
+        SpdmHeader::new(
+            self.version,
+            SpdmCode::NegotiateAlgorithms,
+            algs.len() as u8,
+            0,
+        )
+        .write_to_prefix(out)
+        .map_err(|_| Error::BufferTooSmall)?;
+        let body = NegotiateAlgorithmsBody {
+            length: LeU16::new(total as u16),
+            measurement_spec: 0x01,     // DMTF
+            other_params_support: 0x02, // OpaqueDataFmt1
+            base_asym_algo: LeU32::new(BASE_ASYM_ECDSA_ECC_NIST_P256),
+            base_hash_algo: LeU32::new(BASE_HASH_SHA_256),
+            reserved: [0; 12],
+            ext_asym_count: 0,
+            ext_hash_count: 0,
+            reserved2: LeU16::new(0),
+        };
+        body.write_to_prefix(&mut out[body_off..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        algs.write_to_prefix(&mut out[algs_off..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        self.vca.update(&out[..total]);
+        Ok(total)
     }
 
     pub fn handle_algorithms(&mut self, resp: &[u8]) -> Result<(), Error> {
@@ -163,16 +191,19 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         if hdr.code == SpdmCode::Error as u8 {
             return Err(Error::RemoteError(hdr.param1));
         }
-        if hdr.code != SpdmCode::Algorithms as u8 || body.len() < 32 {
+        if hdr.code != SpdmCode::Algorithms as u8 {
             return Err(Error::InvalidMessage);
         }
-        let asym = u32::from_le_bytes([body[8], body[9], body[10], body[11]]);
-        let hash = u32::from_le_bytes([body[12], body[13], body[14], body[15]]);
-        if asym != BASE_ASYM_ECDSA_ECC_NIST_P256 || hash != BASE_HASH_SHA_256 {
+        let (alg, _) =
+            AlgorithmsResponseBody::ref_from_prefix(body).map_err(|_| Error::InvalidMessage)?;
+        if alg.base_asym_sel.get() != BASE_ASYM_ECDSA_ECC_NIST_P256
+            || alg.base_hash_sel.get() != BASE_HASH_SHA_256
+        {
             return Err(Error::UnsupportedAlgorithm);
         }
-        let alg_len = u16::from_le_bytes([resp[4], resp[5]]) as usize;
-        if alg_len < 36 || resp.len() < alg_len {
+        let min_len = SpdmHeader::LEN + core::mem::size_of::<AlgorithmsResponseBody>();
+        let alg_len = alg.length.get() as usize;
+        if alg_len < min_len || resp.len() < alg_len {
             return Err(Error::InvalidMessage);
         }
         self.vca.update(&resp[..alg_len]);
@@ -181,26 +212,25 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
     }
 
     pub fn build_get_digests(&mut self, out: &mut [u8]) -> Result<usize, Error> {
-        if out.len() < 4 {
-            return Err(Error::BufferTooSmall);
-        }
-        out[..4].copy_from_slice(&[self.version, SpdmCode::GetDigests as u8, 0, 0]);
-        self.m_transcript.update(&out[..4]);
-        Ok(4)
+        SpdmHeader::new(self.version, SpdmCode::GetDigests, 0, 0)
+            .write_to_prefix(out)
+            .map_err(|_| Error::BufferTooSmall)?;
+        self.m_transcript.update(&out[..SpdmHeader::LEN]);
+        Ok(SpdmHeader::LEN)
     }
 
     pub fn handle_digests(&mut self, resp: &[u8]) -> Result<[u8; HASH_LEN], Error> {
         let (hdr, body) = SpdmHeader::parse(resp)?;
         let slot_count = hdr.param2.count_ones() as usize;
         // Require slot 0 to be populated and hash all advertised slot digests into M1.
-        if hdr.code != SpdmCode::Digests as u8
-            || (hdr.param2 & 0x01) == 0
-            || body.len() < slot_count * HASH_LEN
-        {
+        if hdr.code != SpdmCode::Digests as u8 || (hdr.param2 & 0x01) == 0 {
             return Err(Error::InvalidMessage);
         }
-        self.peer_cert_hash.copy_from_slice(&body[..HASH_LEN]);
-        self.m_transcript.update(&resp[..4 + slot_count * HASH_LEN]);
+        let (digests, _) = <[[u8; HASH_LEN]]>::ref_from_prefix_with_elems(body, slot_count)
+            .map_err(|_| Error::InvalidMessage)?;
+        self.peer_cert_hash = digests[0];
+        self.m_transcript
+            .update(&resp[..SpdmHeader::LEN + slot_count * HASH_LEN]);
         Ok(self.peer_cert_hash)
     }
 
@@ -210,32 +240,43 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         length: u16,
         out: &mut [u8],
     ) -> Result<usize, Error> {
-        if out.len() < 8 {
+        let total = SpdmHeader::LEN + core::mem::size_of::<GetCertificateBody>();
+        if out.len() < total {
             return Err(Error::BufferTooSmall);
         }
-        out[0..4].copy_from_slice(&[self.version, SpdmCode::GetCertificate as u8, 0, 0]);
-        out[4..6].copy_from_slice(&offset.to_le_bytes());
-        out[6..8].copy_from_slice(&length.to_le_bytes());
-        self.m_transcript.update(&out[..8]);
-        Ok(8)
+        SpdmHeader::new(self.version, SpdmCode::GetCertificate, 0, 0)
+            .write_to_prefix(out)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let body = GetCertificateBody {
+            offset: LeU16::new(offset),
+            length: LeU16::new(length),
+        };
+        body.write_to_prefix(&mut out[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        self.m_transcript.update(&out[..total]);
+        Ok(total)
     }
 
     /// Append a certificate chunk; returns `remainder_length`. When `0`, verifies
     /// the assembled certificate chain hash matches `GET_DIGESTS`.
     pub fn handle_certificate(&mut self, resp: &[u8]) -> Result<u16, Error> {
         let (hdr, body) = SpdmHeader::parse(resp)?;
-        if hdr.code != SpdmCode::Certificate as u8 || body.len() < 4 {
+        if hdr.code != SpdmCode::Certificate as u8 {
             return Err(Error::InvalidMessage);
         }
-        let portion = u16::from_le_bytes([body[0], body[1]]) as usize;
-        let remainder = u16::from_le_bytes([body[2], body[3]]);
-        if body.len() < 4 + portion || self.peer_cert_len + portion > MAX_CERT {
+        let (pfx, cert_data) =
+            CertificateResponsePrefix::ref_from_prefix(body).map_err(|_| Error::InvalidMessage)?;
+        let portion = pfx.portion_length.get() as usize;
+        let remainder = pfx.remainder_length.get();
+        if cert_data.len() < portion || self.peer_cert_len + portion > MAX_CERT {
             return Err(Error::BufferTooSmall);
         }
         self.peer_cert_chain[self.peer_cert_len..self.peer_cert_len + portion]
-            .copy_from_slice(&body[4..4 + portion]);
+            .copy_from_slice(&cert_data[..portion]);
         self.peer_cert_len += portion;
-        self.m_transcript.update(&resp[..8 + portion]);
+        let exact_len =
+            SpdmHeader::LEN + core::mem::size_of::<CertificateResponsePrefix>() + portion;
+        self.m_transcript.update(&resp[..exact_len]);
         if remainder == 0 {
             let calc = sha256(&self.peer_cert_chain[..self.peer_cert_len]);
             if self.peer_cert_hash != [0; HASH_LEN] && !ct_eq(&calc, &self.peer_cert_hash) {
@@ -247,24 +288,29 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
     }
 
     pub fn build_challenge<R: Rng>(&self, rng: &mut R, out: &mut [u8]) -> Result<usize, Error> {
-        if out.len() < 36 {
+        let total = SpdmHeader::LEN + 32;
+        if out.len() < total {
             return Err(Error::BufferTooSmall);
         }
-        out[0..4].copy_from_slice(&[self.version, SpdmCode::Challenge as u8, 0, 0]);
-        rng.fill_bytes(&mut out[4..36]);
-        Ok(36)
+        SpdmHeader::new(self.version, SpdmCode::Challenge, 0, 0)
+            .write_to_prefix(out)
+            .map_err(|_| Error::BufferTooSmall)?;
+        rng.fill_bytes(&mut out[SpdmHeader::LEN..total]);
+        Ok(total)
     }
 
     pub fn verify_challenge_auth(&self, req: &[u8], resp: &[u8]) -> Result<(), Error> {
-        let (hdr, _) = SpdmHeader::parse(resp)?;
-        if hdr.code != SpdmCode::ChallengeAuth as u8 || resp.len() < 70 + SIG_LEN {
+        let (hdr, body) = SpdmHeader::parse(resp)?;
+        if hdr.code != SpdmCode::ChallengeAuth as u8 {
             return Err(Error::InvalidMessage);
         }
-        let opaque_len = u16::from_le_bytes([resp[68], resp[69]]) as usize;
-        let sig_off = 70 + opaque_len;
-        if resp.len() < sig_off + SIG_LEN {
+        let (pfx, rest) =
+            ChallengeAuthPrefix::ref_from_prefix(body).map_err(|_| Error::InvalidMessage)?;
+        let opaque_len = pfx.opaque_length.get() as usize;
+        if rest.len() < opaque_len + SIG_LEN {
             return Err(Error::ShortBuffer);
         }
+        let sig_off = SpdmHeader::LEN + core::mem::size_of::<ChallengeAuthPrefix>() + opaque_len;
         let mut t = self.m_transcript.clone();
         t.update(req);
         t.update(&resp[..sig_off]);
@@ -272,7 +318,7 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let digest =
             spdm12_signing_digest(self.version, b"responder-challenge_auth signing", &m1_hash);
         let mut sig = [0u8; SIG_LEN];
-        sig.copy_from_slice(&resp[sig_off..sig_off + SIG_LEN]);
+        sig.copy_from_slice(&rest[opaque_len..opaque_len + SIG_LEN]);
         verify_p256_prehash(&self.peer_pub_xy, &digest, &sig)
     }
 
@@ -281,31 +327,46 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         rng: &mut R,
         out: &mut [u8],
     ) -> Result<usize, Error> {
-        if out.len() < 37 {
+        let total = SpdmHeader::LEN + core::mem::size_of::<GetMeasurementsBody>();
+        if out.len() < total {
             return Err(Error::BufferTooSmall);
         }
         // param1 = 0x01 (request signature), param2 = 0xFF (all measurements)
-        out[0..4].copy_from_slice(&[self.version, SpdmCode::GetMeasurements as u8, 0x01, 0xFF]);
-        rng.fill_bytes(&mut out[4..36]);
-        out[36] = 0; // slot 0
-        Ok(37)
+        SpdmHeader::new(self.version, SpdmCode::GetMeasurements, 0x01, 0xFF)
+            .write_to_prefix(out)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let mut body = GetMeasurementsBody {
+            nonce: [0; 32],
+            slot_id_param: 0,
+        };
+        rng.fill_bytes(&mut body.nonce);
+        body.write_to_prefix(&mut out[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        Ok(total)
     }
 
     pub fn verify_measurements(&self, req: &[u8], resp: &[u8]) -> Result<u8, Error> {
-        let (hdr, _) = SpdmHeader::parse(resp)?;
-        if hdr.code != SpdmCode::Measurements as u8 || resp.len() < 8 + 32 + 2 + SIG_LEN {
+        let (hdr, body) = SpdmHeader::parse(resp)?;
+        if hdr.code != SpdmCode::Measurements as u8 {
             return Err(Error::InvalidMessage);
         }
-        let record_len = u32::from_le_bytes([resp[5], resp[6], resp[7], 0]) as usize;
-        let opaque_off = 8 + record_len + 32;
-        if resp.len() < opaque_off + 2 {
+        let (pfx, rest) =
+            MeasurementsPrefix::ref_from_prefix(body).map_err(|_| Error::InvalidMessage)?;
+        let record_len = pfx.record_len();
+        if rest.len() < record_len {
             return Err(Error::ShortBuffer);
         }
-        let opaque_len = u16::from_le_bytes([resp[opaque_off], resp[opaque_off + 1]]) as usize;
-        let sig_off = opaque_off + 2 + opaque_len;
-        if resp.len() < sig_off + SIG_LEN {
+        let (suffix, tail) = MeasurementsSuffix::ref_from_prefix(&rest[record_len..])
+            .map_err(|_| Error::ShortBuffer)?;
+        let opaque_len = suffix.opaque_length.get() as usize;
+        if tail.len() < opaque_len + SIG_LEN {
             return Err(Error::ShortBuffer);
         }
+        let sig_off = SpdmHeader::LEN
+            + core::mem::size_of::<MeasurementsPrefix>()
+            + record_len
+            + core::mem::size_of::<MeasurementsSuffix>()
+            + opaque_len;
         let mut t = self.vca.clone();
         t.update(req);
         t.update(&resp[..sig_off]);
@@ -313,9 +374,9 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let digest =
             spdm12_signing_digest(self.version, b"responder-measurements signing", &l1_hash);
         let mut sig = [0u8; SIG_LEN];
-        sig.copy_from_slice(&resp[sig_off..sig_off + SIG_LEN]);
+        sig.copy_from_slice(&tail[opaque_len..opaque_len + SIG_LEN]);
         verify_p256_prehash(&self.peer_pub_xy, &digest, &sig)?;
-        Ok(resp[4]) // number of measurement blocks
+        Ok(pfx.num_blocks)
     }
 
     pub fn build_key_exchange<R: Rng>(
@@ -324,7 +385,8 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         out: &mut [u8],
     ) -> Result<usize, Error> {
         let opaque = &OPAQUE_SUPPORTED_VERSION_1_1;
-        let total = 4 + 2 + 1 + 1 + 32 + P256_PUB_LEN + 2 + opaque.len();
+        let fixed = SpdmHeader::LEN + core::mem::size_of::<KeyExchangeReqPrefix>();
+        let total = fixed + opaque.len();
         if out.len() < total {
             return Err(Error::BufferTooSmall);
         }
@@ -332,48 +394,55 @@ impl<const MAX_CERT: usize> SpdmRequester<MAX_CERT> {
         let req_sid = self.pending_req_session_id;
         self.pending_req_session_id = req_sid.wrapping_add(1).max(1);
 
-        out[0..4].copy_from_slice(&[self.version, SpdmCode::KeyExchange as u8, 0, 0]);
-        out[4..6].copy_from_slice(&req_sid.to_le_bytes());
-        out[6] = 0; // SessionPolicy
-        out[7] = 0; // Reserved
-        rng.fill_bytes(&mut out[8..40]);
-        out[40..104].copy_from_slice(eph.public_xy());
-        out[104..106].copy_from_slice(&(opaque.len() as u16).to_le_bytes());
-        out[106..total].copy_from_slice(opaque);
+        SpdmHeader::new(self.version, SpdmCode::KeyExchange, 0, 0)
+            .write_to_prefix(out)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let mut pfx = KeyExchangeReqPrefix {
+            req_session_id: LeU16::new(req_sid),
+            session_policy: 0,
+            reserved: 0,
+            random_data: [0; 32],
+            exchange_data: *eph.public_xy(),
+            opaque_length: LeU16::new(opaque.len() as u16),
+        };
+        rng.fill_bytes(&mut pfx.random_data);
+        pfx.write_to_prefix(&mut out[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        out[fixed..total].copy_from_slice(opaque);
 
         self.eph = Some(eph);
         Ok(total)
     }
 
     pub fn handle_key_exchange_rsp(&mut self, req: &[u8], resp: &[u8]) -> Result<u32, Error> {
-        if req.len() < 106 {
-            return Err(Error::ShortBuffer);
-        }
+        let (_, req_body) = SpdmHeader::parse(req)?;
+        let (req_pfx, _) =
+            KeyExchangeReqPrefix::ref_from_prefix(req_body).map_err(|_| Error::ShortBuffer)?;
         let (hdr, body) = SpdmHeader::parse(resp)?;
         if hdr.code == SpdmCode::Error as u8 {
             return Err(Error::RemoteError(hdr.param1));
         }
-        if hdr.code != SpdmCode::KeyExchangeRsp as u8 || resp.len() < 106 {
+        if hdr.code != SpdmCode::KeyExchangeRsp as u8 {
             return Err(Error::InvalidMessage);
         }
-        let opaque_len = u16::from_le_bytes([resp[104], resp[105]]) as usize;
-        let before_sig = 106 + opaque_len;
+        let (rsp_pfx, rest) =
+            KeyExchangeRspPrefix::ref_from_prefix(body).map_err(|_| Error::InvalidMessage)?;
+        let opaque_len = rsp_pfx.opaque_length.get() as usize;
+        let fixed = SpdmHeader::LEN + core::mem::size_of::<KeyExchangeRspPrefix>();
+        let before_sig = fixed + opaque_len;
         let before_verify = before_sig + SIG_LEN;
         let total = before_verify + HASH_LEN;
-        if resp.len() < total {
+        if rest.len() < opaque_len + SIG_LEN + HASH_LEN {
             return Err(Error::ShortBuffer);
         }
-        if !crate::secured::opaque_selects_version_1_1(&resp[106..before_sig]) {
+        if !crate::secured::opaque_selects_version_1_1(&rest[..opaque_len]) {
             return Err(Error::VersionMismatch);
         }
-        let req_sid = u16::from_le_bytes([req[4], req[5]]);
-        let rsp_sid = u16::from_le_bytes([body[0], body[1]]);
-        let session_id = (u32::from(rsp_sid) << 16) | u32::from(req_sid);
+        let session_id = (u32::from(rsp_pfx.rsp_session_id.get()) << 16)
+            | u32::from(req_pfx.req_session_id.get());
 
-        let mut peer_eph_xy = [0u8; P256_PUB_LEN];
-        peer_eph_xy.copy_from_slice(&resp[40..104]);
         let eph = self.eph.take().ok_or(Error::SessionInactive)?;
-        let shared_secret = eph.diffie_hellman(&peer_eph_xy)?;
+        let shared_secret = eph.diffie_hellman(&rsp_pfx.exchange_data)?;
 
         let mut t = self.vca.clone();
         t.update(&self.peer_cert_hash);

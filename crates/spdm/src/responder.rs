@@ -1,16 +1,24 @@
 //! Sans-IO SPDM 1.2 Responder state machine (DSP0274).
 
 use crate::crypto::{
-    EphemeralP256, HASH_LEN, P256_PUB_LEN, Rng, SIG_LEN, Sha256Transcript, SpdmKeyPair, ct_eq,
-    hmac_sha256, sha256, spdm12_signing_digest,
+    EphemeralP256, HASH_LEN, Rng, SIG_LEN, Sha256Transcript, SpdmKeyPair, ct_eq, hmac_sha256,
+    sha256, spdm12_signing_digest,
 };
 use crate::secured::{OPAQUE_SELECTED_VERSION_1_1, SecuredSession, SessionPhase, SessionTransport};
+use crate::wire::{
+    AlgStructEntry, AlgorithmsResponseBody, CapabilitiesBody, CertificateChainPrefix,
+    CertificateResponsePrefix, ChallengeAuthPrefix, DmtfMeasurementBlock, GetCertificateBody,
+    KeyExchangeReqPrefix, KeyExchangeRspPrefix, MeasurementsPrefix, MeasurementsSuffix,
+    VersionResponsePrefix,
+};
 use crate::{
     AEAD_AES_256_GCM, BASE_ASYM_ECDSA_ECC_NIST_P256, BASE_HASH_SHA_256, CAP_CERT, CAP_CHAL,
     CAP_ENCRYPT, CAP_HBEAT, CAP_KEY_EX, CAP_KEY_UPD, CAP_MAC, CAP_MEAS_SIG, DHE_SECP256R1, Error,
     KEY_SCHEDULE_SPDM, MEAS_HASH_SHA_256, SPDM_VERSION_1_0, SPDM_VERSION_1_2, SpdmCode,
     SpdmErrorCode, SpdmHeader, write_error,
 };
+use zerocopy::little_endian::{U16 as LeU16, U32 as LeU32};
+use zerocopy::{FromBytes, IntoBytes};
 
 /// A single DMTF measurement block (index 1..=254, SHA-256 digest).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,16 +59,20 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         keypair: SpdmKeyPair,
         cert_der: &[u8],
     ) -> Result<Self, Error> {
-        let total = 4 + HASH_LEN + cert_der.len();
+        let pfx_len = core::mem::size_of::<CertificateChainPrefix>();
+        let total = pfx_len + cert_der.len();
         if total > MAX_CERT || total > u16::MAX as usize {
             return Err(Error::BufferTooSmall);
         }
         let mut cert_chain = [0u8; MAX_CERT];
-        cert_chain[0..2].copy_from_slice(&(total as u16).to_le_bytes());
-        cert_chain[2..4].copy_from_slice(&0u16.to_le_bytes());
-        let root_hash = sha256(cert_der);
-        cert_chain[4..4 + HASH_LEN].copy_from_slice(&root_hash);
-        cert_chain[4 + HASH_LEN..total].copy_from_slice(cert_der);
+        let pfx = CertificateChainPrefix {
+            length: LeU16::new(total as u16),
+            reserved: LeU16::new(0),
+            root_hash: sha256(cert_der),
+        };
+        pfx.write_to_prefix(&mut cert_chain)
+            .map_err(|_| Error::BufferTooSmall)?;
+        cert_chain[pfx_len..total].copy_from_slice(cert_der);
         let cert_chain_hash = sha256(&cert_chain[..total]);
 
         Ok(Self {
@@ -288,7 +300,10 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         if hdr.version != SPDM_VERSION_1_0 {
             return write_error(SPDM_VERSION_1_0, SpdmErrorCode::VersionMismatch, 0, resp);
         }
-        if resp.len() < 8 {
+        let pfx_off = SpdmHeader::LEN;
+        let ver_off = pfx_off + core::mem::size_of::<VersionResponsePrefix>();
+        let total = ver_off + 2;
+        if resp.len() < total {
             return Err(Error::BufferTooSmall);
         }
         // Reset VCA, M1/M2 transcript, and any active session on GET_VERSION (DSP0274 §10.2).
@@ -297,14 +312,22 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         self.kx_transcript = None;
         self.session = None;
 
-        resp[0..4].copy_from_slice(&[SPDM_VERSION_1_0, SpdmCode::Version as u8, 0, 0]);
-        resp[4] = 0; // reserved
-        resp[5] = 1; // version_number_entry_count = 1
+        SpdmHeader::new(SPDM_VERSION_1_0, SpdmCode::Version, 0, 0)
+            .write_to_prefix(resp)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let pfx = VersionResponsePrefix {
+            reserved: 0,
+            version_number_entry_count: 1,
+        };
+        pfx.write_to_prefix(&mut resp[pfx_off..])
+            .map_err(|_| Error::BufferTooSmall)?;
         // Version 1.2.0.0 encoded as u16 LE: 0x1200 -> [0x00, 0x12]
-        resp[6..8].copy_from_slice(&0x1200u16.to_le_bytes());
-        self.vca.update(&resp[..8]);
+        LeU16::new(0x1200)
+            .write_to_prefix(&mut resp[ver_off..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        self.vca.update(&resp[..total]);
         self.m_transcript = self.vca.clone();
-        Ok(8)
+        Ok(total)
     }
 
     fn on_get_capabilities(
@@ -314,10 +337,11 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         body: &[u8],
         resp: &mut [u8],
     ) -> Result<usize, Error> {
-        if hdr.version != self.version || body.len() < 16 {
+        if hdr.version != self.version || body.len() < core::mem::size_of::<CapabilitiesBody>() {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
-        if resp.len() < 20 {
+        let total = SpdmHeader::LEN + core::mem::size_of::<CapabilitiesBody>();
+        if resp.len() < total {
             return Err(Error::BufferTooSmall);
         }
         self.vca.update(req);
@@ -330,15 +354,22 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
             | CAP_KEY_EX
             | CAP_HBEAT
             | CAP_KEY_UPD;
-        resp[0..4].copy_from_slice(&[self.version, SpdmCode::Capabilities as u8, 0, 0]);
-        resp[4] = 0; // reserved
-        resp[5] = 20; // CTExponent (2^20 us)
-        resp[6..8].copy_from_slice(&0u16.to_le_bytes());
-        resp[8..12].copy_from_slice(&caps.to_le_bytes());
-        resp[12..16].copy_from_slice(&4096u32.to_le_bytes()); // DataTransferSize
-        resp[16..20].copy_from_slice(&4096u32.to_le_bytes()); // MaxSPDMmsgSize
-        self.vca.update(&resp[..20]);
-        Ok(20)
+        SpdmHeader::new(self.version, SpdmCode::Capabilities, 0, 0)
+            .write_to_prefix(resp)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let out_body = CapabilitiesBody {
+            reserved: 0,
+            ct_exponent: 20, // 2^20 us
+            reserved2: LeU16::new(0),
+            flags: LeU32::new(caps),
+            data_transfer_size: LeU32::new(4096),
+            max_spdm_msg_size: LeU32::new(4096),
+        };
+        out_body
+            .write_to_prefix(&mut resp[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        self.vca.update(&resp[..total]);
+        Ok(total)
     }
 
     fn on_negotiate_algorithms(
@@ -351,39 +382,54 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         if hdr.version != self.version || body.len() < 28 {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
-        if resp.len() < 48 {
+        let algs = [
+            AlgStructEntry {
+                alg_type: 0x02,
+                alg_count: 0x20,
+                alg_supported: LeU16::new(DHE_SECP256R1),
+            },
+            AlgStructEntry {
+                alg_type: 0x03,
+                alg_count: 0x20,
+                alg_supported: LeU16::new(AEAD_AES_256_GCM),
+            },
+            AlgStructEntry {
+                alg_type: 0x05,
+                alg_count: 0x20,
+                alg_supported: LeU16::new(KEY_SCHEDULE_SPDM),
+            },
+        ];
+        let algs_off = SpdmHeader::LEN + core::mem::size_of::<AlgorithmsResponseBody>();
+        let total = algs_off + core::mem::size_of_val(&algs);
+        if resp.len() < total {
             return Err(Error::BufferTooSmall);
         }
         self.vca.update(req);
 
-        // Minimal SPDM 1.2 ALGORITHMS response (36B base + 3x4B AlgStruct = 48B).
-        resp[0..4].copy_from_slice(&[self.version, SpdmCode::Algorithms as u8, 3, 0]);
-        resp[4..6].copy_from_slice(&48u16.to_le_bytes()); // Length
-        resp[6] = 0x01; // MeasurementSpecificationSel = DMTF
-        resp[7] = 0x02; // OtherParamsSupport = OpaqueDataFmt1
-        resp[8..12].copy_from_slice(&MEAS_HASH_SHA_256.to_le_bytes());
-        resp[12..16].copy_from_slice(&BASE_ASYM_ECDSA_ECC_NIST_P256.to_le_bytes());
-        resp[16..20].copy_from_slice(&BASE_HASH_SHA_256.to_le_bytes());
-        resp[20..32].fill(0); // reserved
-        resp[32] = 0; // ExtAsymSelCount
-        resp[33] = 0; // ExtHashSelCount
-        resp[34..36].copy_from_slice(&0u16.to_le_bytes());
-        // AlgStruct 1: DHE = secp256r1
-        resp[36] = 0x02;
-        resp[37] = 0x20;
-        resp[38..40].copy_from_slice(&DHE_SECP256R1.to_le_bytes());
-        // AlgStruct 2: AEAD = AES-256-GCM
-        resp[40] = 0x03;
-        resp[41] = 0x20;
-        resp[42..44].copy_from_slice(&AEAD_AES_256_GCM.to_le_bytes());
-        // AlgStruct 3: KeySchedule = SPDM
-        resp[44] = 0x05;
-        resp[45] = 0x20;
-        resp[46..48].copy_from_slice(&KEY_SCHEDULE_SPDM.to_le_bytes());
+        SpdmHeader::new(self.version, SpdmCode::Algorithms, algs.len() as u8, 0)
+            .write_to_prefix(resp)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let out_body = AlgorithmsResponseBody {
+            length: LeU16::new(total as u16),
+            measurement_spec_sel: 0x01, // DMTF
+            other_params_sel: 0x02,     // OpaqueDataFmt1
+            measurement_hash_algo: LeU32::new(MEAS_HASH_SHA_256),
+            base_asym_sel: LeU32::new(BASE_ASYM_ECDSA_ECC_NIST_P256),
+            base_hash_sel: LeU32::new(BASE_HASH_SHA_256),
+            reserved: [0; 12],
+            ext_asym_sel_count: 0,
+            ext_hash_sel_count: 0,
+            reserved2: LeU16::new(0),
+        };
+        out_body
+            .write_to_prefix(&mut resp[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        algs.write_to_prefix(&mut resp[algs_off..])
+            .map_err(|_| Error::BufferTooSmall)?;
 
-        self.vca.update(&resp[..48]);
+        self.vca.update(&resp[..total]);
         self.m_transcript = self.vca.clone();
-        Ok(48)
+        Ok(total)
     }
 
     fn on_get_digests(
@@ -395,13 +441,15 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         if hdr.version != self.version {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
-        let total = 4 + HASH_LEN;
+        let total = SpdmHeader::LEN + HASH_LEN;
         if resp.len() < total {
             return Err(Error::BufferTooSmall);
         }
         // param2 = slot mask (slot 0 populated = 0x01)
-        resp[0..4].copy_from_slice(&[self.version, SpdmCode::Digests as u8, 0, 0x01]);
-        resp[4..total].copy_from_slice(&self.cert_chain_hash);
+        SpdmHeader::new(self.version, SpdmCode::Digests, 0, 0x01)
+            .write_to_prefix(resp)
+            .map_err(|_| Error::BufferTooSmall)?;
+        resp[SpdmHeader::LEN..total].copy_from_slice(&self.cert_chain_hash);
         // DSP0274 Table 36: M1/M2 includes GET_DIGESTS and DIGESTS.
         self.m_transcript.update(req);
         self.m_transcript.update(&resp[..total]);
@@ -415,25 +463,35 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         body: &[u8],
         resp: &mut [u8],
     ) -> Result<usize, Error> {
-        if hdr.version != self.version || body.len() < 4 || hdr.param1 != 0 {
+        let Ok((req_body, _)) = GetCertificateBody::ref_from_prefix(body) else {
+            return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
+        };
+        if hdr.version != self.version || hdr.param1 != 0 {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
-        let offset = u16::from_le_bytes([body[0], body[1]]) as usize;
-        let length = u16::from_le_bytes([body[2], body[3]]) as usize;
+        let offset = req_body.offset.get() as usize;
+        let length = req_body.length.get() as usize;
         if offset > self.cert_chain_len {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
         let remaining = self.cert_chain_len - offset;
         let portion = remaining.min(length);
         let remainder = remaining - portion;
-        let total = 8 + portion;
+        let data_off = SpdmHeader::LEN + core::mem::size_of::<CertificateResponsePrefix>();
+        let total = data_off + portion;
         if resp.len() < total {
             return Err(Error::BufferTooSmall);
         }
-        resp[0..4].copy_from_slice(&[self.version, SpdmCode::Certificate as u8, 0, 0]);
-        resp[4..6].copy_from_slice(&(portion as u16).to_le_bytes());
-        resp[6..8].copy_from_slice(&(remainder as u16).to_le_bytes());
-        resp[8..total].copy_from_slice(&self.cert_chain[offset..offset + portion]);
+        SpdmHeader::new(self.version, SpdmCode::Certificate, 0, 0)
+            .write_to_prefix(resp)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let pfx = CertificateResponsePrefix {
+            portion_length: LeU16::new(portion as u16),
+            remainder_length: LeU16::new(remainder as u16),
+        };
+        pfx.write_to_prefix(&mut resp[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        resp[data_off..total].copy_from_slice(&self.cert_chain[offset..offset + portion]);
         // DSP0274 Table 36: M1/M2 includes every GET_CERTIFICATE / CERTIFICATE pair.
         self.m_transcript.update(req);
         self.m_transcript.update(&resp[..total]);
@@ -451,17 +509,22 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         if hdr.version != self.version || body.len() < 32 || hdr.param1 != 0 {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
-        // CHALLENGE_AUTH (no measurement summary hash):
-        // header(4) + cert_chain_hash(32) + nonce(32) + opaque_len(2=0) + sig(64) = 134 bytes
-        let unsigned_len = 4 + HASH_LEN + 32 + 2;
+        let unsigned_len = SpdmHeader::LEN + core::mem::size_of::<ChallengeAuthPrefix>();
         let total = unsigned_len + SIG_LEN;
         if resp.len() < total {
             return Err(Error::BufferTooSmall);
         }
-        resp[0..4].copy_from_slice(&[self.version, SpdmCode::ChallengeAuth as u8, 0x00, 0x01]);
-        resp[4..36].copy_from_slice(&self.cert_chain_hash);
-        rng.fill_bytes(&mut resp[36..68]);
-        resp[68..70].copy_from_slice(&0u16.to_le_bytes()); // opaque_data_len = 0
+        SpdmHeader::new(self.version, SpdmCode::ChallengeAuth, 0x00, 0x01)
+            .write_to_prefix(resp)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let mut pfx = ChallengeAuthPrefix {
+            cert_chain_hash: self.cert_chain_hash,
+            nonce: [0; 32],
+            opaque_length: LeU16::new(0),
+        };
+        rng.fill_bytes(&mut pfx.nonce);
+        pfx.write_to_prefix(&mut resp[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
 
         let mut t = self.m_transcript.clone();
         t.update(req);
@@ -487,34 +550,45 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         }
         let signed = (hdr.param1 & 0x01) != 0;
         let count = self.measurements.iter().flatten().count();
-        // Each DMTF block: index(1) + spec(1=1) + size(2=35) + dmtf_type(1) + dmtf_size(2=32) + digest(32) = 39B
-        const BLOCK_LEN: usize = 39;
-        let record_len = count * BLOCK_LEN;
-        let unsigned_len = 8 + record_len + 32 + 2;
+        let block_len = core::mem::size_of::<DmtfMeasurementBlock>();
+        let record_len = count * block_len;
+        let blocks_off = SpdmHeader::LEN + core::mem::size_of::<MeasurementsPrefix>();
+        let unsigned_len = blocks_off + record_len + core::mem::size_of::<MeasurementsSuffix>();
         let total = unsigned_len + if signed { SIG_LEN } else { 0 };
         if resp.len() < total {
             return Err(Error::BufferTooSmall);
         }
 
-        resp[0..4].copy_from_slice(&[self.version, SpdmCode::Measurements as u8, 0, 0]);
-        resp[4] = count as u8;
-        let rlen_bytes = (record_len as u32).to_le_bytes();
-        resp[5..8].copy_from_slice(&rlen_bytes[..3]);
+        SpdmHeader::new(self.version, SpdmCode::Measurements, 0, 0)
+            .write_to_prefix(resp)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let pfx = MeasurementsPrefix::new(count as u8, record_len);
+        pfx.write_to_prefix(&mut resp[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
 
-        let mut pos = 8;
+        let mut pos = blocks_off;
         for block in self.measurements.iter().flatten() {
-            resp[pos] = block.index;
-            resp[pos + 1] = 0x01; // DMTF measurement spec
-            resp[pos + 2..pos + 4].copy_from_slice(&35u16.to_le_bytes());
-            resp[pos + 4] = block.value_type;
-            resp[pos + 5..pos + 7].copy_from_slice(&(HASH_LEN as u16).to_le_bytes());
-            resp[pos + 7..pos + 39].copy_from_slice(&block.digest);
-            pos += BLOCK_LEN;
+            let wire = DmtfMeasurementBlock {
+                index: block.index,
+                spec: 0x01, // DMTF measurement spec
+                size: LeU16::new((3 + HASH_LEN) as u16),
+                value_type: block.value_type,
+                value_size: LeU16::new(HASH_LEN as u16),
+                digest: block.digest,
+            };
+            wire.write_to_prefix(&mut resp[pos..])
+                .map_err(|_| Error::BufferTooSmall)?;
+            pos += block_len;
         }
-        rng.fill_bytes(&mut resp[pos..pos + 32]); // responder nonce
-        pos += 32;
-        resp[pos..pos + 2].copy_from_slice(&0u16.to_le_bytes()); // opaque_len = 0
-        pos += 2;
+        let mut suffix = MeasurementsSuffix {
+            nonce: [0; 32],
+            opaque_length: LeU16::new(0),
+        };
+        rng.fill_bytes(&mut suffix.nonce);
+        suffix
+            .write_to_prefix(&mut resp[pos..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        pos += core::mem::size_of::<MeasurementsSuffix>();
 
         if signed {
             if req.len() < 37 {
@@ -547,51 +621,58 @@ impl<const MAX_CERT: usize, const MAX_MEAS: usize> SpdmResponder<MAX_CERT, MAX_M
         if self.session.is_some() {
             return write_error(self.version, SpdmErrorCode::Busy, 0, resp);
         }
-        // KEY_EXCHANGE body: ReqSessionID(2) + SessionPolicy(1) + Reserved(1) +
-        // RandomData(32) + ExchangeData(64) + OpaqueLen(2) + Opaque(...)
-        if hdr.version != self.version || body.len() < 102 {
+        let Ok((req_pfx, req_rest)) = KeyExchangeReqPrefix::ref_from_prefix(body) else {
+            return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
+        };
+        if hdr.version != self.version {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
-        let req_opaque_len = u16::from_le_bytes([body[100], body[101]]) as usize;
-        if body.len() < 102 + req_opaque_len
-            || !crate::secured::opaque_offers_version_1_1(&body[102..102 + req_opaque_len])
+        let req_opaque_len = req_pfx.opaque_length.get() as usize;
+        if req_rest.len() < req_opaque_len
+            || !crate::secured::opaque_offers_version_1_1(&req_rest[..req_opaque_len])
         {
             return write_error(self.version, SpdmErrorCode::InvalidRequest, 0, resp);
         }
-        let req_session_id = u16::from_le_bytes([body[0], body[1]]);
-        let mut peer_xy = [0u8; P256_PUB_LEN];
-        peer_xy.copy_from_slice(&body[36..100]);
 
         let eph = EphemeralP256::generate(rng)?;
-        let shared_secret = eph.diffie_hellman(&peer_xy)?;
+        let shared_secret = eph.diffie_hellman(&req_pfx.exchange_data)?;
 
         let rsp_session_id = self.next_rsp_session_id;
         self.next_rsp_session_id = self.next_rsp_session_id.wrapping_add(1).max(1);
         // DSP0274 §10.12: SessionID = (rsp_session_id << 16) | req_session_id
-        let session_id = (u32::from(rsp_session_id) << 16) | u32::from(req_session_id);
+        let session_id =
+            (u32::from(rsp_session_id) << 16) | u32::from(req_pfx.req_session_id.get());
 
-        // KEY_EXCHANGE_RSP: header(4) + RspSessionID(2) + MutAuth(1=0) + SlotID(1=0) +
-        // RandomData(32) + ExchangeData(64) + OpaqueLen(2) + Opaque(12) + Sig(64) + VerifyData(32)
         let opaque = &OPAQUE_SELECTED_VERSION_1_1;
-        let before_sig = 4 + 2 + 1 + 1 + 32 + P256_PUB_LEN + 2 + opaque.len();
+        let opaque_off = SpdmHeader::LEN + core::mem::size_of::<KeyExchangeRspPrefix>();
+        let before_sig = opaque_off + opaque.len();
         let before_verify = before_sig + SIG_LEN;
         let total = before_verify + HASH_LEN;
         if resp.len() < total {
             return Err(Error::BufferTooSmall);
         }
 
-        resp[0..4].copy_from_slice(&[self.version, SpdmCode::KeyExchangeRsp as u8, 0, 0]);
-        resp[4..6].copy_from_slice(&rsp_session_id.to_le_bytes());
-        resp[6] = 0; // MutAuthRequested = 0
-        resp[7] = 0; // SlotIDParam = 0
-        rng.fill_bytes(&mut resp[8..40]);
-        resp[40..104].copy_from_slice(eph.public_xy());
-        resp[104..106].copy_from_slice(&(opaque.len() as u16).to_le_bytes());
-        resp[106..before_sig].copy_from_slice(opaque);
+        SpdmHeader::new(self.version, SpdmCode::KeyExchangeRsp, 0, 0)
+            .write_to_prefix(resp)
+            .map_err(|_| Error::BufferTooSmall)?;
+        let mut rsp_pfx = KeyExchangeRspPrefix {
+            rsp_session_id: LeU16::new(rsp_session_id),
+            mut_auth_requested: 0,
+            slot_id_param: 0,
+            random_data: [0; 32],
+            exchange_data: *eph.public_xy(),
+            opaque_length: LeU16::new(opaque.len() as u16),
+        };
+        rng.fill_bytes(&mut rsp_pfx.random_data);
+        rsp_pfx
+            .write_to_prefix(&mut resp[SpdmHeader::LEN..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        resp[opaque_off..before_sig].copy_from_slice(opaque);
 
         // Transcript up to signature: VCA || cert_chain_hash || KEY_EXCHANGE || KEY_EXCHANGE_RSP[..before_sig]
         // Strip any 1..3 trailing PCIe DOE DW-alignment pad bytes from req.
-        let req_exact = 106 + req_opaque_len;
+        let req_exact =
+            SpdmHeader::LEN + core::mem::size_of::<KeyExchangeReqPrefix>() + req_opaque_len;
         let mut t = self.vca.clone();
         t.update(&self.cert_chain_hash);
         t.update(&req[..req_exact]);

@@ -11,6 +11,7 @@ pub mod crypto;
 pub mod requester;
 pub mod responder;
 pub mod secured;
+pub mod wire;
 
 pub use crypto::{Rng, Sha256Transcript, SpdmKeyPair};
 pub use requester::SpdmRequester;
@@ -153,9 +154,8 @@ pub fn write_error(
     data: u8,
     out: &mut [u8],
 ) -> Result<usize, Error> {
-    if out.len() < 4 {
-        return Err(Error::BufferTooSmall);
-    }
-    out[..4].copy_from_slice(&[version, SpdmCode::Error as u8, err as u8, data]);
-    Ok(4)
+    SpdmHeader::new(version, SpdmCode::Error, err as u8, data)
+        .write_to_prefix(out)
+        .map_err(|_| Error::BufferTooSmall)?;
+    Ok(SpdmHeader::LEN)
 }

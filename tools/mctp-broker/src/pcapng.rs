@@ -18,6 +18,14 @@ pub const ETH_P_MCTP: u16 = 0x00FA;
 /// Linux `ARPHRD_MCTP` hardware type.
 const ARPHRD_MCTP: u16 = 290;
 
+/// Common 8-byte pcapng block prefix (type + total length).
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+pub struct PcapNgBlockPrefix {
+    pub block_type: LeU32,
+    pub block_len: LeU32,
+}
+
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct ShbBlock {

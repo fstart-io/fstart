@@ -14,6 +14,9 @@ use fstart_mctp::{
     BASELINE_MTU, Endpoint, Error as MctpError, MctpChannel, MessageType, PacketTransport,
     TransportKind,
 };
+use fstart_pci::doe::{
+    DOE_TYPE_CMA_SPDM, DOE_TYPE_SECURED_CMA_SPDM, DoeObjectHeader, DoeProtocol, VENDOR_ID_PCI_SIG,
+};
 use fstart_pldm::PldmResponder;
 use fstart_pldm::base::encode_get_tid_req;
 use fstart_pldm::platform::{NumericSensor, encode_get_sensor_reading_req};
@@ -161,17 +164,20 @@ fn handle_spdm_emu_client(mut stream: TcpStream) -> io::Result<()> {
             }
             SOCKET_SPDM_COMMAND_NORMAL => {
                 // PCIe DOE payload starts with 8-byte DOE header (vendor_id, type, length_dws).
-                if transport_type == SOCKET_TRANSPORT_TYPE_PCI_DOE && payload.len() >= 8 {
-                    let doe_vid = u16::from_le_bytes([payload[0], payload[1]]);
-                    let doe_type = payload[2];
-                    if doe_vid != 0x0001 || (doe_type != 0x01 && doe_type != 0x02) {
+                if transport_type == SOCKET_TRANSPORT_TYPE_PCI_DOE
+                    && let Ok((doe_hdr, spdm_in)) = DoeObjectHeader::ref_from_prefix(&payload)
+                {
+                    let doe_vid = doe_hdr.vendor_id.get();
+                    let doe_type = doe_hdr.object_type;
+                    if doe_vid != VENDOR_ID_PCI_SIG
+                        || (doe_type != DOE_TYPE_CMA_SPDM && doe_type != DOE_TYPE_SECURED_CMA_SPDM)
+                    {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "unexpected DOE protocol",
                         ));
                     }
-                    let spdm_in = &payload[8..];
-                    let rlen = match if doe_type == 0x02 {
+                    let rlen = match if doe_type == DOE_TYPE_SECURED_CMA_SPDM {
                         rsp.handle_secured_spdm(spdm_in, &mut out_buf)
                     } else {
                         rsp.handle_request(spdm_in, &mut out_buf, &mut rng)
@@ -189,9 +195,18 @@ fn handle_spdm_emu_client(mut stream: TcpStream) -> io::Result<()> {
                         }
                     };
                     let dws = 2 + rlen.div_ceil(4);
+                    let resp_hdr = DoeObjectHeader::new(
+                        DoeProtocol {
+                            vendor_id: doe_vid,
+                            data_object_type: doe_type,
+                        },
+                        dws,
+                    )
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid DOE len"))?;
                     let mut doe_resp = vec![0u8; dws * 4];
-                    doe_resp[0..4].copy_from_slice(&payload[0..4]);
-                    doe_resp[4..8].copy_from_slice(&(dws as u32).to_le_bytes());
+                    resp_hdr
+                        .write_to_prefix(&mut doe_resp)
+                        .map_err(|_| io::Error::other("DOE header write"))?;
                     doe_resp[8..8 + rlen].copy_from_slice(&out_buf[..rlen]);
                     send_emu_frame(
                         &mut stream,
@@ -359,20 +374,22 @@ impl PacketTransport for SocketTransport {
                 &mut wire,
             )?,
         };
-        let len_hdr = (n as u16).to_le_bytes();
+        let len_hdr = zerocopy::little_endian::U16::new(n as u16);
         self.stream
-            .write_all(&len_hdr)
+            .write_all(len_hdr.as_bytes())
             .and_then(|()| self.stream.write_all(&wire[..n]))
             .and_then(|()| self.stream.flush())
             .map_err(|_| MctpError::Transport)
     }
 
     fn recv_packet(&mut self, out: &mut [u8]) -> Result<usize, MctpError> {
-        let mut len_hdr = [0u8; 2];
+        let mut len_bytes = [0u8; 2];
         self.stream
-            .read_exact(&mut len_hdr)
+            .read_exact(&mut len_bytes)
             .map_err(|_| MctpError::Transport)?;
-        let n = u16::from_le_bytes(len_hdr) as usize;
+        let n = zerocopy::little_endian::U16::read_from_bytes(&len_bytes)
+            .unwrap()
+            .get() as usize;
         let mut wire = vec![0u8; n];
         self.stream
             .read_exact(&mut wire)

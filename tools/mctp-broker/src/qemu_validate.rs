@@ -5,7 +5,9 @@
 //! 2. Dual-QEMU `ast2500-evb` BMC <-> `fstart-mctp-broker bridge` (Wireshark SLL2 `ETH_P_MCTP`
 //!    `pcapng`) <-> `qemu-q35` Host over Serial (DSP0253)
 
-use crate::pcapng::{ETH_P_MCTP, EpbHeader, IdbBlock, LINKTYPE_LINUX_SLL2, Sll2Header};
+use crate::pcapng::{
+    ETH_P_MCTP, EpbHeader, IdbBlock, LINKTYPE_LINUX_SLL2, PcapNgBlockPrefix, Sll2Header,
+};
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -224,11 +226,9 @@ pub fn verify_pcapng(pcap_path: &Path) -> io::Result<usize> {
     let mut saw_idb = false;
     let mut mctp_packets = 0usize;
 
-    while off + 12 <= data.len() {
+    while let Ok((pfx, _)) = PcapNgBlockPrefix::ref_from_prefix(&data[off..]) {
         let block_slice = &data[off..];
-        let (btype, _) = LeU32::read_from_prefix(block_slice).unwrap();
-        let (blen_raw, _) = LeU32::read_from_prefix(&block_slice[4..]).unwrap();
-        let blen = blen_raw.get() as usize;
+        let blen = pfx.block_len.get() as usize;
         if blen < 12 || (blen & 3) != 0 || off + blen > data.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -246,7 +246,7 @@ pub fn verify_pcapng(pcap_path: &Path) -> io::Result<usize> {
                 ),
             ));
         }
-        match btype.get() {
+        match pfx.block_type.get() {
             0x0A0D_0D0A => saw_shb = true,
             0x0000_0001 => {
                 let (idb, _) = IdbBlock::ref_from_prefix(block)
@@ -279,12 +279,6 @@ pub fn verify_pcapng(pcap_path: &Path) -> io::Result<usize> {
                         format!("short SLL2+MCTP packet ({}B)", pkt.len()),
                     )
                 })?;
-                if mctp.len() < 4 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("short MCTP packet ({}B)", mctp.len()),
-                    ));
-                }
                 if sll2.protocol_type.get() != ETH_P_MCTP {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -294,12 +288,12 @@ pub fn verify_pcapng(pcap_path: &Path) -> io::Result<usize> {
                         ),
                     ));
                 }
-                if (mctp[0] & 0x0F) != 0x01 {
-                    return Err(io::Error::new(
+                fstart_mctp::MctpHeader::parse(mctp).map_err(|e| {
+                    io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("bad MCTP version byte {:#x}", mctp[0]),
-                    ));
-                }
+                        format!("invalid MCTP header in capture: {e:?}"),
+                    )
+                })?;
                 mctp_packets += 1;
             }
             _ => {}

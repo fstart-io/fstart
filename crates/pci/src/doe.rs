@@ -5,6 +5,9 @@
 //! Secured CMA-SPDM (`0x0001/0x02`).
 
 use pci_types::{ConfigRegionAccess, PciAddress};
+use tock_registers::register_bitfields;
+use zerocopy::little_endian::{U16 as LeU16, U32 as LeU32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// PCIe Extended Capability ID for Data Object Exchange (DOE).
 pub const EXT_CAP_ID_DOE: u16 = 0x002E;
@@ -28,12 +31,77 @@ const REG_WRITE_MBX: u16 = 0x10;
 const REG_READ_MBX: u16 = 0x14;
 const DOE_CAP_SPAN: u16 = 0x18;
 
-const CTRL_ABORT: u32 = 1 << 0;
-const CTRL_GO: u32 = 1 << 31;
+register_bitfields! [u32,
+    /// PCIe Extended Capability Header (offset +0x00, 32-bit).
+    PcieExtCapHeader [
+        CAP_ID OFFSET(0) NUMBITS(16) [],
+        VERSION OFFSET(16) NUMBITS(4) [],
+        NEXT_OFFSET OFFSET(20) NUMBITS(12) [],
+    ],
+    /// PCIe DOE Control Register (offset +0x08, 32-bit).
+    DoeControl [
+        ABORT OFFSET(0) NUMBITS(1) [],
+        INT_ENABLE OFFSET(1) NUMBITS(1) [],
+        GO OFFSET(31) NUMBITS(1) [],
+    ],
+    /// PCIe DOE Status Register (offset +0x0C, 32-bit).
+    DoeStatus [
+        BUSY OFFSET(0) NUMBITS(1) [],
+        INT_STATUS OFFSET(1) NUMBITS(1) [],
+        ERROR OFFSET(2) NUMBITS(1) [],
+        DATA_READY OFFSET(31) NUMBITS(1) [],
+    ],
+    /// PCIe DOE Data Object Header DW1 (length in DWs, 18-bit; 0 encodes 2^18).
+    DoeLengthWord [
+        LENGTH OFFSET(0) NUMBITS(18) [],
+    ],
+];
 
-const STATUS_BUSY: u32 = 1 << 0;
-const STATUS_ERROR: u32 = 1 << 2;
-const STATUS_DATA_READY: u32 = 1 << 31;
+/// Wire-format 8-byte PCIe DOE Data Object Header (PCIe 6.0 §6.30.1).
+#[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+pub struct DoeObjectHeader {
+    pub vendor_id: LeU16,
+    pub object_type: u8,
+    pub reserved: u8,
+    pub length_word: LeU32,
+}
+
+impl DoeObjectHeader {
+    /// Construct a DOE header for `protocol` and `total_dws` (including the 2 header DWs).
+    pub fn new(protocol: DoeProtocol, total_dws: usize) -> Result<Self, DoeError> {
+        if !(2..=MAX_DOE_DWS).contains(&total_dws) {
+            return Err(DoeError::InvalidLength);
+        }
+        let encoded = if total_dws == MAX_DOE_DWS {
+            0
+        } else {
+            total_dws as u32
+        };
+        Ok(Self {
+            vendor_id: LeU16::new(protocol.vendor_id),
+            object_type: protocol.data_object_type,
+            reserved: 0,
+            length_word: LeU32::new((DoeLengthWord::LENGTH.val(encoded)).value),
+        })
+    }
+
+    /// Decode total length in DWs (interpreting `0` as `2^18`).
+    pub fn total_dws(&self) -> usize {
+        let raw = DoeLengthWord::LENGTH.read(self.length_word.get()) as usize;
+        if raw == 0 { MAX_DOE_DWS } else { raw }
+    }
+
+    pub fn to_dwords(self) -> [u32; 2] {
+        let words: [LeU32; 2] = zerocopy::transmute!(self);
+        [words[0].get(), words[1].get()]
+    }
+
+    pub fn from_dwords(dw0: u32, dw1: u32) -> Self {
+        let words = [LeU32::new(dw0), LeU32::new(dw1)];
+        zerocopy::transmute!(words)
+    }
+}
 
 /// Errors returned by PCIe DOE mailbox operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,11 +154,10 @@ pub fn find_doe_capability<A: ConfigRegionAccess>(access: &A, addr: PciAddress) 
         if header == 0 || header == 0xFFFF_FFFF {
             return None;
         }
-        let cap_id = (header & 0xFFFF) as u16;
-        if cap_id == EXT_CAP_ID_DOE {
+        if PcieExtCapHeader::CAP_ID.read(header) as u16 == EXT_CAP_ID_DOE {
             return Some(offset);
         }
-        let raw_next = ((header >> 20) & 0x0FFF) as u16;
+        let raw_next = PcieExtCapHeader::NEXT_OFFSET.read(header) as u16;
         if raw_next == 0 || (raw_next & 0x03) != 0 || raw_next < 0x100 || raw_next == offset {
             return None;
         }
@@ -106,10 +173,10 @@ fn abort_and_wait<A: ConfigRegionAccess>(
     cap_offset: u16,
     max_polls: u32,
 ) -> Result<(), DoeError> {
-    unsafe { access.write(addr, cap_offset + REG_CTRL, CTRL_ABORT) };
+    unsafe { access.write(addr, cap_offset + REG_CTRL, DoeControl::ABORT::SET.value) };
     for _ in 0..max_polls {
         let st = unsafe { access.read(addr, cap_offset + REG_STATUS) };
-        if (st & (STATUS_BUSY | STATUS_ERROR)) == 0 {
+        if !DoeStatus::BUSY.is_set(st) && !DoeStatus::ERROR.is_set(st) {
             return Ok(());
         }
     }
@@ -134,25 +201,23 @@ pub fn doe_exchange<A: ConfigRegionAccess>(
     if !valid_doe_offset(cap_offset) {
         return Err(DoeError::NotFound);
     }
-    let vendor_id = protocol.vendor_id;
-    let data_object_type = protocol.data_object_type;
 
     let _cap = unsafe { access.read(addr, cap_offset + REG_CAP) };
 
     // Ensure mailbox is clean (neither Busy, Error, nor stale Data Object Ready).
     let st = unsafe { access.read(addr, cap_offset + REG_STATUS) };
-    if (st & (STATUS_ERROR | STATUS_DATA_READY)) != 0 {
+    if DoeStatus::ERROR.is_set(st) || DoeStatus::DATA_READY.is_set(st) {
         abort_and_wait(access, addr, cap_offset, max_polls)?;
-    } else if (st & STATUS_BUSY) != 0 {
+    } else if DoeStatus::BUSY.is_set(st) {
         let mut ready = false;
         for _ in 0..max_polls {
             let s = unsafe { access.read(addr, cap_offset + REG_STATUS) };
-            if (s & (STATUS_ERROR | STATUS_DATA_READY)) != 0 {
+            if DoeStatus::ERROR.is_set(s) || DoeStatus::DATA_READY.is_set(s) {
                 abort_and_wait(access, addr, cap_offset, max_polls)?;
                 ready = true;
                 break;
             }
-            if (s & STATUS_BUSY) == 0 {
+            if !DoeStatus::BUSY.is_set(s) {
                 ready = true;
                 break;
             }
@@ -163,19 +228,8 @@ pub fn doe_exchange<A: ConfigRegionAccess>(
     }
 
     let payload_dws = payload.len().div_ceil(4);
-    let total_dws = 2 + payload_dws;
-    if total_dws > MAX_DOE_DWS {
-        return Err(DoeError::InvalidLength);
-    }
-
-    // Write 2-DW DOE header: DW0 = vendor_id | (data_object_type << 16),
-    // DW1 = total_dws (with 2^18 encoded as 0 per PCIe 6.0 §6.30.1).
-    let dw0 = u32::from(vendor_id) | (u32::from(data_object_type) << 16);
-    let dw1 = if total_dws == MAX_DOE_DWS {
-        0
-    } else {
-        (total_dws as u32) & 0x0003_FFFF
-    };
+    let tx_hdr = DoeObjectHeader::new(protocol, 2 + payload_dws)?;
+    let [dw0, dw1] = tx_hdr.to_dwords();
     unsafe {
         access.write(addr, cap_offset + REG_WRITE_MBX, dw0);
         access.write(addr, cap_offset + REG_WRITE_MBX, dw1);
@@ -184,25 +238,26 @@ pub fn doe_exchange<A: ConfigRegionAccess>(
     for chunk in payload.chunks(4) {
         let mut word = [0u8; 4];
         word[..chunk.len()].copy_from_slice(chunk);
+        let le_word = LeU32::read_from_bytes(&word).unwrap();
         unsafe {
-            access.write(addr, cap_offset + REG_WRITE_MBX, u32::from_le_bytes(word));
+            access.write(addr, cap_offset + REG_WRITE_MBX, le_word.get());
         }
     }
 
     // Trigger DOE Go.
     unsafe {
-        access.write(addr, cap_offset + REG_CTRL, CTRL_GO);
+        access.write(addr, cap_offset + REG_CTRL, DoeControl::GO::SET.value);
     }
 
     // Poll for Data Object Ready; abort mailbox on timeout or device error.
     let mut ready = false;
     for _ in 0..max_polls {
         let st = unsafe { access.read(addr, cap_offset + REG_STATUS) };
-        if (st & STATUS_ERROR) != 0 {
+        if DoeStatus::ERROR.is_set(st) {
             let _ = abort_and_wait(access, addr, cap_offset, max_polls);
             return Err(DoeError::DeviceError);
         }
-        if (st & STATUS_DATA_READY) != 0 {
+        if DoeStatus::DATA_READY.is_set(st) {
             ready = true;
             break;
         }
@@ -212,13 +267,11 @@ pub fn doe_exchange<A: ConfigRegionAccess>(
         return Err(DoeError::Timeout);
     }
 
-    let r_dw0 = read_mbx_dw(access, addr, cap_offset);
-    let r_dw1 = read_mbx_dw(access, addr, cap_offset);
-
-    let r_vid = (r_dw0 & 0xFFFF) as u16;
-    let r_type = ((r_dw0 >> 16) & 0xFF) as u8;
-    let raw_len = (r_dw1 & 0x0003_FFFF) as usize;
-    let r_total_dws = if raw_len == 0 { MAX_DOE_DWS } else { raw_len };
+    let r_hdr = DoeObjectHeader::from_dwords(
+        read_mbx_dw(access, addr, cap_offset),
+        read_mbx_dw(access, addr, cap_offset),
+    );
+    let r_total_dws = r_hdr.total_dws();
     if r_total_dws < 2 {
         let _ = abort_and_wait(access, addr, cap_offset, max_polls);
         return Err(DoeError::InvalidLength);
@@ -226,7 +279,8 @@ pub fn doe_exchange<A: ConfigRegionAccess>(
     let r_payload_dws = r_total_dws - 2;
     let r_bytes = r_payload_dws * 4;
 
-    if r_vid != vendor_id || r_type != data_object_type {
+    if r_hdr.vendor_id.get() != protocol.vendor_id || r_hdr.object_type != protocol.data_object_type
+    {
         let _ = abort_and_wait(access, addr, cap_offset, max_polls);
         return Err(DoeError::ProtocolMismatch);
     }
@@ -235,13 +289,14 @@ pub fn doe_exchange<A: ConfigRegionAccess>(
         return Err(DoeError::BufferTooSmall);
     }
     for i in 0..r_payload_dws {
-        let dw = read_mbx_dw(access, addr, cap_offset);
-        resp_buf[i * 4..i * 4 + 4].copy_from_slice(&dw.to_le_bytes());
+        let dw = LeU32::new(read_mbx_dw(access, addr, cap_offset));
+        dw.write_to_prefix(&mut resp_buf[i * 4..])
+            .map_err(|_| DoeError::BufferTooSmall)?;
     }
 
     // Verify the final read acknowledgment cleared Data Object Ready without Error.
     let final_st = unsafe { access.read(addr, cap_offset + REG_STATUS) };
-    if (final_st & (STATUS_ERROR | STATUS_DATA_READY)) != 0 {
+    if DoeStatus::ERROR.is_set(final_st) || DoeStatus::DATA_READY.is_set(final_st) {
         let _ = abort_and_wait(access, addr, cap_offset, max_polls);
         return Err(DoeError::DeviceError);
     }
