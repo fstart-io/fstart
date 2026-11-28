@@ -154,9 +154,9 @@ pub enum BootImageFormat {
     /// `mksunxiboot`. Required by every Allwinner BROM (sun4i..sun20i).
     AllwinnerEgon,
     /// ASPEED AST2400/AST2500 SPI boot: execute in place from FMC CE0
-    /// address 0; the image starts with the ARM vector table and, at
-    /// 0x40, the strap block loaded before the CPU is released
-    /// (both in `.head.aspeed`).
+    /// address 0; the image starts with the ARM vector table and, on
+    /// the AST2500, at 0x40 the strap block loaded before the CPU is
+    /// released (both in `.head.aspeed`).
     AspeedSpi,
 }
 

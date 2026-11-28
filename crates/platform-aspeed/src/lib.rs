@@ -1,8 +1,8 @@
 //! Fixed ASPEED BMC SoC platform flows.
 //!
 //! The AST2400 and AST2500 ARM cores execute SPI flash in place from the
-//! reset vector; [`head`] builds the vector table and hardware strap block
-//! that open such an image.
+//! reset vector; [`head`] builds the vector table, and on the AST2500 the
+//! flash strap block, that open such an image.
 
 #![no_std]
 
@@ -16,6 +16,8 @@ pub mod head;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
+#[cfg(all(feature = "stage", feature = "ast2500", target_arch = "arm"))]
+mod stage;
 
 #[cfg(feature = "stage")]
 #[doc(hidden)]

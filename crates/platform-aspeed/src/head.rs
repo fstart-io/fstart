@@ -1,12 +1,16 @@
 //! The head of an AST2400/AST2500 SPI boot image.
 //!
 //! The ARM core executes FMC CE0 flash in place from address 0, so the image
-//! opens with the ARM vector table. Before releasing the CPU, the SoC scans
-//! the first 8 KiB of the flash for a strap block and replays its register
-//! writes. The head places the strap block right after the vectors and
-//! their handler addresses, at offset 0x40.
+//! opens with the ARM vector table and its handler addresses.
+//!
+//! On the AST2500, when the SPI flash strap auto fetch (SCU70\[31\]) is set,
+//! the SoC also scans the first 8 KiB of the flash for a strap block before
+//! releasing the CPU and replays its register writes. [`spi_head!`] with a
+//! list of writes places that block right after the vectors, at offset
+//! 0x40. The AST2400 has no such fetch: its straps come from pins only, so
+//! its head is the vectors alone (`spi_head!()`).
 
-/// One register write the SoC replays from flash before the CPU starts.
+/// One register write the AST2500 replays from flash before the CPU starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StrapWrite {
     /// Register address; must lie in `0x1Exx_xxxx` and be word aligned.
@@ -78,12 +82,39 @@ const LDR_PC_HANDLER: u32 = 0xE59F_F018;
 #[cfg(target_arch = "arm")]
 type Handler = unsafe extern "C" fn() -> !;
 
-/// Vectors at 0x00, their handlers at 0x20, the strap block at 0x40.
+/// Vectors at 0x00 and their handlers at 0x20.
+#[cfg(target_arch = "arm")]
+#[repr(C)]
+pub struct Vectors {
+    vectors: [u32; 8],
+    handlers: [Handler; 8],
+}
+
+#[cfg(target_arch = "arm")]
+impl Vectors {
+    /// Reset enters the arch `_start`; every exception halts.
+    pub const fn new() -> Self {
+        let mut handlers: [Handler; 8] = [_exception_hang; 8];
+        handlers[0] = _start;
+        Self {
+            vectors: [LDR_PC_HANDLER; 8],
+            handlers,
+        }
+    }
+}
+
+#[cfg(target_arch = "arm")]
+impl Default for Vectors {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The vectors, then the AST2500 strap block at 0x40.
 #[cfg(target_arch = "arm")]
 #[repr(C)]
 pub struct SpiHead<const N: usize> {
-    vectors: [u32; 8],
-    handlers: [Handler; 8],
+    vectors: Vectors,
     strap: StrapBlock<N>,
 }
 
@@ -98,22 +129,24 @@ unsafe extern "C" {
 
 #[cfg(target_arch = "arm")]
 impl<const N: usize> SpiHead<N> {
-    /// Reset enters the arch `_start`; every exception halts.
     pub const fn new(writes: [StrapWrite; N]) -> Self {
-        let mut handlers: [Handler; 8] = [_exception_hang; 8];
-        handlers[0] = _start;
         Self {
-            vectors: [LDR_PC_HANDLER; 8],
-            handlers,
+            vectors: Vectors::new(),
             strap: StrapBlock::new(writes),
         }
     }
 }
 
-/// Place a board's SPI image head: `spi_head!(STRAP_WRITES);` with
-/// `STRAP_WRITES: [StrapWrite; N]`.
+/// Place a board's SPI image head: `spi_head!();` for the vectors alone,
+/// or on the AST2500 `spi_head!(STRAP_WRITES);` with
+/// `STRAP_WRITES: [StrapWrite; N]` for the vectors and a strap block.
 #[macro_export]
 macro_rules! spi_head {
+    () => {
+        #[used]
+        #[unsafe(link_section = ".head.aspeed")]
+        static ASPEED_SPI_HEAD: $crate::head::Vectors = $crate::head::Vectors::new();
+    };
     ($writes:path) => {
         #[used]
         #[unsafe(link_section = ".head.aspeed")]

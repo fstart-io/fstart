@@ -1132,7 +1132,7 @@ fn write_aspeed_head_section(out: &mut String) {
     writeln!(out, "    .head : {{ KEEP(*(.head.aspeed)) }} > ROM").unwrap();
     writeln!(
         out,
-        "    ASSERT(ADDR(.head) == ORIGIN(ROM) && SIZEOF(.head) > 0x40, \"ASPEED head must open the image\")\n"
+        "    ASSERT(ADDR(.head) == ORIGIN(ROM) && SIZEOF(.head) >= 0x40, \"ASPEED head must open the image\")\n"
     )
     .unwrap();
 }
