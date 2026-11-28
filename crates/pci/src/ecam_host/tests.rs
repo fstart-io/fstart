@@ -654,6 +654,52 @@ fn the_legacy_vga_root_forwards_the_vga_memory() {
     assert!(pci.forward_legacy_vga_memory(2).is_err());
 }
 
+/// A fixed BAR outside every window is described by its root once forwarded.
+#[test]
+fn a_forwarded_fixed_bar_is_in_its_roots_description() {
+    let info = PciRootInfo {
+        segment: 0,
+        ecam_base: 0xe000_0000,
+        bus_start: 0,
+        bus_end: 0xff,
+    };
+    let root = PciRoot::new(info, [Window.mmio(0xc000_0000, 0x2000_0000)]).unwrap();
+    let mut pci = PciEcam::new([root]).unwrap();
+    let debug = PciFixedBar {
+        address: PciAddress::new(0, 0, 0x1a, 0),
+        register: PCI_BAR0,
+        kind: PciFixedBarType::Memory32,
+        base: 0xfef0_0000,
+        size: 0x1000,
+        prefetchable: false,
+    };
+    // Only a registered fixed BAR is forwarded.
+    assert!(
+        pci.forward_fixed_bar(debug.address, debug.register)
+            .is_err()
+    );
+    pci.add_fixed_bars(&[debug]).unwrap();
+    assert!(
+        pci.roots()[0]
+            .mmio()
+            .all(|range| !range.contains(&0xfef0_0000))
+    );
+    pci.forward_fixed_bar(debug.address, debug.register)
+        .unwrap();
+    assert!(
+        pci.roots()[0]
+            .mmio()
+            .any(|range| range == (0xfef0_0000..=0xfef0_0fff))
+    );
+    // Forwarding does not make the range the allocator's.
+    assert!(
+        pci.roots()[0]
+            .allocatable()
+            .iter()
+            .all(|window| window.base + window.size <= 0xe000_0000)
+    );
+}
+
 #[test]
 fn sibling_bridge_windows_do_not_interleave() {
     let (mut pci, _config_space) = test_pci();

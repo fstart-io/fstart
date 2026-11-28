@@ -489,14 +489,23 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
         let mut fixed_bars = self.southbridge.fixed_pci_bars();
         // Without --debug ehci no console initialized this BAR: let PCI
         // allocate it normally.
-        if cfg!(feature = "ehci-console")
-            && let Some(debug) = B::CONFIG.ehci_debug()
-        {
+        let ehci_debug = cfg!(feature = "ehci-console")
+            .then(|| B::CONFIG.ehci_debug())
+            .flatten()
+            .map(|debug| debug.fixed_bar());
+        if let Some(bar) = ehci_debug {
             fixed_bars
-                .push(debug.fixed_bar())
+                .push(bar)
                 .map_err(|_| ServiceError::InvalidParam)?;
         }
         pci.add_fixed_bars(fixed_bars.as_slice())
+            // The debug BAR sits above the local APIC, past every window:
+            // the root bridge describes it so the OS keeps it there.
+            .and_then(|()| {
+                ehci_debug.map_or(Ok(()), |bar| {
+                    pci.forward_fixed_bar(bar.address, bar.register)
+                })
+            })
             .inspect_err(|error| {
                 fstart_log::error!("pci: fixed BAR reservation failed: {:?}", error);
             })

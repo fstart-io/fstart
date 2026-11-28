@@ -3209,6 +3209,36 @@ impl PciEcam {
             .forward(crate::LEGACY_VGA_MEMORY)
     }
 
+    /// The root bridge of the fixed BAR at `address`/`register`, registered
+    /// by [`Self::add_fixed_bars`], forwards its range too, which its
+    /// description then reports: for a BAR the firmware placed outside the
+    /// allocator's windows (the EHCI debug port's, above the local APIC),
+    /// which `_CRS` must still cover for the OS to keep it.
+    pub fn forward_fixed_bar(
+        &mut self,
+        address: PciAddress,
+        register: u16,
+    ) -> Result<(), PciEcamError> {
+        let bar = *self
+            .fixed_bars
+            .iter()
+            .find(|bar| bar.address == address && bar.register == register)
+            .ok_or(PciEcamError::FixedBarInvalid)?;
+        let root = self
+            .root_of(bar.address)
+            .ok_or(PciEcamError::FixedBarInvalid)?;
+        let window = match bar.kind {
+            PciFixedBarType::Io => PciWindow::io(bar.base, bar.size),
+            PciFixedBarType::Memory32 | PciFixedBarType::Memory64 => {
+                PciWindow::mmio(bar.base, bar.size)
+            }
+        };
+        self.described
+            .get_mut(root)
+            .ok_or(PciEcamError::ConfigError)?
+            .forward(window)
+    }
+
     /// Memory BAR spans actually assigned to discovered devices, including
     /// chipset-fixed BARs. I/O BARs and unassigned/probed slots are excluded.
     pub fn assigned_memory_windows(&self) -> impl Iterator<Item = PciWindow> + '_ {
