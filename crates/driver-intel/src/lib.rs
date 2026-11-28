@@ -8,6 +8,7 @@ pub mod cpu;
 pub mod namespace;
 
 pub mod baytrail;
+pub mod bd82x6x;
 pub mod generic;
 pub mod gm45;
 pub mod gm965;
@@ -26,6 +27,7 @@ pub mod ironlake;
 pub mod lynxpoint;
 pub mod p2sb;
 pub mod pineview;
+pub mod sandybridge;
 pub use fstart_arch::x86::cpu::intel::microcode;
 pub mod skylake;
 pub mod southbridge;
@@ -134,6 +136,17 @@ pub trait IntelNorthbridgeDriver:
     /// Prepare retained DRAM for a clean reset; the southbridge then owns the
     /// actual reset-controller sequence, including any sticky CF9 state.
     fn prepare_resume_reset(&self) {}
+    /// Bring up the DMI link before DRAM training, after the southbridge's
+    /// [`IntelSouthbridgeDriver::prepare_dram_link_init`] (Sandy Bridge
+    /// trains DMI from inside coreboot's raminit, before the controller).
+    fn dram_link_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+    /// Wait for the DMI virtual channels after the southbridge's
+    /// [`IntelSouthbridgeDriver::finish_dram_link_init`].
+    fn finish_dram_link_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
     fn early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
         Ok(())
     }
@@ -297,8 +310,24 @@ pub trait IntelSouthbridgeDriver: Sized {
     /// on bus-0 `devfn` at fixed MMIO `bar`, so USB initialization preserves
     /// that controller's BAR, active state, and debug port routing.
     fn set_ehci_debug(&mut self, _devfn: u8, _bar: u32) {}
+    /// The PCI function (00:1c.n) PCIe root port `port` enumerates as, or
+    /// `None` when it is disabled. A PCH that coalesces its root ports
+    /// (RPFN) renumbers them; others keep the physical order.
+    fn root_port_function(&self, port: u8) -> Option<u8> {
+        Some(port)
+    }
     fn smbus_mut(&mut self) -> Option<&mut dyn fstart_core::services::SmBus> {
         None
+    }
+    /// Southbridge side of the pre-DRAM DMI link, before
+    /// [`IntelNorthbridgeDriver::dram_link_init`].
+    fn prepare_dram_link_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
+    }
+    /// Southbridge side of the pre-DRAM DMI link after the northbridge
+    /// configured its virtual channels.
+    fn finish_dram_link_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
+        Ok(())
     }
     /// Enable the southbridge DMI peer before northbridge negotiation.
     fn prepare_early_post_dram_init(&mut self) -> Result<(), fstart_core::services::ServiceError> {
@@ -352,9 +381,13 @@ mod option_tests {
     fn ironlake_and_ibex_peak_have_distinct_option_keys() {
         pair::<crate::ironlake::IntelIronlake, crate::ibexpeak::IntelIbexPeak>();
     }
-
     #[test]
     fn haswell_and_lynx_point_have_distinct_option_keys() {
         pair::<crate::haswell::Haswell, crate::lynxpoint::LynxPoint>();
+    }
+
+    #[test]
+    fn sandy_bridge_and_the_6_series_pch_have_distinct_option_keys() {
+        pair::<crate::sandybridge::IntelSandybridge, crate::bd82x6x::IntelBd82x6x>();
     }
 }

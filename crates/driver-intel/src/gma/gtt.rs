@@ -25,8 +25,28 @@ pub const GTT_ROTATION_OFFSET: u32 = 262_144;
 pub const GTT_ROTATION_OFFSET_BYTES: u32 = GTT_ROTATION_OFFSET * GTT_PAGE_SIZE;
 
 const FENCE_LEGACY_BASE: usize = 0x3000;
+/// Sandy Bridge moved the 64-bit fences (libgfxinit `Fence_Base`).
+const FENCE_SNB_BASE: usize = 0x10_0000;
 const FENCE_GEN3_BASE: usize = 0x2000;
 const FENCE_COUNT_LEGACY: usize = 16;
+
+/// libgfxinit `Fence_Base` for 64-bit fences.
+const fn fence_base(cpu: Cpu) -> usize {
+    if matches!(cpu, Cpu::Sandybridge | Cpu::Ivybridge) {
+        FENCE_SNB_BASE
+    } else {
+        FENCE_LEGACY_BASE
+    }
+}
+
+/// libgfxinit `Fence_Count`: Ivy Bridge has 32.
+const fn fence_count(cpu: Cpu) -> usize {
+    if matches!(cpu, Cpu::Ivybridge) {
+        32
+    } else {
+        FENCE_COUNT_LEGACY
+    }
+}
 
 /// MMIO-visible GTT page-table entry.
 ///
@@ -452,8 +472,8 @@ pub(crate) fn clear_legacy_fences(mmio: &Mmio, cpu: Cpu) {
             mmio.write32(gen3_fence_offset(fence), 0);
         }
     } else {
-        for fence in 0..FENCE_COUNT_LEGACY {
-            legacy_fence_regs(mmio, fence).lower.set(0);
+        for fence in 0..fence_count(cpu) {
+            legacy_fence_regs(mmio, cpu, fence).lower.set(0);
         }
     }
 }
@@ -473,8 +493,8 @@ pub(crate) fn add_legacy_fence(
     if uses_gen3_fences(cpu) {
         return add_gen3_fence(mmio, surface, first_page, last_page, pitch);
     }
-    for fence in 0..FENCE_COUNT_LEGACY {
-        let regs = legacy_fence_regs(mmio, fence);
+    for fence in 0..fence_count(cpu) {
+        let regs = legacy_fence_regs(mmio, cpu, fence);
         if !regs.lower.is_set(FENCE_LOWER::VALID) {
             let y_major = if surface.tiling == TilingMode::Y {
                 FENCE_LOWER::TILE_WALK_YMAJOR::SET.value
@@ -546,10 +566,10 @@ const fn floor_log2(value: u32) -> u32 {
     31 - value.leading_zeros()
 }
 
-fn legacy_fence_regs(mmio: &Mmio, fence: usize) -> &'static LegacyFenceRegs {
-    // SAFETY: the legacy fence table is a fixed MMIO register array in the
-    // decoded GTTMMADR BAR; callers iterate only over `FENCE_COUNT_LEGACY`.
-    unsafe { mmio.reg_block::<LegacyFenceRegs>(FENCE_LEGACY_BASE + fence * 8) }
+fn legacy_fence_regs(mmio: &Mmio, cpu: Cpu, fence: usize) -> &'static LegacyFenceRegs {
+    // SAFETY: the 64-bit fence table is a fixed MMIO register array in the
+    // decoded GTTMMADR BAR; callers iterate only over `fence_count(cpu)`.
+    unsafe { mmio.reg_block::<LegacyFenceRegs>(fence_base(cpu) + fence * 8) }
 }
 
 /// Gen6+ graphics/GTT flush control register offset (`GFX_FLSH_CNTL_GEN6`).

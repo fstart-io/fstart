@@ -4,8 +4,8 @@
 //! for them, even one with no console of its own (`NoConsole`).
 //!
 //! * `--debug ehci`: the EHCI debug port console (`fstart-driver-usbdebug`)
-//!   on the controller selected by the chipset. The driver reads its debug
-//!   port and the platform reserves the BAR only in an EHCI debug build.
+//!   on the controller selected by the chipset, at a bootstrap BAR until
+//!   the ramstage's PCI allocator places it ([`around_pci_allocation`]).
 //! * `--debug flash-console`: the SPI flash log
 //!   (`fstart-driver-flash-console`, coreboot `CONSOLE_SPI_FLASH`) through
 //!   the ICH SPI controller. The image builder reserves
@@ -39,6 +39,31 @@ pub(crate) fn install<B: crate::IntelBoard>(flash_log: bool) {
     let _ = flash_log;
 }
 
+/// Run `allocate`, PCI enumeration and allocation, with the EHCI debug
+/// console suspended, then move the console to the BAR it assigned
+/// (coreboot `pci_ehci_set_resources`). Its output in between is lost; the
+/// other consoles still have it. A console that cannot be suspended would
+/// fault once its BAR moves, so allocation does not run.
+#[cfg(feature = "ramstage")]
+pub(crate) fn around_pci_allocation<T>(
+    allocate: impl FnOnce() -> T,
+) -> Result<T, fstart_core::services::ServiceError> {
+    #[cfg(feature = "ehci-console")]
+    let console = ehci::EHCI.get();
+    #[cfg(feature = "ehci-console")]
+    if let Some(console) = console {
+        console.suspend()?;
+    }
+    let result = allocate();
+    #[cfg(feature = "ehci-console")]
+    if let Some(console) = console
+        && let Err(error) = console.relocate()
+    {
+        fstart_log::warn!("EHCI debug: console lost after PCI allocation: {:?}", error);
+    }
+    Ok(result)
+}
+
 #[cfg(all(feature = "stage", feature = "ehci-console"))]
 mod ehci {
     use crate::IntelPlatformConfig;
@@ -46,7 +71,7 @@ mod ehci {
     use fstart_driver_usbdebug::EhciDebug;
     use fstart_log::StaticConsole;
 
-    static EHCI: StaticConsole<EhciDebug> = StaticConsole::new();
+    pub(super) static EHCI: StaticConsole<EhciDebug> = StaticConsole::new();
 
     pub(super) fn install<B: crate::IntelBoardFacts>() {
         let Some(config) = B::CONFIG.ehci_debug() else {

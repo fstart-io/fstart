@@ -3,8 +3,11 @@
 //!
 //! Requires a high-speed USB debug gadget with the debug descriptor (not an
 //! ordinary USB serial adapter) directly on the controller's debug port. The
-//! platform enables ECAM and reserves `Config::fixed_bar()` from PCI
-//! allocation, so the controller keeps its BAR for the whole boot.
+//! platform enables ECAM; the console puts BAR0 at `Config::bar` until the
+//! PCI allocator places it: the platform wraps allocation in
+//! [`EhciDebug::suspend`] and [`EhciDebug::relocate`] (coreboot
+//! `usbdebug_disable` and `usbdebug_re_enable`), so the OS finds an ordinary
+//! BAR in the root bridge's windows.
 //!
 //! The first stage resets the controller, resets the debug port and
 //! enumerates the gadget at address 127. Later stages find the debug port
@@ -24,9 +27,7 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 use fstart_core::mmio::{MmioReadOnly, MmioReadWrite};
 use fstart_core::services::{Console, ConsoleDevice, ServiceError};
-use fstart_pci::{
-    PCI_COMMAND_BITS, PciAddress, PciFixedBar, PciFixedBarType, PciType0Config, ecam,
-};
+use fstart_pci::{PCI_COMMAND_BITS, PciAddress, PciType0Config, ecam};
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 use tock_registers::{LocalRegisterCopy, register_bitfields, register_structs};
 use zerocopy::byteorder::{LE, U16};
@@ -156,8 +157,14 @@ const TO_ENDPOINT: u8 = 0x02;
 
 /// coreboot `DBGP_MICROFRAME_RETRIES`: bus errors retried per transaction.
 const HOST_RETRIES: usize = 10;
-/// NAK/NYET retries of a control stage.
-const CONTROL_RETRIES: usize = 32;
+/// NAK/NYET retries of a control stage (coreboot `pipe->timeout = 1000`).
+const CONTROL_RETRIES: usize = 1000;
+/// Controller and debug port bring-ups before giving up (coreboot
+/// `playtimes`).
+const BRING_UP_ATTEMPTS: usize = 3;
+/// Debug port connect-and-reset tries per bring-up (coreboot
+/// `ehci_wait_for_port`).
+const PORT_WAIT_ATTEMPTS: usize = 3;
 /// NAK/NYET retries of a console packet while the host drains them
 /// (coreboot's console pipe timeout).
 const BULK_RETRIES: usize = 1000;
@@ -177,15 +184,9 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn fixed_bar(self) -> PciFixedBar {
-        PciFixedBar {
-            address: PciAddress::new(0, self.bus, self.device, self.function),
-            register: 0x10,
-            kind: PciFixedBarType::Memory32,
-            base: self.bar as u64,
-            size: BAR_SIZE,
-            prefetchable: false,
-        }
+    /// The EHCI function.
+    pub fn address(self) -> PciAddress {
+        PciAddress::new(0, self.bus, self.device, self.function)
     }
 }
 
@@ -226,6 +227,8 @@ struct State {
     rx_pos: usize,
     rx_len: usize,
     online: bool,
+    /// PCI enumeration may move BAR0: drop output until it is relocated.
+    paused: bool,
 }
 
 impl State {
@@ -243,6 +246,7 @@ impl State {
             rx_pos: 0,
             rx_len: 0,
             online: false,
+            paused: false,
         }
     }
 
@@ -645,6 +649,50 @@ impl EhciDebug {
         f(unsafe { &mut *self.state.get() })
     }
 
+    /// Stop touching the controller while PCI enumeration sizes and moves
+    /// BAR0 (coreboot `usbdebug_disable`). Output is dropped until
+    /// [`Self::relocate`]. Fails only when the console is in use, which
+    /// leaves it live: the caller must then not move the BAR.
+    pub fn suspend(&self) -> Result<(), ServiceError> {
+        self.with_state(|s| {
+            if s.online {
+                let _ = s.send();
+            }
+            s.paused = true;
+            Ok(())
+        })
+    }
+
+    /// Resume on the BAR0 the PCI allocator assigned (coreboot
+    /// `usbdebug_re_enable`). Moving the BAR resets nothing: the gadget, its
+    /// address and the data toggles are as they were. Without a memory BAR
+    /// the console goes offline and the error says why.
+    pub fn relocate(&self) -> Result<(), ServiceError> {
+        self.with_state(|s| {
+            s.paused = false;
+            if !s.online {
+                return Ok(());
+            }
+            let moved = self.function().and_then(|(dev, offset)| {
+                // SAFETY: the EHCI function's standard type 0 header in ECAM.
+                let header = unsafe { dev.regs::<PciType0Config>() };
+                // A 32-bit memory BAR, as EHCI's is.
+                let bar = header.bar[0].get();
+                if bar & 0x7 != 0 || bar & !0xf == 0 {
+                    return Err(ServiceError::NoDevice);
+                }
+                // The allocator leaves mastering to the device's driver.
+                header.command.modify(
+                    PCI_COMMAND_BITS::MEMORY_SPACE::SET + PCI_COMMAND_BITS::BUS_MASTER::SET,
+                );
+                s.debug = (bar & !0xf) as usize + offset;
+                Ok(())
+            });
+            s.online = moved.is_ok();
+            moved
+        })
+    }
+
     /// The EHCI function (coreboot `ehci_debug_hw_enable`) and the offset of
     /// its debug port in BAR0.
     fn function(&self) -> Result<(ecam::EcamDevice, usize), ServiceError> {
@@ -740,6 +788,25 @@ impl EhciDebug {
     /// Reset the controller and the debug port and enumerate the gadget
     /// (coreboot `usbdebug_init_`).
     fn bring_up(&mut self, controller: &Controller) -> Result<(), ServiceError> {
+        let mut result = Err(ServiceError::NoDevice);
+        for _ in 0..BRING_UP_ATTEMPTS {
+            result = self.bring_up_once(controller);
+            if result.is_ok() {
+                break;
+            }
+            // coreboot: things didn't work, so remove the claim and retry
+            // from the controller reset.
+            self.state.get_mut().regs().control.modify(
+                Control::OWNER::CLEAR
+                    + Control::ENABLED::CLEAR
+                    + Control::IN_USE::CLEAR
+                    + Control::OUT::CLEAR,
+            );
+        }
+        result
+    }
+
+    fn bring_up_once(&mut self, controller: &Controller) -> Result<(), ServiceError> {
         let op = controller.op;
         let s = self.state.get_mut();
         s.debug = controller.debug;
@@ -778,18 +845,25 @@ impl EhciDebug {
             value.modify(Port::POWER::SET);
             port.set(value.get());
         }
-        wait(|| port.is_set(Port::CONNECTED), 200)?;
-        fstart_arch::udelay(100_000); // connection debounce
-        // coreboot ehci_reset_port(): 50 ms root port reset, enable cleared.
-        let mut value = keep(port.extract());
-        value.modify(Port::ENABLED::CLEAR + Port::RESET::SET);
-        port.set(value.get());
-        fstart_arch::udelay(50_000);
-        let mut value = keep(port.extract());
-        value.modify(Port::RESET::CLEAR);
-        port.set(value.get());
-        wait(|| !port.is_set(Port::RESET), 100)?;
-        if !port.is_set(Port::CONNECTED) || !port.is_set(Port::ENABLED) {
+        // coreboot ehci_wait_for_port(): try the connect and the root port
+        // reset (ehci_reset_port(), 50 ms, enable cleared) a few times.
+        let connect_and_reset = || {
+            if wait(|| port.is_set(Port::CONNECTED), 100).is_err() {
+                return false;
+            }
+            fstart_arch::udelay(100_000); // connection debounce
+            let mut value = keep(port.extract());
+            value.modify(Port::ENABLED::CLEAR + Port::RESET::SET);
+            port.set(value.get());
+            fstart_arch::udelay(50_000);
+            let mut value = keep(port.extract());
+            value.modify(Port::RESET::CLEAR);
+            port.set(value.get());
+            wait(|| !port.is_set(Port::RESET), 100).is_ok()
+                && port.is_set(Port::CONNECTED)
+                && port.is_set(Port::ENABLED)
+        };
+        if !(0..PORT_WAIT_ATTEMPTS).any(|_| connect_and_reset()) {
             return Err(ServiceError::NoDevice); // not a directly attached HS device
         }
         let claim = Control::OWNER::SET + Control::ENABLED::SET + Control::IN_USE::SET;
@@ -874,6 +948,9 @@ impl Console for EhciDebug {
     }
     fn write_bytes(&self, bytes: &[u8]) -> Result<(), ServiceError> {
         self.with_state(|s| {
+            if s.paused {
+                return Ok(());
+            }
             if !s.online {
                 return Err(ServiceError::NotInitialized);
             }
@@ -892,11 +969,17 @@ impl Console for EhciDebug {
         })
     }
     fn flush(&self) -> Result<(), ServiceError> {
-        self.with_state(|s| if s.online { s.send() } else { Ok(()) })
+        self.with_state(|s| {
+            if s.online && !s.paused {
+                s.send()
+            } else {
+                Ok(())
+            }
+        })
     }
     fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
         self.with_state(|s| {
-            if !s.online {
+            if !s.online || s.paused {
                 return Ok(None);
             }
             if s.rx_pos == s.rx_len {
@@ -989,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_bar_and_nonblocking_lock_policy() {
+    fn address_and_nonblocking_lock_policy() {
         let mut config = Config {
             ecam_base: 0xe000_0000,
             bus: 0,
@@ -998,8 +1081,7 @@ mod tests {
             bar: 0xfed0_4000,
         };
         let console = EhciDebug::new(config).unwrap();
-        assert_eq!(config.fixed_bar().address, PciAddress::new(0, 0, 0x1a, 7));
-        assert_eq!(config.fixed_bar().size, 0x1000);
+        assert_eq!(config.address(), PciAddress::new(0, 0, 0x1a, 7));
         console.busy.store(true, Ordering::Relaxed);
         assert!(matches!(console.write_byte(0), Err(ServiceError::IoError)));
         config.bar += 1;
@@ -1007,6 +1089,30 @@ mod tests {
             EhciDebug::new(config),
             Err(ServiceError::InvalidParam)
         ));
+    }
+
+    #[test]
+    fn a_suspended_console_drops_output_without_touching_the_controller() {
+        let mut console = EhciDebug::new(Config {
+            ecam_base: 0xe000_0000,
+            bus: 0,
+            device: 0x1a,
+            function: 0,
+            bar: 0xfef0_0000,
+        })
+        .unwrap();
+        // Online with no debug port mapped: any MMIO access would fault.
+        console.state.get_mut().online = true;
+        assert!(console.suspend().is_ok());
+        assert!(console.write_bytes(&[0; 32]).is_ok());
+        assert!(console.flush().is_ok());
+        assert_eq!(console.read_byte().unwrap(), None);
+        let state = console.state.get_mut();
+        assert!(state.paused);
+        assert_eq!(state.tx_len, 0);
+        // A console in use cannot be suspended.
+        console.busy.store(true, Ordering::Relaxed);
+        assert!(matches!(console.suspend(), Err(ServiceError::IoError)));
     }
 
     #[test]

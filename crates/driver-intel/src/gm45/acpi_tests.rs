@@ -89,6 +89,7 @@ fn x200_sleep_and_passive_cooling_namespace_resolves() {
         ..H8Config::new(
             H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
             0x11,
+            0x18,
             "IBM0068",
         )
     };

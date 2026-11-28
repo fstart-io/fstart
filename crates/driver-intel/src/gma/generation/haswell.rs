@@ -291,7 +291,13 @@ impl GenerationOps for Haswell {
         )
     }
 
-    fn disable_output(mmio: &Mmio, cpu: Cpu, pipe: Pipe, port: Port) -> Result<(), GmaError> {
+    fn disable_output(
+        mmio: &Mmio,
+        cpu: Cpu,
+        pipe: Pipe,
+        port: Port,
+        _state: &mut crate::gma::state::GenerationState,
+    ) -> Result<(), GmaError> {
         let mut sink = *mmio;
         disable_output_on(&mut sink, cpu, pipe, port)
     }
@@ -1927,6 +1933,7 @@ mod tests {
             vtotal: 1125,
             pixel_clock_khz: 148_500,
             flags: ModeFlags::PHSYNC | ModeFlags::PVSYNC,
+            bpc: None,
         }
     }
 

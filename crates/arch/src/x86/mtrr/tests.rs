@@ -261,3 +261,41 @@ fn sipi_snapshot_copies_every_fixed_variable_and_pat_msr_with_enable_last() {
     assert_eq!(no_fixed.last().unwrap().index, IA32_MTRR_DEF_TYPE);
     assert!(snapshot_msrs(caps(MAX_MTRRS + 1), true, |_| 0).is_err());
 }
+
+#[test]
+fn reserved_pages_inside_ram_are_carved_out_of_one_cover() {
+    // ThinkPad X220, 16 GiB: Sandy Bridge reserves two 2 MiB pages inside low
+    // DRAM, and its graphics aperture is the WC range. Covering 0..2 GiB per
+    // RAM range takes 13 MTRRs; one cover with UC holes fits in 10.
+    let ram = [
+        (0, 0xa0000),
+        (ONE_MIB, 0x2000_0000 - ONE_MIB),
+        (0x2020_0000, 0x1fe0_0000),
+        (0x4020_0000, 0x3fe0_0000),
+        (0x1_0000_0000, 0x4_7b60_0000 - 0x1_0000_0000),
+    ];
+    let wc = [(0x9000_0000, 0x1000_0000)];
+    let plan = Plan::build(caps(10), ram, wc).unwrap();
+    assert_eq!(plan.default, CacheType::Uncacheable);
+    assert_eq!(plan.ranges.len(), 10);
+    assert_span(&plan, ONE_MIB, 0x2000_0000, CacheType::WriteBack);
+    assert_span(&plan, 0x2000_0000, 0x2020_0000, CacheType::Uncacheable);
+    assert_span(&plan, 0x2020_0000, 0x4000_0000, CacheType::WriteBack);
+    assert_span(&plan, 0x4000_0000, 0x4020_0000, CacheType::Uncacheable);
+    assert_span(&plan, 0x4020_0000, 0x8000_0000, CacheType::WriteBack);
+    assert_span(&plan, 0x8000_0000, 0x9000_0000, CacheType::Uncacheable);
+    assert_span(&plan, 0x9000_0000, 0xa000_0000, CacheType::WriteCombining);
+    assert_span(&plan, 0xa000_0000, 0x1_0000_0000, CacheType::Uncacheable);
+    assert_span(&plan, 0x1_0000_0000, 0x4_7b60_0000, CacheType::WriteBack);
+    assert_span(&plan, 0x4_7b60_0000, 1 << 36, CacheType::Uncacheable);
+}
+
+#[test]
+fn a_cover_never_spans_a_write_combining_aperture() {
+    // Bridging the aperture would overlap WB and WC, which is undefined.
+    let ram = [(0, 0x8000_0000), (0x9000_0000, 0x7000_0000)];
+    let plan = Plan::build(caps(8), ram, [(0x8000_0000, 0x1000_0000)]).unwrap();
+    assert_span(&plan, ONE_MIB, 0x8000_0000, CacheType::WriteBack);
+    assert_span(&plan, 0x8000_0000, 0x9000_0000, CacheType::WriteCombining);
+    assert_span(&plan, 0x9000_0000, 0x1_0000_0000, CacheType::WriteBack);
+}

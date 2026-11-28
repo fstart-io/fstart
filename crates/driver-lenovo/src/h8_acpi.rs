@@ -31,6 +31,23 @@ pub const fn ec<N: PcNamespace>() -> AcpiPath {
     N::LPC.child("EC")
 }
 
+/// `\_GPE._Lgg` on the EC's wake GPE (coreboot `acpi/gpe.asl`): reading
+/// `EC.WAKE` acknowledges the wake events.
+#[must_use]
+pub fn wake_gpe_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
+    use fstart_acpi::Aml;
+    use fstart_acpi::aml::{If, Method, Path, Scope};
+    let wake = ec::<N>().child("WAKE");
+    let wake = Path::new(wake.as_str());
+    // Evaluating the field is the read; the result is not needed.
+    let read = If::new(&wake, alloc::vec![]);
+    let method = alloc::format!("_L{:02X}", cfg.wake_gpe);
+    let handler = Method::new(Path::new(&method), 0, false, alloc::vec![&read]);
+    let mut bytes = Vec::new();
+    Scope::new(Path::new("\\_GPE"), alloc::vec![&handler]).to_aml_bytes(&mut bytes);
+    bytes
+}
+
 /// Produce all H8-related DSDT fragments: the EC device on the platform's
 /// LPC bridge and the root-scope objects that reach it.
 #[must_use]
@@ -157,6 +174,7 @@ fn root_helpers_aml(cfg: &H8Config) -> Vec<u8> {
 /// The relative `EC__` device plus its sibling raw-resource devices.
 fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
     let ec_gpe = cfg.ec_gpe as u64;
+    let wake_gpe = cfg.wake_gpe as u64;
     let os_data = cfg.resources.os.data.raw();
     let os_command = cfg.resources.os.command.raw();
     let smm_data = cfg.resources.smm().data.raw();
@@ -216,8 +234,7 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
                     Offset(0x32),
                     , 2,
                     WKLD, 1,
-                    Offset(0x33),
-                    , 4,
+                    , 1,
                     WKFN, 1,
                     Offset(0x38),
                     B0ST, 4,
@@ -496,7 +513,7 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
                 Device("LID_") {
                     Name("_HID", "PNP0C0D");
                     Method("_LID", 0, NotSerialized) { Return(LIDS); }
-                    Method("_PRW", 0, NotSerialized) { Return(Package(0x18u32, 0x03u32)); }
+                    Method("_PRW", 0, NotSerialized) { Return(Package(#{dword wake_gpe}, 0x03u32)); }
                     Method("_PSW", 1, NotSerialized) {
                         If (Arg0) { WKLD = 1u32; } Else { WKLD = 0u32; }
                     }
@@ -517,7 +534,7 @@ fn ec_device_aml<N: PcNamespace>(cfg: &H8Config) -> Vec<u8> {
 
                 Device("SLPB") {
                     Name("_HID", EisaId("PNP0C0E"));
-                    Method("_PRW", 0, NotSerialized) { Return(Package(0x18u32, 0x03u32)); }
+                    Method("_PRW", 0, NotSerialized) { Return(Package(#{dword wake_gpe}, 0x03u32)); }
                     Method("_PSW", 1, NotSerialized) {
                         If (Arg0) {
                             FNKY = 6u32;
@@ -1542,6 +1559,7 @@ mod tests {
                 ..H8Config::new(
                     H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
                     0x11,
+                    0x18,
                     "IBM0068",
                 )
             };
@@ -1631,6 +1649,7 @@ mod tests {
             ..H8Config::new(
                 H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
                 22,
+                0x18,
                 "LEN0268",
             )
         };
@@ -1694,6 +1713,7 @@ mod tests {
             ..H8Config::new(
                 H8Resources::new(EcPorts::new(0x72, 0x76), 0x2600, 0x25e0),
                 0x12,
+                0x18,
                 "IBM0068",
             )
         };
@@ -1762,6 +1782,7 @@ mod tests {
         let with_switch = H8Config::new(
             H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
             22,
+            0x18,
             "LEN0268",
         );
         assert!(with_switch.has_radio_switch);
@@ -1774,5 +1795,26 @@ mod tests {
         };
         let aml_without = dsdt_aml::<TestNamespace>(&without_switch);
         assert!(!aml_without.windows(4).any(|w| w == b"WLSW"));
+    }
+
+    #[test]
+    fn wake_handler_and_prw_name_the_same_gpe() {
+        use crate::{ec::EcPorts, h8::H8Resources};
+        let cfg = H8Config::new(
+            H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
+            0x11,
+            0x1d,
+            "IBM0068",
+        );
+        assert!(
+            wake_gpe_aml::<TestNamespace>(&cfg)
+                .windows(4)
+                .any(|w| w == b"_L1D")
+        );
+        // Package(0x1d, 3) in LID_ and SLPB.
+        let aml = dsdt_aml::<TestNamespace>(&cfg);
+        // Return(Package(2) { DWord 0x1d, 3 }) in LID_ and SLPB.
+        let prw = [0xa4, 0x12, 0x09, 0x02, 0x0c, 0x1d, 0, 0, 0, 0x0a, 0x03];
+        assert_eq!(aml.windows(prw.len()).filter(|w| *w == prw).count(), 2);
     }
 }

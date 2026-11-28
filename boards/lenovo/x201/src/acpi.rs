@@ -104,13 +104,8 @@ pub fn dsdt_aml<N: PcNamespace>(h8: &H8Config, gpio_base: u16, digitizer: bool) 
                 Return(Package(0u32, 0u32));
             }
         }
-        // acpi/gpe.asl: the EC wake.
-        Scope("\\_GPE") {
-            Method("_L18", 0, NotSerialized) {
-                If (#{const path 5 ec::<N>().child("WAKE")}) {}
-            }
-        }
     });
+    aml.extend(h8_acpi::wake_gpe_aml::<N>(h8));
     aml.extend(dock_aml::<N>(gpio_base));
     if digitizer {
         aml.extend(
@@ -262,7 +257,7 @@ mod tests {
         iasl(&dir, &["-d", "dsdt.aml"]);
         let source = fs::read_to_string(dir.join("dsdt.dsl")).unwrap();
         for method in [
-            "_Q18", "_Q37", "_Q45", "_Q50", "_Q58", "_DCK", "_L18", "UCMS",
+            "_Q18", "_Q37", "_Q45", "_Q50", "_Q58", "_DCK", "_L1D", "UCMS",
         ] {
             assert!(
                 source.contains(&std::format!("Method ({method},")),

@@ -620,6 +620,350 @@ fn clear_sink_and_source_training(
     Ok(())
 }
 
+/// libgfxinit `Minimum_Lane_Count`: the fewest lanes (1, 2 or 4) that carry
+/// `mode` at `bpc` bits per colour on `rate`.
+pub(crate) const fn minimum_lane_count(rate: DpLinkRate, mode: Mode, bpc: u8) -> Option<u8> {
+    let symbol_rate_hz = match rate {
+        DpLinkRate::Hbr => 270_000_000u64,
+        DpLinkRate::Hbr2 => 540_000_000u64,
+        _ => 162_000_000u64,
+    };
+    let lane_pixels_per_second = symbol_rate_hz * 8 / 3 / bpc as u64;
+    let dotclock = mode.pixel_clock_khz as u64 * 1000;
+    match dotclock.div_ceil(lane_pixels_per_second) {
+        1 => Some(1),
+        2 => Some(2),
+        3 | 4 => Some(4),
+        _ => None,
+    }
+}
+
+const fn link_setting(
+    caps: ReceiverCaps,
+    rate: DpLinkRate,
+    mode: Mode,
+    bpc: u8,
+) -> Option<DpLinkConfig> {
+    match minimum_lane_count(rate, mode, bpc) {
+        Some(lanes) if lanes <= caps.max_lane_count => Some(DpLinkConfig {
+            link_rate: rate,
+            lane_count: lanes,
+            enhanced_framing: caps.enhanced_framing,
+            tps3_supported: caps.tps3_supported,
+            aux_rd_interval: caps.aux_rd_interval,
+        }),
+        _ => None,
+    }
+}
+
+/// libgfxinit `DP_Info.Preferred_Link_Setting`: the sink's maximum rate with
+/// the fewest lanes that carry the mode.
+pub(crate) const fn preferred_link_setting(
+    caps: ReceiverCaps,
+    mode: Mode,
+    bpc: u8,
+) -> Option<DpLinkConfig> {
+    link_setting(caps, caps.max_link_rate, mode, bpc)
+}
+
+/// libgfxinit `DP_Info.Next_Link_Setting`: the next lower rate, again with
+/// the fewest lanes. `None` once the lowest rate failed.
+pub(crate) const fn next_link_setting(
+    caps: ReceiverCaps,
+    current: DpLinkConfig,
+    mode: Mode,
+    bpc: u8,
+) -> Option<DpLinkConfig> {
+    let rate = match current.link_rate {
+        DpLinkRate::Hbr2 => DpLinkRate::Hbr,
+        DpLinkRate::Hbr => DpLinkRate::Rbr,
+        _ => return None,
+    };
+    link_setting(caps, rate, mode, bpc)
+}
+
+const DPCD_EDP_REV: u32 = 0x00700;
+const DPCD_SUPPORTED_LINK_RATES: u32 = 0x00010;
+const DPCD_SINK_CONTROL: u32 = 0x00600;
+const EDP_REV_1_4: u8 = 0x03;
+
+fn read_caps(mmio: &Mmio, aux: AuxRegs) -> Result<ReceiverCaps, GmaError> {
+    let mut bytes = [0u8; RECEIVER_CAPS_LEN];
+    native_aux_read(mmio, aux, DPCD_RECEIVER_CAPS, &mut bytes)?;
+    ReceiverCaps::parse(&bytes)
+}
+
+fn read_edp_rates(mmio: &Mmio, aux: AuxRegs, caps: ReceiverCaps) -> ReceiverCaps {
+    let mut edp = [0u8; 3];
+    if native_aux_read(mmio, aux, DPCD_EDP_REV, &mut edp).is_err() || edp[0] < EDP_REV_1_4 {
+        return caps;
+    }
+    let mut table = [0u8; 16];
+    if native_aux_read(mmio, aux, DPCD_SUPPORTED_LINK_RATES, &mut table).is_err() {
+        return caps;
+    }
+    let mut max = 0u32;
+    let mut index = 0;
+    while index < 8 {
+        let rate = u16::from_le_bytes([table[2 * index], table[2 * index + 1]]) as u32;
+        if rate == 0 {
+            break;
+        }
+        if rate > max {
+            max = rate;
+        }
+        index += 1;
+    }
+    let khz = max * 20;
+    let rate = if khz >= 540_000 {
+        Some(DpLinkRate::Hbr2)
+    } else if khz >= 270_000 {
+        Some(DpLinkRate::Hbr)
+    } else if khz >= 162_000 {
+        Some(DpLinkRate::Rbr)
+    } else {
+        None
+    };
+    rate.map_or(caps, |max_link_rate| ReceiverCaps {
+        max_link_rate,
+        ..caps
+    })
+}
+
+/// The DP part of libgfxinit `Connector_Info.Preferred_Link_Setting` after
+/// panel power: read the caps and eDP rates, pick the preferred link and wake
+/// a DPCD 1.1+ sink. Returns the caps for [`next_link_setting`].
+pub(crate) fn prepare_sink(
+    mmio: &Mmio,
+    aux: AuxRegs,
+    mode: Mode,
+    bpc: u8,
+) -> Result<(ReceiverCaps, DpLinkConfig), GmaError> {
+    let caps = read_edp_rates(mmio, aux, read_caps(mmio, aux)?);
+    let link = preferred_link_setting(caps, mode, bpc).ok_or(GmaError::ModeUnavailable)?;
+    if caps.dpcd_revision >= 0x11 {
+        let _ = native_aux_write(mmio, aux, DPCD_SINK_CONTROL, &[1]);
+    }
+    Ok((caps, link))
+}
+
+/// A DP source port driven by [`train_dp`] (libgfxinit's `DP_Training`
+/// generic parameters).
+pub(crate) trait DpSource {
+    /// `TPS3_Supported`: the source can send training pattern 3.
+    const TPS3_SUPPORTED: bool = false;
+    /// `Max_V_Swing`.
+    fn max_voltage_swing(&self) -> VoltageSwing;
+    /// `Max_Pre_Emph` for the swing level of a train set.
+    fn max_pre_emphasis(&self, swing: VoltageSwing) -> PreEmphasis;
+    /// `Set_Pattern`.
+    fn set_pattern(&mut self, pattern: TrainingPattern);
+    /// `Set_Signal_Levels`.
+    fn set_signal_levels(&mut self, train_set: TrainSet);
+    /// `Off`, called when training failed.
+    fn off(&mut self);
+}
+
+fn source_training_set<S: DpSource>(source: &S, train_set: TrainSet) -> u8 {
+    let mut value = (train_set.voltage_swing as u8) | ((train_set.pre_emphasis as u8) << 3);
+    if train_set.voltage_swing == source.max_voltage_swing() {
+        value |= 0x04;
+    }
+    if train_set.pre_emphasis == source.max_pre_emphasis(train_set.voltage_swing) {
+        value |= 0x20;
+    }
+    value
+}
+
+fn source_sink_init(mmio: &Mmio, aux: AuxRegs, link: DpLinkConfig) -> Result<(), GmaError> {
+    let lanes = link.lane_count | if link.enhanced_framing { 0x80 } else { 0 };
+    native_aux_write(
+        mmio,
+        aux,
+        DPCD_LINK_BW_SET,
+        &[link.link_rate.dpcd_code(), lanes],
+    )?;
+    native_aux_write(mmio, aux, DPCD_DOWNSPREAD_CTRL, &[0x00, 0x01])
+}
+
+fn source_sink_set_training_pattern<S: DpSource>(
+    mmio: &Mmio,
+    aux: AuxRegs,
+    source: &S,
+    link: DpLinkConfig,
+    pattern: TrainingPattern,
+    train_set: TrainSet,
+) -> Result<(), GmaError> {
+    let mut data = [0u8; 5];
+    data[0] = pattern.encode();
+    let mut len = 1;
+    if pattern != TrainingPattern::None {
+        let set = source_training_set(source, train_set);
+        for byte in data.iter_mut().skip(1).take(usize::from(link.lane_count)) {
+            *byte = set;
+        }
+        len += usize::from(link.lane_count);
+    }
+    native_aux_write(mmio, aux, DPCD_TRAINING_PATTERN_SET, &data[..len])
+}
+
+fn source_sink_set_signal_levels<S: DpSource>(
+    mmio: &Mmio,
+    aux: AuxRegs,
+    source: &S,
+    link: DpLinkConfig,
+    train_set: TrainSet,
+) -> Result<(), GmaError> {
+    let data = [source_training_set(source, train_set); 4];
+    native_aux_write(
+        mmio,
+        aux,
+        DPCD_TRAINING_LANE0_SET,
+        &data[..usize::from(link.lane_count)],
+    )
+}
+
+struct SourceAdjustResult {
+    success: bool,
+    cr_done: bool,
+    eq_done: bool,
+}
+
+fn source_sink_adjust_training<S: DpSource>(
+    mmio: &Mmio,
+    aux: AuxRegs,
+    source: &S,
+    link: DpLinkConfig,
+    train_set: &mut TrainSet,
+    cr_was_done: bool,
+) -> SourceAdjustResult {
+    let mut bytes = [0u8; LINK_STATUS_LEN];
+    let status = native_aux_read(mmio, aux, DPCD_LINK_STATUS, &mut bytes)
+        .and_then(|()| LinkStatus::parse(&bytes));
+    let Ok(status) = status else {
+        return SourceAdjustResult {
+            success: false,
+            cr_done: false,
+            eq_done: false,
+        };
+    };
+    let cr_done = status.clock_recovery_done(link.lane_count);
+    let eq_done = status.channel_eq_done(link.lane_count);
+    let success = cr_done || !cr_was_done;
+    if success && !eq_done {
+        let mut swing = VoltageSwing::Level0;
+        let mut emphasis = PreEmphasis::Level0;
+        for lane in 0..link.lane_count {
+            let request = status.requested_train_set(lane);
+            swing = swing.max(request.voltage_swing);
+            emphasis = emphasis.max(request.pre_emphasis);
+        }
+        train_set.voltage_swing = swing.min(source.max_voltage_swing());
+        train_set.pre_emphasis = emphasis.min(source.max_pre_emphasis(train_set.voltage_swing));
+    }
+    SourceAdjustResult {
+        success,
+        cr_done,
+        eq_done,
+    }
+}
+
+/// libgfxinit `DP_Training.Train_DP`.
+pub(crate) fn train_dp<S: DpSource>(
+    mmio: &Mmio,
+    aux: AuxRegs,
+    source: &mut S,
+    link: DpLinkConfig,
+) -> Result<(), GmaError> {
+    let eq_pattern = if S::TPS3_SUPPORTED && link.tps3_supported {
+        TrainingPattern::Pattern3
+    } else {
+        TrainingPattern::Pattern2
+    };
+    let mut train_set = TrainSet {
+        voltage_swing: VoltageSwing::Level0,
+        pre_emphasis: PreEmphasis::Level0,
+    };
+    source.set_pattern(TrainingPattern::Pattern1);
+    source.set_signal_levels(train_set);
+    let mut success = source_sink_init(mmio, aux, link).is_ok()
+        && source_sink_set_training_pattern(
+            mmio,
+            aux,
+            source,
+            link,
+            TrainingPattern::Pattern1,
+            train_set,
+        )
+        .is_ok();
+
+    let mut cr_done = false;
+    let mut eq_done = false;
+    if success {
+        let mut retries = 0u8;
+        for _ in 0..CLOCK_RECOVERY_MAX_TRIES {
+            delay_us(clock_recovery_delay_us(link));
+            let last = train_set;
+            let adjust =
+                source_sink_adjust_training(mmio, aux, source, link, &mut train_set, cr_done);
+            (success, cr_done, eq_done) = (adjust.success, adjust.cr_done, adjust.eq_done);
+            if cr_done || !success {
+                break;
+            }
+            if train_set.voltage_swing == last.voltage_swing {
+                if retries == CLOCK_RECOVERY_MAX_SAME_VS_TRIES {
+                    break;
+                }
+                retries += 1;
+            } else {
+                if last.voltage_swing == source.max_voltage_swing() {
+                    break;
+                }
+                retries = 0;
+            }
+            source.set_signal_levels(train_set);
+            success = source_sink_set_signal_levels(mmio, aux, source, link, train_set).is_ok();
+            if !success {
+                break;
+            }
+        }
+    }
+
+    success = success && cr_done;
+    if success {
+        source.set_pattern(eq_pattern);
+        success = source_sink_set_training_pattern(mmio, aux, source, link, eq_pattern, train_set)
+            .is_ok();
+    }
+    if success {
+        for _ in 0..CHANNEL_EQ_MAX_TRIES {
+            delay_us(channel_eq_delay_us(link));
+            let adjust =
+                source_sink_adjust_training(mmio, aux, source, link, &mut train_set, cr_done);
+            (success, cr_done, eq_done) = (adjust.success, adjust.cr_done, adjust.eq_done);
+            if eq_done || !success {
+                break;
+            }
+            source.set_signal_levels(train_set);
+            success = source_sink_set_signal_levels(mmio, aux, source, link, train_set).is_ok();
+            if !success {
+                break;
+            }
+        }
+    }
+
+    success =
+        source_sink_set_training_pattern(mmio, aux, source, link, TrainingPattern::None, train_set)
+            .is_ok();
+    source.set_pattern(TrainingPattern::None);
+    if success && eq_done {
+        Ok(())
+    } else {
+        source.off();
+        Err(GmaError::HardwareError)
+    }
+}
+
 fn set_source_and_sink_training(
     mmio: &Mmio,
     port: Port,

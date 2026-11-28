@@ -115,7 +115,9 @@ _car_enhanced_cold:
     rdmsr
     testl $0xc00, %eax        /* E or FE means reset was not clean. */
     jz _car_enhanced_clear
-    movw $0xcf9, %dx
+    movw $0xcf9, %dx          /* Hard reset: SYS_RST, then RST_CPU. */
+    movb $2, %al
+    outb %al, %dx
     movb $6, %al
     outb %al, %dx
     jmp _car_enhanced_fail

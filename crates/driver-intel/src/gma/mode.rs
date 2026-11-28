@@ -44,6 +44,10 @@ pub struct Mode {
     pub pixel_clock_khz: u32,
     /// Mode flags.
     pub flags: ModeFlags,
+    /// Bits per colour the sink asks for (EDID 1.4 digital input depth,
+    /// clamped to 8), or `None` for the port's default (libgfxinit
+    /// `Auto_BPC`).
+    pub bpc: Option<u8>,
 }
 
 impl Mode {
@@ -59,6 +63,7 @@ impl Mode {
         vtotal: 806,
         pixel_clock_khz: 65_000,
         flags: ModeFlags::NHSYNC.union(ModeFlags::NVSYNC),
+        bpc: None,
     };
 
     /// Return true when the timing fields are monotonic and non-zero.

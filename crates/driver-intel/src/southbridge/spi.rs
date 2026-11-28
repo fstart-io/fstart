@@ -1,5 +1,5 @@
-//! Allocation-free rflasher adapter for firmware ICH7/ICH8/ICH9, 5/8 Series,
-//! Bay Trail, and Sunrise Point SPI access.
+//! Allocation-free rflasher adapter for firmware ICH7/ICH8/ICH9, 5/6/7/8
+//! Series, Bay Trail, and Sunrise Point SPI access.
 //!
 //! The controller is not a general firmware flasher: all accesses are bounded
 //! to a caller-supplied, linked mutable extent. Construct/use it only from RAM;
@@ -204,9 +204,11 @@ impl CacheSpi {
         .ok_or(ServiceError::NotSupported)?;
         let host = match entry.chipset {
             IchChipset::Ich7 | IchChipset::Ich8 => FirmwareHost::Rcba { spi_offset: 0x3020 },
-            // The 5 and 8 Series PCHs keep ICH9's SPI block and offset.
+            // The 5, 6, 7 and 8 Series PCHs keep ICH9's SPI block and offset.
             IchChipset::Ich9
             | IchChipset::Series5IbexPeak
+            | IchChipset::Series6CougarPoint
+            | IchChipset::Series7PantherPoint
             | IchChipset::Series8LynxPoint
             | IchChipset::Series8LynxPointLp => FirmwareHost::Rcba { spi_offset: 0x3800 },
             IchChipset::BayTrail => FirmwareHost::SilvermontSbase,

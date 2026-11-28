@@ -352,9 +352,7 @@ impl<S: Soc> Hw<S> {
         fstart_driver_amd::fch::acpimmio::enable_hpet_ioapic(self.fch.acpi());
         // SAFETY: decoded IOAPIC MMIO, BSP only.
         let fch_ioapic = unsafe { IoApic::new(fstart_driver_amd::fch::IOAPIC as usize) };
-        fch_ioapic.set_id(0);
-        fch_ioapic.mask_all();
-        fch_ioapic.route_i8259(bsp_apic);
+        fch_ioapic.setup_gsi0(0, bsp_apic);
         for die in &self.dies {
             // SAFETY: as above, mapped by the silicon init.
             let nbio = unsafe { IoApic::new(ioapic(die.index()) as usize) };

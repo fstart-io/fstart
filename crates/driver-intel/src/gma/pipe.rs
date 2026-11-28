@@ -82,11 +82,6 @@ impl PipeConfig {
         }
         Ok(Self::encode_range(height, width))
     }
-
-    /// Encoded pipe source register value.
-    pub const fn pipesrc(self) -> u32 {
-        Self::encode_range(self.mode.vdisplay, self.mode.hdisplay)
-    }
 }
 
 /// Legacy/GMCH `PIPECONF.BPC` selector for a port.
@@ -123,6 +118,5 @@ mod tests {
         assert_eq!(pipe.htotal(), 0x053f_03ff);
         assert_eq!(pipe.hblank(), 0x053f_03ff, "blanking runs to the line end");
         assert_eq!(pipe.vblank(), 0x0325_02ff, "blanking runs to the frame end");
-        assert_eq!(pipe.pipesrc(), 0x03ff_02ff);
     }
 }

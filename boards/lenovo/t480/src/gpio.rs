@@ -26,6 +26,9 @@ pub const GPIO_DGFX_PWRGD: Pad = pad(Group::F, 3);
 /// GPE0 DW0..DW2 group mapping: puts `GPP_C22` (`-EC_SCI`) at GPE 22 (`0x16`)
 /// and `GPP_C23` (`-EC_WAKE`) at GPE 23 (`0x17`), matching `THINKPAD_EC_GPE = 22`.
 pub const GPE_GROUPS: [Group; 3] = [Group::C, Group::D, Group::E];
+/// The GPEs of `-EC_SCI` and `-EC_WAKE` under [`GPE_GROUPS`].
+pub const EC_SCI_GPE: u8 = 22;
+pub const EC_WAKE_GPE: u8 = 23;
 
 pub const PAD_TABLE: &[PadConfig] = &[
     // ------- GPIO Community 0 -------

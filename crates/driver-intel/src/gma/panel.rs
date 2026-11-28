@@ -1,12 +1,15 @@
-//! Panel metadata helpers for Intel GMA display initialization.
+//! Panel metadata and power sequencing for Intel GMA display initialization.
 //!
-//! This module intentionally models VBT/libgfxinit panel data as pure values.
-//! Hardware sequencing still lives in generation code and is not changed by
-//! these helpers.
+//! VBT/libgfxinit panel data is modeled as pure values. [`PanelSequencer`]
+//! ports libgfxinit's `Panel` package (VDD override, power on/off with its
+//! power-up and power-cycle timers, backlight gate) for the generations that
+//! drive their panel through it.
 
+use crate::gma::mmio::{Mmio, delay_until, delay_us, now_us};
 use crate::gma::mode::Mode;
 use crate::gma::regs::{
     BXT_BLC_PWM_CTL, CPU_BLC_PWM_CTL, PP_CONTROL, PP_DIVISOR, PP_OFF_DELAYS, PP_ON_DELAYS,
+    PP_STATUS,
 };
 use crate::gma::types::Port;
 
@@ -604,6 +607,271 @@ const PP_OFF_DELAYS_BL_OFF_PWR_DOWN_MASK: u32 = PP_OFF_DELAYS::BL_OFF_TO_PWR_DOW
 const PP_DIVISOR_PWR_CYC_DELAY_MASK: u32 = PP_DIVISOR::PWR_CYC_DELAY.val(0x1f).value;
 const CPU_BLC_PWM_DATA_BL_DUTY_CYC_MASK: u32 = CPU_BLC_PWM_CTL::BL_DUTY_CYCLE.val(0xffff).value;
 const BXT_BLC_PWM_CTL_ENABLE: u32 = BXT_BLC_PWM_CTL::ENABLE::SET.value;
+
+const PP_STATUS_ENABLED: u32 = PP_STATUS::ON::SET.value;
+const PP_STATUS_PWR_SEQ_PROGRESS_MASK: u32 = PP_STATUS::SEQUENCE.val(3).value;
+/// `Wait_On` and `Off` sequencer timeouts.
+const PP_ON_TIMEOUT_US: u64 = 1_000_000;
+const PP_OFF_TIMEOUT_US: u64 = 600_000;
+
+/// libgfxinit `Panel` package state for the panel (`Panel_1`): its port,
+/// the delays read by `Setup_PP_Sequencer` and the power-up and power-cycle
+/// timers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PanelState {
+    /// `Panel_Ports (Panel_1)`, or `None` without a panel.
+    pub port: Option<Port>,
+    /// `Delays_US`.
+    pub delays: PanelPowerDelays,
+    /// `Power_Cycle_Timer`: earliest time panel power may come back.
+    pub power_cycle_deadline_us: u64,
+    /// `Power_Up_Timer`: when panel power is expected to be stable.
+    pub power_up_deadline_us: u64,
+}
+
+impl PanelState {
+    /// libgfxinit `Static_Init`: default eDP delays, timers expired.
+    pub(crate) const fn new() -> Self {
+        Self {
+            port: None,
+            delays: PanelPowerDelays::DEFAULT_EDP,
+            power_cycle_deadline_us: 0,
+            power_up_deadline_us: 0,
+        }
+    }
+}
+
+impl Default for PanelState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Generation facts libgfxinit's `Panel` package depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PanelSequencerCaps {
+    /// Power sequencer registers.
+    pub regs: PanelPowerRegs,
+    /// `Has_PP_Write_Protection`.
+    pub write_protection: bool,
+    /// `Has_PP_Port_Select`.
+    pub port_select: bool,
+    /// `Has_PP_Divisor_Reg`.
+    pub divisor_reg: bool,
+    /// `Use_PP_VDD_Override`: DP panels get only VDD for AUX.
+    pub vdd_override: bool,
+}
+
+/// libgfxinit's `Panel` package for one generation.
+pub(crate) struct PanelSequencer<'a> {
+    mmio: &'a Mmio,
+    caps: PanelSequencerCaps,
+}
+
+const fn is_dp_panel(port: Port) -> bool {
+    matches!(
+        port,
+        Port::Edp | Port::DpA | Port::DpB | Port::DpC | Port::DpD
+    )
+}
+
+impl<'a> PanelSequencer<'a> {
+    /// Bind the sequencer of `caps` to `mmio`.
+    pub(crate) const fn new(mmio: &'a Mmio, caps: PanelSequencerCaps) -> Self {
+        Self { mmio, caps }
+    }
+
+    fn set(&self, mask: u32) {
+        self.mmio.update32(self.caps.regs.control, 0, mask);
+    }
+
+    fn clear(&self, mask: u32) {
+        self.mmio.update32(self.caps.regs.control, mask, 0);
+    }
+
+    fn control_has(&self, mask: u32) -> bool {
+        self.mmio.read32(self.caps.regs.control) & mask != 0
+    }
+
+    /// libgfxinit `Setup_PP_Sequencer` (without `Default_Delays`): read the
+    /// delays, substitute defaults for zero fields and select the panel port.
+    pub(crate) fn setup(&self, state: &mut PanelState) {
+        let Some(port) = state.port else {
+            return;
+        };
+        let regs = self.caps.regs;
+        let on = self.mmio.read32(regs.on_delays);
+        let off = self.mmio.read32(regs.off_delays);
+        let cycle = self.mmio.read32(if self.caps.divisor_reg {
+            regs.divisor
+        } else {
+            regs.control
+        }) >> if self.caps.divisor_reg {
+            0
+        } else {
+            BXT_PP_CONTROL_PWR_CYC_DELAY_SHIFT
+        };
+        let decoded = PanelPowerDelays::from_registers(on, off, cycle);
+        // A cycle field of 0 or 1 keeps the previous (default) delay without
+        // forcing a rewrite; only zero delays do.
+        let delays = PanelPowerDelays {
+            power_cycle_us: if decoded.power_cycle_us == 0 {
+                state.delays.power_cycle_us
+            } else {
+                decoded.power_cycle_us
+            },
+            ..decoded
+        };
+        let override_delays = delays.needs_override();
+        state.delays = delays.with_defaults();
+        let port_select = if self.caps.port_select {
+            PanelPowerPortSelect::from_port(port)
+        } else {
+            PanelPowerPortSelect::None
+        };
+        let plan = panel_power_sequencer_plan(
+            regs,
+            state.delays,
+            port_select,
+            self.caps.divisor_reg,
+            self.caps.write_protection,
+        );
+        if override_delays {
+            self.apply(plan.on_delays);
+            self.apply(plan.off_delays);
+            self.apply(plan.cycle_delay);
+        } else if self.caps.port_select {
+            self.mmio.update32(
+                regs.on_delays,
+                PP_ON_DELAYS_PORT_SELECT_MASK,
+                port_select.bits(),
+            );
+        }
+        self.apply(plan.control);
+    }
+
+    fn apply(&self, op: PanelRegisterOp) {
+        match op {
+            PanelRegisterOp::Write { register, value } => self.mmio.write32(register, value),
+            PanelRegisterOp::Update {
+                register,
+                mask_unset,
+                mask_set,
+            } => self.mmio.update32(register, mask_unset, mask_set),
+            PanelRegisterOp::Set { register, mask } => self.mmio.update32(register, 0, mask),
+            PanelRegisterOp::Clear { register, mask } => self.mmio.update32(register, mask, 0),
+        }
+    }
+
+    /// libgfxinit `VDD_Override`: power a panel for AUX/DDC access. Non-DP
+    /// panels (and all panels without `Use_PP_VDD_Override`) get full power.
+    pub(crate) fn vdd_override(&self, state: &mut PanelState, wait: bool) {
+        let Some(port) = state.port else {
+            return;
+        };
+        if !self.caps.vdd_override || !is_dp_panel(port) {
+            self.on(state, wait);
+        }
+        if !self.control_has(PP_CONTROL_VDD_OVERRIDE) {
+            delay_until(state.power_cycle_deadline_us);
+            self.set(PP_CONTROL_VDD_OVERRIDE);
+            state.power_up_deadline_us =
+                now_us().saturating_add(u64::from(state.delays.power_up_us));
+        }
+        if wait {
+            self.wait_on(state, true);
+        }
+    }
+
+    /// libgfxinit `On`.
+    pub(crate) fn on(&self, state: &mut PanelState, wait: bool) {
+        if state.port.is_none() {
+            return;
+        }
+        let was_on = self.control_has(PP_CONTROL_TARGET_ON);
+        let vdd_was_on = self.control_has(PP_CONTROL_VDD_OVERRIDE);
+        if !was_on {
+            delay_until(state.power_cycle_deadline_us);
+        }
+        self.set(PP_CONTROL_TARGET_ON);
+        if !was_on && !vdd_was_on {
+            state.power_up_deadline_us =
+                now_us().saturating_add(u64::from(state.delays.power_up_us));
+        }
+        if wait {
+            self.wait_on(state, false);
+        }
+    }
+
+    /// libgfxinit `Wait_On`: wait for the power-up delay and the sequencer,
+    /// then drop the VDD override once the panel is on.
+    pub(crate) fn wait_on(&self, state: &PanelState, vdd_only: bool) {
+        let Some(port) = state.port else {
+            return;
+        };
+        delay_until(state.power_up_deadline_us);
+        if vdd_only && self.caps.vdd_override && is_dp_panel(port) {
+            return;
+        }
+        let regs = self.caps.regs;
+        let powered_on = self.mmio.wait_mask(
+            regs.status,
+            PP_STATUS_PWR_SEQ_PROGRESS_MASK,
+            0,
+            PP_ON_TIMEOUT_US,
+        ) && self.mmio.read32(regs.status) & PP_STATUS_ENABLED != 0;
+        if powered_on {
+            self.clear(PP_CONTROL_VDD_OVERRIDE);
+        } else if vdd_only {
+            fstart_log::debug!(
+                "intel-gma: panel power sequencer idle during VDD probe: status={:#x}",
+                self.mmio.read32(regs.status)
+            );
+        } else {
+            fstart_log::error!(
+                "intel-gma: panel power sequencer didn't power the panel up: status={:#x}",
+                self.mmio.read32(regs.status)
+            );
+        }
+    }
+
+    /// libgfxinit `Off`.
+    pub(crate) fn off(&self, state: &mut PanelState) {
+        if state.port.is_none() {
+            return;
+        }
+        let was_on = self.control_has(PP_CONTROL_TARGET_ON);
+        let vdd_was_on = self.control_has(PP_CONTROL_VDD_OVERRIDE);
+        self.clear(PP_CONTROL_TARGET_ON | PP_CONTROL_VDD_OVERRIDE);
+        if was_on {
+            delay_us(state.delays.power_down_us);
+        }
+        let _ = self.mmio.wait_mask(
+            self.caps.regs.status,
+            PP_STATUS_PWR_SEQ_PROGRESS_MASK,
+            0,
+            PP_OFF_TIMEOUT_US,
+        );
+        if was_on || vdd_was_on {
+            state.power_cycle_deadline_us =
+                now_us().saturating_add(u64::from(state.delays.power_cycle_us));
+        }
+    }
+
+    /// libgfxinit `Backlight_On` for the PP-gated backlight.
+    pub(crate) fn backlight_on(&self, state: &PanelState) {
+        if state.port.is_some() {
+            self.set(PP_CONTROL_BACKLIGHT_ENABLE);
+        }
+    }
+
+    /// libgfxinit `Backlight_Off` for the PP-gated backlight.
+    pub(crate) fn backlight_off(&self, state: &PanelState) {
+        if state.port.is_some() {
+            self.clear(PP_CONTROL_BACKLIGHT_ENABLE);
+        }
+    }
+}
 
 const fn default_if_zero(value: u32, default: u32) -> u32 {
     if value == 0 { default } else { value }

@@ -1132,6 +1132,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fstart-board-lenovo-x220"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "fstart-acpi",
+ "fstart-acpi-macros",
+ "fstart-arch",
+ "fstart-core",
+ "fstart-driver-intel",
+ "fstart-driver-lenovo",
+ "fstart-driver-ricoh",
+ "fstart-driver-superio",
+ "fstart-driver-tpm",
+ "fstart-log",
+ "fstart-options",
+ "fstart-pci",
+ "fstart-platform-intel",
+ "ufmt",
+]
+
+[[package]]
 name = "fstart-board-lenovo-x60"
 version = "0.1.0"
 dependencies = [

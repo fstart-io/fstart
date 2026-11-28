@@ -83,9 +83,8 @@ and chipset lockdown).
   interception, which must remain active for the next S3 transition.
 * Native raminit supports one DIMM per channel. Second-slot SPD entries
   are rejected by the platform builder and the northbridge driver.
-* The dock's DisplayPort (libgfxinit `DP2`): the GMA code in `fstart-driver-intel` has no PCH
-  DisplayPort path for Ironlake yet. The port stays in the X201 output list
-  and is skipped until it does; LVDS, VGA and HDMI are driven.
+* The dock's DisplayPort (libgfxinit `DP2`) is driven by the shared
+  libgfxinit port (`gma/generation/ironlake/`) but untested on hardware.
 * Only the i7 M620 / 8 GiB X201 configuration has been exercised. VGA,
   HDMI, dock behavior, the X201T digitizer, other CPU/DIMM combinations,
   repeated sleep cycles and non-RTC wake sources still need validation.

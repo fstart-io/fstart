@@ -224,59 +224,73 @@ impl Plan {
     }
 
     fn candidate(caps: Capabilities, map: &[Range], default: CacheType) -> Result<Self, usize> {
-        let mut required = 0;
         let mut plan = Self {
             caps,
             default,
             ranges: Vec::new(),
         };
-        for (index, range) in map
+        let mut required = 0;
+        if default == CacheType::Uncacheable {
+            required += plan.add_write_back(map);
+        }
+        for range in map
             .iter()
-            .enumerate()
-            .filter(|(_, range)| range.kind != default)
+            .filter(|range| range.kind != default && range.kind != CacheType::WriteBack)
         {
-            let mut base = range.base;
-            if caps.fixed && base < ONE_MIB {
+            let base = if caps.fixed && range.base < ONE_MIB {
                 if range.end <= ONE_MIB {
                     continue;
                 }
-                if range.kind != CacheType::WriteBack {
-                    base = ONE_MIB;
-                }
-            }
-            let mut end = range.end;
-            if default == CacheType::Uncacheable && range.kind == CacheType::WriteBack {
-                let limit = map[index + 1..]
-                    .iter()
-                    .find(|next| next.kind != CacheType::Uncacheable)
-                    .map_or(caps.limit(), |next| next.base);
-                let mut cost = chunks(base, end - base).count();
-                // UC carve-outs may optimize high RAM too, not just low RAM.
-                for shift in range.end.trailing_zeros() + 1..=caps.physical_bits as u32 {
-                    let Some(rounded) = range.end.checked_next_multiple_of(1u64 << shift) else {
-                        break;
-                    };
-                    if rounded > limit {
-                        break;
-                    }
-                    let next_cost = chunks(base, rounded - base).count()
-                        + chunks(range.end, rounded - range.end).count();
-                    if next_cost < cost {
-                        cost = next_cost;
-                        end = rounded;
-                    }
-                }
-            }
-            required += plan.add_chunks(base, end, range.kind);
-            if end != range.end {
-                required += plan.add_chunks(range.end, end, CacheType::Uncacheable);
-            }
+                ONE_MIB
+            } else {
+                range.base
+            };
+            required += plan.add_chunks(base, range.end, range.kind);
         }
         if required > caps.variable_count {
             Err(required)
         } else {
             Ok(plan)
         }
+    }
+
+    /// The WB ranges of `map` over a UC default. RAM ranges with only UC
+    /// holes between them may share one WB cover with the holes carved out
+    /// (UC wins where variable MTRRs overlap), so a page reserved inside DRAM
+    /// costs its own carve-out rather than splitting the RAM around it. The
+    /// grouping with the fewest MTRRs is taken; ties keep RAM ranges apart.
+    fn add_write_back(&mut self, map: &[Range]) -> usize {
+        let ram: Vec<usize, MAX_RANGES> = (0..map.len())
+            .filter(|&index| map[index].kind == CacheType::WriteBack)
+            .collect();
+        // Whether RAM ranges `k` and `k + 1` have only a UC hole between them.
+        let joinable =
+            |k: usize| ram[k + 1] == ram[k] + 2 && map[ram[k] + 1].kind == CacheType::Uncacheable;
+        // best[j]: the fewest MTRRs for RAM ranges 0..j, the last group of
+        // which starts at RAM range first[j].
+        let mut best = [usize::MAX; MAX_RANGES + 1];
+        let mut first = [0; MAX_RANGES + 1];
+        best[0] = 0;
+        for last in 0..ram.len() {
+            for start in (0..=last).rev() {
+                let cost = best[start] + Cover::new(self.caps, map, ram[start], ram[last]).cost();
+                if cost < best[last + 1] {
+                    best[last + 1] = cost;
+                    first[last + 1] = start;
+                }
+                if start == 0 || !joinable(start - 1) {
+                    break;
+                }
+            }
+        }
+        let mut required = 0;
+        let mut end = ram.len();
+        while end > 0 {
+            let start = first[end];
+            required += Cover::new(self.caps, map, ram[start], ram[end - 1]).add_to(self);
+            end = start;
+        }
+        required
     }
 
     fn add_chunks(&mut self, base: u64, end: u64, kind: CacheType) -> usize {
@@ -366,6 +380,92 @@ impl Plan {
         }
         ROM_SLOT.store(0, Ordering::Release);
         Ok(())
+    }
+}
+
+/// One WB variable-MTRR cover over a UC default: the WB ranges
+/// `map[first..=last]` and the UC holes between them, carved out. Its end
+/// may round up into the UC space after `last`, with a carve-out for the
+/// rounding, when that takes fewer MTRRs.
+struct Cover<'a> {
+    caps: Capabilities,
+    holes: &'a [Range],
+    base: u64,
+    ram_end: u64,
+    end: u64,
+}
+
+impl<'a> Cover<'a> {
+    fn new(caps: Capabilities, map: &'a [Range], first: usize, last: usize) -> Self {
+        let base = map[first].base;
+        let ram_end = map[last].end;
+        let limit = map[last + 1..]
+            .iter()
+            .find(|next| next.kind != CacheType::Uncacheable)
+            .map_or(caps.limit(), |next| next.base);
+        let mut end = ram_end;
+        let mut cost = chunks(base, end - base).count();
+        // UC carve-outs may optimize high RAM too, not just low RAM.
+        for shift in ram_end.trailing_zeros() + 1..=caps.physical_bits as u32 {
+            let Some(rounded) = ram_end.checked_next_multiple_of(1u64 << shift) else {
+                break;
+            };
+            if rounded > limit {
+                break;
+            }
+            let next_cost =
+                chunks(base, rounded - base).count() + chunks(ram_end, rounded - ram_end).count();
+            if next_cost < cost {
+                cost = next_cost;
+                end = rounded;
+            }
+        }
+        Self {
+            caps,
+            // `first == last` has none; the filter skips the WB ranges.
+            holes: &map[first..last],
+            base,
+            ram_end,
+            end,
+        }
+    }
+
+    /// Below 1 MiB the fixed MTRRs, when present, decide.
+    fn variable(&self) -> bool {
+        !(self.caps.fixed && self.ram_end <= ONE_MIB)
+    }
+
+    /// The UC holes as variable ranges.
+    fn carve_outs(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let floor = if self.caps.fixed { ONE_MIB } else { 0 };
+        self.holes
+            .iter()
+            .filter(move |hole| hole.kind == CacheType::Uncacheable && hole.end > floor)
+            .map(move |hole| (hole.base.max(floor), hole.end))
+    }
+
+    fn cost(&self) -> usize {
+        if !self.variable() {
+            return 0;
+        }
+        chunks(self.base, self.end - self.base).count()
+            + chunks(self.ram_end, self.end - self.ram_end).count()
+            + self
+                .carve_outs()
+                .map(|(base, end)| chunks(base, end - base).count())
+                .sum::<usize>()
+    }
+
+    fn add_to(&self, plan: &mut Plan) -> usize {
+        if !self.variable() {
+            return 0;
+        }
+        let mut required = plan.add_chunks(self.base, self.end, CacheType::WriteBack);
+        required += plan.add_chunks(self.ram_end, self.end, CacheType::Uncacheable);
+        for (base, end) in self.carve_outs() {
+            required += plan.add_chunks(base, end, CacheType::Uncacheable);
+        }
+        required
     }
 }
 

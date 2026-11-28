@@ -171,11 +171,18 @@ impl ScalerPlan {
         let Some(kind) = self.kind else {
             return Err(GmaError::UnsupportedPlatform);
         };
-        if matches!(
-            kind,
-            ScalerKind::GmchPanelFitterPreI965 | ScalerKind::GmchPanelFitterI965
-        ) && (self.source_width > self.target_width as u32
-            || self.source_height > self.target_height as u32)
+        // libgfxinit `Maximum_Scalable_Width` (GMCH and Ironlake fitters).
+        let max_width = match self.pipe {
+            Pipe::A => 4096,
+            Pipe::B | Pipe::C => 2048,
+        };
+        if !matches!(kind, ScalerKind::PipeScaler) && self.source_width > max_width {
+            return Err(GmaError::InvalidConfig);
+        }
+        // libgfxinit `Validate_Config`: fitters only upscale.
+        if !matches!(kind, ScalerKind::PipeScaler)
+            && (self.source_width > self.target_width as u32
+                || self.source_height > self.target_height as u32)
         {
             return Err(GmaError::InvalidConfig);
         }
@@ -343,7 +350,7 @@ pub const fn caps_for(cpu: Cpu) -> ScalerCaps {
         },
         Cpu::Ironlake | Cpu::Sandybridge | Cpu::Ivybridge => ScalerCaps {
             kind: Some(ScalerKind::IronlakePanelFitter),
-            implemented: false,
+            implemented: true,
             single_global_scaler: false,
         },
         Cpu::Haswell | Cpu::HaswellUlt | Cpu::HaswellUlx => ScalerCaps {
@@ -557,7 +564,11 @@ pub const fn encode_gmch_pre_i965(
     }
 }
 
-/// Encode an Ironlake/PCH-style window-positioned panel fitter.
+/// Encode an Ironlake/PCH-style window-positioned panel fitter, following
+/// libgfxinit `Setup_Ironlake_Panel_Fitter` with `Center` alignment:
+/// `Scale` per policy (`Center`/`None` keep the source size), odd sizes
+/// rounded up, the window centred (gap / 2), and a horizontal gap of at most
+/// three pixels closed.
 pub const fn encode_ironlake_pfit(
     pipe: Pipe,
     source_width: u32,
@@ -567,28 +578,45 @@ pub const fn encode_ironlake_pfit(
     policy: ScalingPolicy,
     has_pipe_select: bool,
 ) -> Result<IronlakePfitEncoding, GmaError> {
-    // Linux permits limited downscale on some PCH/Ironlake-style fitters, but
-    // the detailed generation-specific min/max ratios are not modeled in this
-    // data-only encoder yet. Reject downscale here conservatively instead of
-    // overclaiming a generic future-enable rule for all PCH fitters.
-    if source_width > target_width as u32 || source_height > target_height as u32 {
+    let target_width = target_width as u32;
+    let target_height = target_height as u32;
+    if source_width == 0
+        || source_height == 0
+        || source_width > target_width
+        || source_height > target_height
+    {
         return Err(GmaError::InvalidConfig);
     }
-    let rect = match plan_pch_destination_rect(
-        source_width,
-        source_height,
-        target_width,
-        target_height,
-        policy,
-    ) {
-        Ok(rect) => rect,
-        Err(err) => return Err(err),
+    let (mut width, mut height) = match policy {
+        ScalingPolicy::None | ScalingPolicy::Center => (source_width, source_height),
+        ScalingPolicy::Stretch => (target_width, target_height),
+        ScalingPolicy::PreserveAspect => {
+            match scale_keep_aspect(source_width, source_height, target_width, target_height) {
+                Ok(size) => size,
+                Err(err) => return Err(err),
+            }
+        }
     };
-
+    if width < target_width && width % 2 == 1 {
+        width += 1;
+    }
+    if height < target_height && height % 2 == 1 {
+        height += 1;
+    }
+    let mut x = (target_width - width) / 2;
+    let mut y = (target_height - height) / 2;
+    if target_width - width <= 3 {
+        width = target_width;
+        x = 0;
+    }
+    if target_height - height <= 3 {
+        height = target_height;
+        y = 0;
+    }
     Ok(IronlakePfitEncoding {
         control: PF_CTRL_ENABLE | pf_pipe_select(pipe, has_pipe_select) | PF_CTRL_FILTER_MED,
-        win_pos: encode_window(rect.x, rect.y),
-        win_size: encode_window(rect.width, rect.height),
+        win_pos: encode_window(x, y),
+        win_size: encode_window(width, height),
     })
 }
 
@@ -912,7 +940,11 @@ mod tests {
             Mode::XGA_1024X768_60,
             ScalingPolicy::PreserveAspect,
         );
-        assert_eq!(pch_downscale.validate_future_enablement(), Ok(()));
+        // libgfxinit `Validate_Config`: the Ironlake fitter only upscales.
+        assert_eq!(
+            pch_downscale.validate_future_enablement(),
+            Err(GmaError::InvalidConfig)
+        );
 
         let no_policy = ScalerPlan::resolve(
             Cpu::Gm965,
@@ -1213,6 +1245,36 @@ mod tests {
         .unwrap();
         assert_eq!(pillar.win_pos, (160 << 16));
         assert_eq!(pillar.win_size, (960 << 16) | 720);
+    }
+
+    #[test]
+    fn ironlake_pfit_centres_like_libgfxinit() {
+        // 1024x768 on 1366x768: pillarbox 1024 wide, centred at 171.
+        let fit = encode_ironlake_pfit(
+            Pipe::A,
+            1024,
+            768,
+            1366,
+            768,
+            ScalingPolicy::PreserveAspect,
+            false,
+        )
+        .unwrap();
+        assert_eq!(fit.win_pos, 171 << 16);
+        assert_eq!(fit.win_size, (1024 << 16) | 768);
+        // An unscaled odd source is rounded up and centred with gap / 2.
+        let center =
+            encode_ironlake_pfit(Pipe::C, 801, 599, 1024, 768, ScalingPolicy::Center, true)
+                .unwrap();
+        assert_eq!(center.control, (1 << 31) | (2 << 29) | (1 << 23));
+        assert_eq!(center.win_pos, (111 << 16) | 84);
+        assert_eq!(center.win_size, (802 << 16) | 600);
+        // A gap of up to three pixels is closed.
+        let narrow =
+            encode_ironlake_pfit(Pipe::A, 1364, 768, 1366, 768, ScalingPolicy::Center, false)
+                .unwrap();
+        assert_eq!(narrow.win_pos, 0);
+        assert_eq!(narrow.win_size, (1366 << 16) | 768);
     }
 
     #[test]

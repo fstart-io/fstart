@@ -46,7 +46,7 @@ pub fn digitizer_init(part_number: Option<&str>) -> bool {
 /// The H8 DSDT plus the root glue these ThinkPads share: hotkey brightness
 /// through `\_SB.PCI0.GFX0`, the ThinkLight `\UCMS` method (coreboot
 /// `ec/lenovo/h8/acpi/thinklight.asl`), `_PTS`/`_WAK` (`acpi/platform.asl`)
-/// and the EC wake GPE `_L18` (`acpi/gpe.asl`).
+/// and the EC wake GPE handler (`acpi/gpe.asl`).
 #[cfg(feature = "acpi")]
 #[must_use]
 pub fn h8_dsdt_aml<N: fstart_acpi::PcNamespace>(h8: &H8Config) -> alloc::vec::Vec<u8> {
@@ -88,12 +88,8 @@ pub fn h8_dsdt_aml<N: fstart_acpi::PcNamespace>(h8: &H8Config) -> alloc::vec::Ve
                 Return(Package(0u32, 0u32));
             }
         }
-        Scope("\\_GPE") {
-            Method("_L18", 0, NotSerialized) {
-                If (#{const path 5 ec::<N>().child("WAKE")}) {}
-            }
-        }
     });
+    aml.extend(crate::h8_acpi::wake_gpe_aml::<N>(h8));
     aml
 }
 

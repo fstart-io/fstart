@@ -29,7 +29,8 @@
 ///
 /// # Safety of the operation
 /// CF9 is the architected reset port on every IA-32 platform fstart supports;
-/// the write sequence is the documented one (clear, then request reset).
+/// the write sequence is the documented one (select the reset type, then
+/// raise `RST_CPU`).
 pub fn system_reset(hard: bool) -> ! {
     cf9_reset(if hard { CF9_HARD } else { CF9_SOFT })
 }
@@ -42,16 +43,23 @@ pub fn full_reset() -> ! {
     cf9_reset(CF9_FULL)
 }
 
-/// CF9 RST_CPU and SYS_RST: a soft reset, a hard one with both.
-const CF9_SOFT: u8 = 0x02;
-const CF9_HARD: u8 = 0x06;
-/// CF9 FULL_RST on top of a hard reset.
-const CF9_FULL: u8 = 0x0E;
+/// CF9 (`RST_CNT`) bit 1, `SYS_RST`: the reset also asserts PLTRST#.
+const CF9_SYS_RST: u8 = 1 << 1;
+/// CF9 bit 2, `RST_CPU`: its 0 -> 1 edge starts the selected reset.
+const CF9_RST_CPU: u8 = 1 << 2;
+/// CF9 bit 3, `FULL_RST`: a hard reset goes through S5.
+const CF9_FULL_RST: u8 = 1 << 3;
+/// INIT# only.
+const CF9_SOFT: u8 = CF9_RST_CPU;
+const CF9_HARD: u8 = CF9_SYS_RST | CF9_RST_CPU;
+const CF9_FULL: u8 = CF9_FULL_RST | CF9_HARD;
 
 fn cf9_reset(request: u8) -> ! {
+    // coreboot `do_system_reset()`: latch the reset type with RST_CPU clear,
+    // then raise RST_CPU. Its edge starts the reset the other bits select.
     // SAFETY: see `system_reset`.
     unsafe {
-        fstart_core::pio::outb(0xCF9, 0x00);
+        fstart_core::pio::outb(0xCF9, request & !CF9_RST_CPU);
         fstart_core::pio::outb(0xCF9, request);
     }
     loop {
@@ -59,9 +67,51 @@ fn cf9_reset(request: u8) -> ! {
     }
 }
 
-// One Atom NEM model list (Bonnell/Saltwell + Silvermont 0x37) for CAR setup
-// and both teardown ABIs so no model can enable MSR 0x2e0 without clearing it.
-macro_rules! atom_nem_model_branch {
+// The family-6 display model, `(ext_model << 4) | model`, of the CPUID(1).EAX
+// signature in `signature`, into `model`; `scratch` is clobbered. For the
+// NEM model lists below, which take the display model.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_display_model {
+    ($signature:literal, $model:literal, $scratch:literal) => {
+        concat!(
+            "movl ",
+            $signature,
+            ", ",
+            $model,
+            "\n",
+            "shrl $4, ",
+            $model,
+            "\n",
+            "andl $0x0f, ",
+            $model,
+            "\n",
+            "movl ",
+            $signature,
+            ", ",
+            $scratch,
+            "\n",
+            "shrl $12, ",
+            $scratch,
+            "\n",
+            "andl $0xf0, ",
+            $scratch,
+            "\n",
+            "orl ",
+            $scratch,
+            ", ",
+            $model,
+            "\n",
+        )
+    };
+}
+
+// One Atom NEM model list (Bonnell/Saltwell + Silvermont 0x37) for CAR setup,
+// the early microcode update and both teardown ABIs, so no model can enable
+// MSR 0x2e0 without clearing it.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_atom_nem_model_branch {
     ($register:literal, $target:literal) => {
         concat!(
             "cmpl $0x1c, ",
@@ -97,11 +147,13 @@ macro_rules! atom_nem_model_branch {
         )
     };
 }
-pub(crate) use atom_nem_model_branch;
 
-// One IMC-family list for CAR setup and both teardown ABIs. The caller has
-// already extracted the display model into `register`; no stack is required.
-macro_rules! imc_nem_model_branch {
+// One IMC-family list for CAR setup, the early microcode update and both
+// teardown ABIs. The caller has already extracted the display model into
+// `register`; no stack is required.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_imc_nem_model_branch {
     ($register:literal, $target:literal) => {
         concat!(
             "cmpl $0x1a, ",
@@ -177,7 +229,6 @@ macro_rules! imc_nem_model_branch {
         )
     };
 }
-pub(crate) use imc_nem_model_branch;
 
 pub mod car;
 pub mod car_storage;
@@ -444,6 +495,23 @@ macro_rules! x86_reset_entry {
             // ---- Very early BSP microcode update ----
             // Uses only registers and the anchor-patched microcode offset.  It runs
             // before CAR/Rust so CPU errata fixes are present for the rest of init.
+            // The NEM CAR models load it from `_car_nem_common` instead, once the
+            // CAR and ROM MTRRs cache the update, as coreboot's
+            // `cpu/intel/car/non-evict/cache_as_ram.S` does.
+            "movl $_has_car, %eax",
+            "testl %eax, %eax",
+            "je _early_microcode_now",
+            "movl $1, %eax",
+            "cpuid",
+            "movl %eax, %ebx",
+            "shrl $8, %eax",
+            "andl $0x0f, %eax",
+            "cmpl $0x06, %eax",
+            "jne _early_microcode_now",
+            $crate::__x86_display_model!("%ebx", "%eax", "%ecx"),
+            $crate::__x86_atom_nem_model_branch!("%eax", "_after_early_microcode"),
+            $crate::__x86_imc_nem_model_branch!("%eax", "_after_early_microcode"),
+            "_early_microcode_now:",
             "movl $_after_early_microcode, %esp",
             "jmp _early_intel_microcode",
             "_after_early_microcode:",
@@ -498,8 +566,9 @@ macro_rules! x86_reset_entry {
 
 // Very-early Intel microcode update for BSP.
 //
-// Pre-CAR bootblock only: postcar/ramstage get microcode through the FFS
-// blob (MP init); only the reset path references it, so they drop it.
+// Bootblock only, before CAR or from the NEM CAR setup: postcar/ramstage get
+// microcode through the FFS blob (MP init); only the reset path references
+// it, so they drop it. It leaves the CPUID(1).EAX signature in %ebx.
 // Entry/return convention matches coreboot's no-stack helpers: `%esp` contains
 // the absolute return address. The routine may clobber all general registers.
 #[cfg(feature = "early-ffs-anchor")]
@@ -640,7 +709,7 @@ macro_rules! postcar_uart_checkpoint {
 #[cfg(target_os = "none")]
 macro_rules! postcar_stash_reset {
     () => {
-        "movw $0xcf9, %dx\nxorb %al, %al\noutb %al, %dx\nmovb ${full_reset}, %al\noutb %al, %dx"
+        "movw $0xcf9, %dx\nmovb ${full_reset_type}, %al\noutb %al, %dx\nmovb ${full_reset}, %al\noutb %al, %dx"
     };
 }
 

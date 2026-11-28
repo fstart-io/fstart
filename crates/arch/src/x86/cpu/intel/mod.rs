@@ -10,6 +10,7 @@ pub mod haswell;
 mod haswell_vr;
 pub mod microcode;
 pub mod model_2065x;
+pub mod model_206ax;
 pub mod penryn;
 pub mod pineview;
 pub mod ratio;

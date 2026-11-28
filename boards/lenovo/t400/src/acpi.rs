@@ -162,6 +162,7 @@ mod tests {
         let h8 = H8Config::new(
             H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
             0x11,
+            0x18,
             "IBM0068",
         );
         let mut aml: Vec<u8> = acpi_dsl! {

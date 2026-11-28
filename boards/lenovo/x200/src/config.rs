@@ -135,6 +135,7 @@ pub const X200_H8: fstart_driver_lenovo::h8::H8Config = {
         ..H8Config::new(
             H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
             0x11,
+            0x18,
             "IBM0068",
         )
     }

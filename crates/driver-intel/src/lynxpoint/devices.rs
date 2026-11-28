@@ -419,7 +419,6 @@ impl LynxPoint {
         self.d28ir = r.d28ir.get();
         self.init_bridge_resources();
         let io = unsafe { fstart_arch::x86::ioapic::IoApic::new(0xfec0_0000) };
-        io.set_id(2);
         if lp {
             if !io.set_redirection_entries(40) {
                 fstart_log::warn!("LPT-LP: IOAPIC redirection entry count did not latch 40");
@@ -427,8 +426,7 @@ impl LynxPoint {
         } else {
             io.lock_redirection_entries();
         }
-        io.mask_all();
-        io.route_i8259((fstart_arch::x86::cpuid(1).1 >> 24) as u8);
+        io.setup_gsi0(2, (fstart_arch::x86::cpuid(1).1 >> 24) as u8);
         l.serirq_cntl.write(
             SERIRQ_CNTL::ENABLE::SET
                 + SERIRQ_CNTL::CONTINUOUS::SET

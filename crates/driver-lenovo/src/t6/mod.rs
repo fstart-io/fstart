@@ -42,6 +42,7 @@ pub const fn h8_config(ec_gpe: u8) -> H8Config {
         ..H8Config::new(
             H8Resources::new(EcPorts::new(0x62, 0x66), 0x1600, 0x15e0),
             ec_gpe,
+            0x18,
             "IBM0068",
         )
     }

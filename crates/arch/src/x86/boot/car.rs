@@ -81,21 +81,14 @@ core::arch::global_asm!(
     // Family 6 — check model for Atom vs Core2 vs P3.
     "cmpl $0x06, %eax",
     "jne _car_p3", // Anything else → P3 (safest fallback)
-    // Extract display model: (ext_model << 4) | model
-    "movl %ebx, %eax",
-    "shrl $4, %eax",
-    "andl $0x0F, %eax", // base model
-    "movl %ebx, %ecx",
-    "shrl $12, %ecx",
-    "andl $0xF0, %ecx", // ext_model << 4
-    "orl %ecx, %eax",   // EAX = display model
+    crate::__x86_display_model!("%ebx", "%eax", "%ecx"),
     // Atom models (NEM): 0x1C, 0x26, 0x27, 0x35, 0x36 and Silvermont 0x37
     // (Bay Trail, coreboot `cpu/intel/car/non-evict` with the L2 MSR).
-    super::atom_nem_model_branch!("%eax", "_car_nem"),
+    crate::__x86_atom_nem_model_branch!("%eax", "_car_nem"),
     // Integrated-memory-controller cores (coreboot car/non-evict without
     // the L2 enable MSR): Nehalem 0x1A/0x1E/0x1F/0x2E, Westmere
     // 0x25/0x2C/0x2F, Sandy Bridge 0x2A/0x2D, Ivy Bridge 0x3A/0x3E.
-    super::imc_nem_model_branch!("%eax", "_car_nem_imc"),
+    crate::__x86_imc_nem_model_branch!("%eax", "_car_nem_imc"),
     // SKL/KBL client models require enhanced NEM, not legacy L2 CAR.
     // The enhanced entry additionally validates vendor, family and stepping.
     "cmpl $0x4e, %eax",
@@ -319,11 +312,14 @@ core::arch::global_asm!(
     "rdmsr",
     "andl $0xC00, %eax", // DEF_TYPE_EN | FIX_EN
     "jz 1f",
-    // Warm reset detected — write 0x06 to CF9.
+    // Warm reset detected: a hard reset, as `cf9_reset` does it (SYS_RST,
+    // then SYS_RST | RST_CPU).
     // POST 0xef: dirty MTRR state; forcing reset.
     "movb $0xef, %al",
     "outb %al, $0x80",
     "movw $0xCF9, %dx",
+    "movb $0x02, %al",
+    "outb %al, %dx",
     "movb $0x06, %al",
     "outb %al, %dx",
     "2: hlt",
@@ -364,6 +360,15 @@ core::arch::global_asm!(
     "movl $17f, %esp",
     "jmp _car_enable_cache",
     "17:",
+    // The BSP microcode update, now that the CAR and ROM MTRRs cache it
+    // (coreboot `cpu/intel/car/non-evict/cache_as_ram.S`). The update clobbers
+    // %ebp, which holds `_car_setup`'s continuation; %mm0/%mm1 hold the reset
+    // TSC.
+    "movd %ebp, %mm2",
+    "movl $22f, %esp",
+    "jmp _early_intel_microcode",
+    "22:",
+    "movd %mm2, %ebp",
     // Disable cache for NEM fill sequence.
     "movl $18f, %esp",
     "jmp _car_disable_cache",

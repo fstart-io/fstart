@@ -13,7 +13,7 @@ use fstart_platform_intel::smm::SmmContext;
 use crate::config::X201_H8;
 use crate::ec::{
     DOCK_CONNECT_GPIO, DockAction, EC_SCI_GPI, EC_WAKE_GPI, dock_disconnect, smm_dock_connected,
-    smm_ec_event, smm_wake_from_ec,
+    smm_ec_event,
 };
 
 fn smi() -> IchSmi {
@@ -73,7 +73,7 @@ fn acpi_switch(command: u8) {
 /// coreboot `mainboard_smi_sleep()`: S3 wakes on the EC when the OS armed
 /// an EC wake source.
 fn sleep(state: u8) {
-    if state == 3 && smm_wake_from_ec(ec_channel()) {
+    if state == 3 && H8::new(ec_channel()).wake_armed() {
         // SAFETY: SMM rendezvous owns PCI config and decoded PM registers.
         unsafe { smi().route_gpi(EC_WAKE_GPI, true) };
     }
