@@ -18,10 +18,10 @@ use runtime::{EMPTY_REGION, firmware_reservations, runtime_platform_config};
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
-pub use crabefi::peripheral;
 pub use crabefi::{
     PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, RuntimeResetConfig, StorageBackend,
 };
+pub use crabefi::{peripheral, reset_mechanism};
 
 /// fstart-owned UEFI payload configuration.
 ///
