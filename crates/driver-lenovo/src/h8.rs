@@ -159,10 +159,11 @@ register_bitfields![u8,
     /// Dock link 2, EC RAM 0x1a, 8 bits: the second dock link (ACPI
     /// `DKR2`).
     pub DOCK_LINK2 [CONNECT OFFSET(0) NUMBITS(1) []],
-    /// Wake control, EC RAM 0x32, 8 bits: the wake sources the OS armed.
+    /// Wake control, EC RAM 0x32, 8 bits: the wake sources the OS armed
+    /// (ACPI `WKLD` and `WKFN`).
     pub WAKE_CONTROL [
-        EVENTS OFFSET(2) NUMBITS(1) [],
-        LID OFFSET(4) NUMBITS(1) []
+        LID OFFSET(2) NUMBITS(1) [],
+        FN_KEY OFFSET(4) NUMBITS(1) []
     ],
     /// Dock link 3, EC RAM 0xfe, 8 bits: the third dock link (ACPI
     /// `DKR3`).
@@ -489,6 +490,13 @@ impl H8 {
             .modify_register(USB_CONTROL::POWER_ENABLE.val(on.into()))
     }
 
+    /// coreboot `bootblock_mainboard_early_init()`: power the USB ports
+    /// through the OS channel of `config` before the EHCI debug console
+    /// looks for its gadget. False when the EC did not take the command.
+    pub fn early_usb_power(config: &H8Config) -> bool {
+        Self::new(Ec::new(config.resources.os)).usb_power_enable(true)
+    }
+
     pub fn fn_ctrl_swap(&self, on: bool) -> bool {
         self.channel
             .modify_register(FN_CONTROL::SWAP_CTRL.val(on.into()))
@@ -569,6 +577,14 @@ impl H8 {
     pub fn dock_latch(&self, connected: bool) -> bool {
         self.channel
             .modify_register(CONFIG3::DOCK_LATCH.val(connected.into()))
+    }
+
+    /// coreboot `mainboard_smi_sleep()`'s test: whether the OS armed an EC
+    /// wake source (EC RAM 0x32), so S3 must keep the EC wake GPE on SCI.
+    pub fn wake_armed(&self) -> bool {
+        self.channel
+            .read_register::<WAKE_CONTROL::Register>()
+            .is_some_and(|wake| wake.is_set(WAKE_CONTROL::LID) || wake.is_set(WAKE_CONTROL::FN_KEY))
     }
 
     /// H8's exact command discards queued events and enables channel attention.
@@ -784,6 +800,9 @@ pub struct H8Config {
     pub bdc_gpio_level: Option<PinState>,
     /// EC query GPE used for `Name(_GPE)` (X61: 0x12).
     pub ec_gpe: u8,
+    /// The GPE the EC's `-EC_WAKE` line raises, for `LID_` and `SLPB`'s
+    /// `_PRW` (ICH7/8/9 ThinkPads: 0x18, GPI 8; X201 and X220: 0x1d, GPI 13).
+    pub wake_gpe: u8,
     pub has_bluetooth: bool,
     pub has_wwan: bool,
     pub has_uwb: bool,
@@ -825,7 +844,12 @@ pub struct H8Config {
 impl H8Config {
     /// Minimal capabilities; the board enables its attached devices explicitly.
     #[must_use]
-    pub const fn new(resources: H8Resources, ec_gpe: u8, hkey_eisaid: &'static str) -> Self {
+    pub const fn new(
+        resources: H8Resources,
+        ec_gpe: u8,
+        wake_gpe: u8,
+        hkey_eisaid: &'static str,
+    ) -> Self {
         Self {
             resources,
             config: [0; 4],
@@ -834,6 +858,7 @@ impl H8Config {
             has_power_management_beeps: false,
             bdc_gpio_level: None,
             ec_gpe,
+            wake_gpe,
             has_bluetooth: false,
             has_wwan: false,
             has_uwb: false,
@@ -892,7 +917,7 @@ mod tests {
 
     #[test]
     fn illumination_follows_the_lights_the_board_has() {
-        let config = H8Config::new(H8Resources::new(EcPorts::new(0, 0), 0, 0), 0, "");
+        let config = H8Config::new(H8Resources::new(EcPorts::new(0, 0), 0, 0), 0, 0x18, "");
         assert!(config.illumination().is_none());
         let thinklight = H8Config {
             has_thinklight: true,
@@ -907,7 +932,7 @@ mod tests {
     #[test]
     fn bluetooth_card_detection_follows_the_devicetree_level() {
         use crate::test_pin::Pin;
-        let assumed = H8Config::new(H8Resources::new(EcPorts::new(0, 0), 0, 0), 0, "");
+        let assumed = H8Config::new(H8Resources::new(EcPorts::new(0, 0), 0, 0), 0, 0x18, "");
         assert!(assumed.bdc_installed(&mut Pin(Err(()))));
         let active_low = H8Config {
             bdc_gpio_level: Some(PinState::Low),

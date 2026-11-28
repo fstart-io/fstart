@@ -7,8 +7,7 @@ use embedded_hal::digital::{InputPin, OutputPin, PinState};
 
 use fstart_driver_lenovo::ec::Ec;
 use fstart_driver_lenovo::h8::{
-    CONFIG2, CONFIG3, DOCK_LINK2, DOCK_LINK3, H8, H8Config, H8DockEvent, H8Led, H8LedMode,
-    WAKE_CONTROL,
+    CONFIG2, CONFIG3, DOCK_LINK2, DOCK_LINK3, H8, H8DockEvent, H8Led, H8LedMode,
 };
 use fstart_driver_lenovo::pmh7::Pmh7;
 
@@ -23,12 +22,6 @@ pub const DOCK_CONNECT_GPIO: u8 = 28;
 /// (`GPE_EC_WAKE`).
 pub const EC_SCI_GPI: u8 = 1;
 pub const EC_WAKE_GPI: u8 = 13;
-
-/// coreboot `bootblock_mainboard_early_init()`: EC USB power before the
-/// EHCI debug console needs the port.
-pub fn early_usb_power(h8_config: &H8Config) -> bool {
-    H8::new(Ec::new(h8_config.resources.os)).usb_power_enable(true)
-}
 
 /// coreboot `dock_connect()`: the three EC dock links, then the connect GPIO.
 pub fn dock_connect(ec: Ec, connect: &mut impl OutputPin) -> bool {
@@ -126,13 +119,6 @@ pub fn smm_dock_connected(ec: Ec, connect: &mut impl OutputPin) {
     let h8 = H8::new(ec);
     h8.set_led(H8Led::Dock2, H8LedMode::Off);
     h8.set_led(H8Led::Dock1, H8LedMode::On);
-}
-
-/// coreboot `mainboard_smi_sleep()`: whether S3 should arm the EC wake GPE
-/// as an SCI, which the OS asked for through EC RAM 0x32.
-pub fn smm_wake_from_ec(ec: Ec) -> bool {
-    ec.read_register::<WAKE_CONTROL::Register>()
-        .is_some_and(|wake| wake.is_set(WAKE_CONTROL::EVENTS) || wake.is_set(WAKE_CONTROL::LID))
 }
 
 /// The PC87382 config port. Only its LDN 3 serial port is wired, to the

@@ -11,7 +11,7 @@ use fstart_driver_intel::southbridge::gpio_ich::{IchGpio, IchPin};
 pub fn early_usb_power() {
     // No console yet to report a failure; the console init reports a dead
     // port instead.
-    let _ = ec::early_usb_power(&crate::config::X201_H8);
+    let _ = fstart_driver_lenovo::h8::H8::early_usb_power(&crate::config::X201_H8);
 }
 
 /// coreboot `set_fsb_frequency()` from `mainboard_pre_raminit()`: the
