@@ -157,8 +157,14 @@ const TO_ENDPOINT: u8 = 0x02;
 
 /// coreboot `DBGP_MICROFRAME_RETRIES`: bus errors retried per transaction.
 const HOST_RETRIES: usize = 10;
-/// NAK/NYET retries of a control stage.
-const CONTROL_RETRIES: usize = 32;
+/// NAK/NYET retries of a control stage (coreboot `pipe->timeout = 1000`).
+const CONTROL_RETRIES: usize = 1000;
+/// Controller and debug port bring-ups before giving up (coreboot
+/// `playtimes`).
+const BRING_UP_ATTEMPTS: usize = 3;
+/// Debug port connect-and-reset tries per bring-up (coreboot
+/// `ehci_wait_for_port`).
+const PORT_WAIT_ATTEMPTS: usize = 3;
 /// NAK/NYET retries of a console packet while the host drains them
 /// (coreboot's console pipe timeout).
 const BULK_RETRIES: usize = 1000;
@@ -782,6 +788,25 @@ impl EhciDebug {
     /// Reset the controller and the debug port and enumerate the gadget
     /// (coreboot `usbdebug_init_`).
     fn bring_up(&mut self, controller: &Controller) -> Result<(), ServiceError> {
+        let mut result = Err(ServiceError::NoDevice);
+        for _ in 0..BRING_UP_ATTEMPTS {
+            result = self.bring_up_once(controller);
+            if result.is_ok() {
+                break;
+            }
+            // coreboot: things didn't work, so remove the claim and retry
+            // from the controller reset.
+            self.state.get_mut().regs().control.modify(
+                Control::OWNER::CLEAR
+                    + Control::ENABLED::CLEAR
+                    + Control::IN_USE::CLEAR
+                    + Control::OUT::CLEAR,
+            );
+        }
+        result
+    }
+
+    fn bring_up_once(&mut self, controller: &Controller) -> Result<(), ServiceError> {
         let op = controller.op;
         let s = self.state.get_mut();
         s.debug = controller.debug;
@@ -820,18 +845,25 @@ impl EhciDebug {
             value.modify(Port::POWER::SET);
             port.set(value.get());
         }
-        wait(|| port.is_set(Port::CONNECTED), 200)?;
-        fstart_arch::udelay(100_000); // connection debounce
-        // coreboot ehci_reset_port(): 50 ms root port reset, enable cleared.
-        let mut value = keep(port.extract());
-        value.modify(Port::ENABLED::CLEAR + Port::RESET::SET);
-        port.set(value.get());
-        fstart_arch::udelay(50_000);
-        let mut value = keep(port.extract());
-        value.modify(Port::RESET::CLEAR);
-        port.set(value.get());
-        wait(|| !port.is_set(Port::RESET), 100)?;
-        if !port.is_set(Port::CONNECTED) || !port.is_set(Port::ENABLED) {
+        // coreboot ehci_wait_for_port(): try the connect and the root port
+        // reset (ehci_reset_port(), 50 ms, enable cleared) a few times.
+        let connect_and_reset = || {
+            if wait(|| port.is_set(Port::CONNECTED), 100).is_err() {
+                return false;
+            }
+            fstart_arch::udelay(100_000); // connection debounce
+            let mut value = keep(port.extract());
+            value.modify(Port::ENABLED::CLEAR + Port::RESET::SET);
+            port.set(value.get());
+            fstart_arch::udelay(50_000);
+            let mut value = keep(port.extract());
+            value.modify(Port::RESET::CLEAR);
+            port.set(value.get());
+            wait(|| !port.is_set(Port::RESET), 100).is_ok()
+                && port.is_set(Port::CONNECTED)
+                && port.is_set(Port::ENABLED)
+        };
+        if !(0..PORT_WAIT_ATTEMPTS).any(|_| connect_and_reset()) {
             return Err(ServiceError::NoDevice); // not a directly attached HS device
         }
         let claim = Control::OWNER::SET + Control::ENABLED::SET + Control::IN_USE::SET;
