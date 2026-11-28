@@ -9,6 +9,7 @@ pub(super) const EMPTY_REGION: MemoryRegion = MemoryRegion {
 
 pub(super) fn runtime_platform_config(
     deferred_buffer: crabefi::DeferredBufferConfig,
+    runtime_reset: Option<crabefi::RuntimeResetConfig>,
 ) -> RuntimePlatformConfig<'static> {
     #[cfg(target_arch = "x86_64")]
     let (time, reset, reset_port) = (
@@ -37,11 +38,11 @@ pub(super) fn runtime_platform_config(
             reserved: 0,
             io_or_mmio_base: 0,
         },
-        reset: crabefi::RuntimeResetConfig {
+        reset: runtime_reset.unwrap_or(crabefi::RuntimeResetConfig {
             mechanism: reset,
             reserved: 0,
             io_or_mmio_base: reset_port,
-        },
+        }),
         external_ranges: &[],
         deferred_buffer,
         // No payload MM: the runtime image keeps the variable store itself.
@@ -205,10 +206,24 @@ mod tests {
 
     #[test]
     fn no_unbacked_runtime_mmio_or_implicit_retained_journal() {
-        let config = runtime_platform_config(crabefi::DeferredBufferConfig::disabled());
+        let config = runtime_platform_config(crabefi::DeferredBufferConfig::disabled(), None);
         assert!(config.external_ranges.is_empty());
         assert_eq!(config.deferred_buffer.base, 0);
         assert_eq!(config.deferred_buffer.size, 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn reset_override_reaches_the_runtime_image() {
+        let reset = crabefi::RuntimeResetConfig {
+            mechanism: crabefi::reset_mechanism::X86_LEGACY,
+            reserved: 0,
+            io_or_mmio_base: 0x1234,
+        };
+        let runtime =
+            runtime_platform_config(crabefi::DeferredBufferConfig::disabled(), Some(reset));
+        assert_eq!(runtime.reset.mechanism, reset.mechanism);
+        assert_eq!(runtime.reset.io_or_mmio_base, reset.io_or_mmio_base);
     }
 
     #[test]
@@ -229,7 +244,7 @@ mod tests {
             assert_eq!((cfg.base, cfg.size), (0, 0));
         }
         let enabled = deferred_buffer_config(true, Some(valid));
-        let runtime = runtime_platform_config(enabled);
+        let runtime = runtime_platform_config(enabled, None);
         assert!(runtime.external_ranges.is_empty());
         assert_eq!(runtime.deferred_buffer.base, 0x75c0_0000);
         assert_eq!(

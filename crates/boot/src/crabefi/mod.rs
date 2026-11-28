@@ -19,7 +19,9 @@ pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
 pub use crabefi::peripheral;
-pub use crabefi::{PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, StorageBackend};
+pub use crabefi::{
+    PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, RuntimeResetConfig, StorageBackend,
+};
 
 /// fstart-owned UEFI payload configuration.
 ///
@@ -102,6 +104,9 @@ pub struct UefiLaunchConfig<'a> {
     /// `variable_storage` is also provided; `None` keeps deferred writes
     /// disabled.
     pub deferred_buffer: Option<fstart_core::description::Range>,
+    /// Optional reset method callable after `ExitBootServices`; `None` uses
+    /// the architecture default. Distinct from the boot-time ACPI controls.
+    pub runtime_reset: Option<RuntimeResetConfig>,
     /// The options the firmware settings menu shows.
     pub settings: Option<settings::FirmwareSettings>,
 }
@@ -325,7 +330,7 @@ fn launch_with_adapters(
         // This constant follows the effective dependency features, including
         // full/basic unification. The loader checks ABI and exact capabilities.
         runtime_image: crabefi::BUNDLED_RUNTIME_IMAGE,
-        runtime: runtime_platform_config(deferred_buffer),
+        runtime: runtime_platform_config(deferred_buffer, launch.runtime_reset),
         heap_pre_initialized: false,
         acpi_devices: launch.acpi_devices,
     })
