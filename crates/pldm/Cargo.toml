@@ -1,0 +1,13 @@
+[package]
+name = "fstart-pldm"
+description = "Sans-IO no_std PLDM (DSP0240/DSP0248/DSP0267) requester and responder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+zerocopy = { workspace = true }
+
+[lints]
+workspace = true

@@ -58,7 +58,15 @@ impl<B: AspeedBoardFacts> fstart_image_build::acpi::HostAcpi<B> for Plan<B> {
 }
 
 pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
-    selection.reject_debug()?;
+    let mut mctp_validate = false;
+    for option in &selection.debug {
+        match option.as_str() {
+            "mctp-validate" => mctp_validate = true,
+            other => {
+                return Err(format!("ASPEED platforms have no debug option '{other}'").into());
+            }
+        }
+    }
     let payload = selection.payload.unwrap_or_else(|| "halt".into());
     let elf = match payload.as_str() {
         "halt" => false,
@@ -187,6 +195,13 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
     } else {
         vec![]
     };
+    let mut main_features = vec!["bundle-ast2500-main"];
+    if elf {
+        main_features.push("payload-elf");
+    }
+    if mctp_validate {
+        main_features.push("mctp-validate");
+    }
     let plan = BuildPlan {
         options: Default::default(),
         payload,
@@ -203,7 +218,7 @@ pub fn resolve(facts: BoardFacts, selection: BuildSelection) -> Result<BuildPlan
             ),
             unit(
                 "main",
-                &["bundle-ast2500-main", "payload-elf"][..1 + usize::from(elf)],
+                &main_features,
                 main.linker_script,
                 UnitOutput::Executable {
                     expectations: main.expectations,
@@ -412,5 +427,25 @@ mod tests {
             ..MJ11
         };
         assert!(resolve(small, BuildSelection::default()).is_err());
+    }
+
+    #[test]
+    fn mctp_validate_debug_option_only_enables_main_stage_feature() {
+        let selection = BuildSelection {
+            debug: vec!["mctp-validate".into()],
+            ..BuildSelection::default()
+        };
+        let plan = resolve(MJ11, selection).unwrap();
+        assert_eq!(plan.units[0].features, ["bundle-ast2500-bootblock"]);
+        assert_eq!(
+            plan.units[1].features,
+            ["bundle-ast2500-main", "mctp-validate"]
+        );
+
+        let bad = BuildSelection {
+            debug: vec!["ehci".into()],
+            ..BuildSelection::default()
+        };
+        assert!(resolve(MJ11, bad).is_err());
     }
 }

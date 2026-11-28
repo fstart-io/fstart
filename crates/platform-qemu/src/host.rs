@@ -314,7 +314,16 @@ fn qemu_recipe(machine: VirtMachine) -> RunRecipe {
 }
 
 pub fn resolve(machine: VirtMachine, selection: BuildSelection) -> Result<BuildPlan, PlanError> {
-    selection.reject_debug()?;
+    for option in &selection.debug {
+        match (machine, option.as_str()) {
+            (VirtMachine::Q35, "mctp-validate") => {}
+            (_, other) => {
+                return Err(
+                    std::format!("this QEMU platform has no debug option '{other}'").into(),
+                );
+            }
+        }
+    }
     match machine {
         VirtMachine::Riscv64 | VirtMachine::Armv7 | VirtMachine::Aarch64 => {
             resolve_virt(machine, selection)
@@ -996,6 +1005,9 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
     } else if coreboot {
         features.push("payload-coreboot".into());
     }
+    if selection.debug.iter().any(|d| d == "mctp-validate") {
+        features.push("mctp-validate".into());
+    }
     let security = if policy.default_security {
         fstart_core::default_security_config()
     } else {
@@ -1144,6 +1156,10 @@ fn resolve_qemu(machine: VirtMachine, selection: BuildSelection) -> Result<Build
             "sha2_backend=\"soft\"".into(),
             "--cfg".into(),
             "sha2_backend_soft=\"compact\"".into(),
+            "--cfg".into(),
+            "aes_force_soft".into(),
+            "--cfg".into(),
+            "polyval_force_soft".into(),
         ]
     } else {
         vec![
@@ -1534,5 +1550,50 @@ mod tests {
         assert_eq!(expectations.runtime[1].base, 0x4080_0000);
         assert!(plan.units[0].bindings.is_empty());
         assert!(plan.inputs.is_empty());
+    }
+
+    #[test]
+    fn mctp_validate_debug_option_is_opt_in_on_q35_only() {
+        let default_q35 = resolve(VirtMachine::Q35, BuildSelection::default()).unwrap();
+        let default_stage = default_q35
+            .units
+            .iter()
+            .find(|u| u.name == "stage")
+            .unwrap();
+        assert!(!default_stage.features.iter().any(|f| f == "mctp-validate"));
+
+        let opt_in_q35 = resolve(
+            VirtMachine::Q35,
+            BuildSelection {
+                debug: vec!["mctp-validate".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let opt_in_smm = opt_in_q35.units.iter().find(|u| u.name == "smm").unwrap();
+        let opt_in_stage = opt_in_q35.units.iter().find(|u| u.name == "stage").unwrap();
+        assert!(!opt_in_smm.features.iter().any(|f| f == "mctp-validate"));
+        assert!(opt_in_stage.features.iter().any(|f| f == "mctp-validate"));
+
+        assert!(
+            resolve(
+                VirtMachine::Aarch64,
+                BuildSelection {
+                    debug: vec!["mctp-validate".into()],
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            resolve(
+                VirtMachine::Q35,
+                BuildSelection {
+                    debug: vec!["ehci".into()],
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
     }
 }

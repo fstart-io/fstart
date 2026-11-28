@@ -2,13 +2,14 @@
 resolver = "3"
 # Default commands exercise host libraries and tools. Firmware units are
 # selected individually by fbuild with their target, features and artifacts.
-default-members = ["tools/fbuild", "tools/amdfw", "tools/ffmt", "crates/*"]
+default-members = ["tools/fbuild", "tools/amdfw", "tools/ffmt", "tools/mctp-broker", "crates/*"]
 members = [
   "boards/*/*",
   "crates/*",
   "tools/fbuild",
   "tools/amdfw",
   "tools/image-web",
+  "tools/mctp-broker",
   "tools/release",
   "tools/ffmt",
 ]
@@ -37,8 +38,11 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 sha2 = { version = "0.11", default-features = false }
 sha3 = { version = "0.10", default-features = false }
 sha1 = { version = "0.11", default-features = false }
+hmac = { version = "0.12", default-features = false }
+hkdf = { version = "0.12", default-features = false }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 ed25519-dalek = { version = "2", default-features = false }
-p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "ecdh"] }
 
 # Embedded / no_std utilities
 embedded-hal = { version = "1", default-features = false }
@@ -123,10 +127,13 @@ fstart-ffs = { path = "crates/ffs" }
 fstart-image-build = { path = "crates/image-build" }
 fstart-load = { path = "crates/load" }
 fstart-log = { path = "crates/log" }
+fstart-mctp = { path = "crates/mctp" }
 fstart-memtest = { path = "crates/memtest" }
 fstart-options = { path = "crates/options" }
 fstart-payload = { path = "crates/payload" }
 fstart-pci = { path = "crates/pci" }
+fstart-pldm = { path = "crates/pldm" }
+fstart-pmci = { path = "crates/pmci" }
 fstart-platform-amd = { path = "crates/platform-amd" }
 fstart-platform-aspeed = { path = "crates/platform-aspeed" }
 fstart-platform-intel = { path = "crates/platform-intel" }
@@ -135,6 +142,7 @@ fstart-platform-sifive = { path = "crates/platform-sifive" }
 fstart-platform-sunxi = { path = "crates/platform-sunxi" }
 fstart-resume = { path = "crates/resume" }
 fstart-smm = { path = "crates/smm" }
+fstart-spdm = { path = "crates/spdm" }
 fstart-stage = { path = "crates/stage" }
 fstart-store = { path = "crates/store" }
 fstart-tcg = { path = "crates/tcg" }
@@ -162,6 +170,16 @@ opt-level = 2
 [profile.dev.package.sha1]
 opt-level = 2
 [profile.dev.package.p256]
+opt-level = 2
+[profile.dev.package.aes-gcm]
+opt-level = 2
+[profile.dev.package.aes]
+opt-level = 2
+[profile.dev.package.ghash]
+opt-level = 2
+[profile.dev.package.hmac]
+opt-level = 2
+[profile.dev.package.hkdf]
 opt-level = 2
 
 [profile.release]

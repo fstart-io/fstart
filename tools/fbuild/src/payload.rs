@@ -35,6 +35,8 @@ pub enum DebugOption {
     /// A log every stage appends to a reserved SPI flash region, read back
     /// with a programmer (coreboot `CONSOLE_SPI_FLASH`).
     FlashConsole,
+    /// Opt-in QEMU MCTP/PLDM/SPDM validation harness (`qemu-q35`, `ast2500`).
+    MctpValidate,
 }
 
 impl DebugOption {
@@ -43,6 +45,7 @@ impl DebugOption {
         match self {
             Self::Ehci => "ehci",
             Self::FlashConsole => "flash-console",
+            Self::MctpValidate => "mctp-validate",
         }
     }
 }

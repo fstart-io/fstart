@@ -174,6 +174,34 @@ where
         Ok(())
     }
 
+    /// Write an arbitrary raw KCS request payload (used by DSP0254 MCTP-over-KCS
+    /// as well as IPMI).
+    fn send_raw(&mut self, payload: &[u8]) -> Result<(), Error> {
+        let (&last, body) = payload.split_last().ok_or(Error::Short)?;
+        self.write_command(START_WRITE)?;
+        body.iter().try_for_each(|&byte| self.write_data(byte))?;
+        self.write_command(END_WRITE)?;
+        self.write_last(last)
+    }
+
+    /// Execute one raw KCS write-then-read transaction (e.g. DSP0254 MCTP-over-KCS)
+    /// without IPMI NetFn/command/completion framing. Returns the number of
+    /// response bytes written into `buffer`.
+    pub fn raw_transaction(&mut self, request: &[u8], buffer: &mut [u8]) -> Result<usize, Error> {
+        let reserve = self.poll_budget.div_ceil(ABORT_SHARE);
+        self.remaining = self.poll_budget - reserve;
+        self.started = false;
+        match self.send_raw(request).and_then(|()| self.receive(buffer)) {
+            Ok(length) => Ok(length),
+            Err(error) if !self.started => Err(error),
+            Err(error) => {
+                self.remaining += reserve;
+                self.error_exits()?;
+                Err(error)
+            }
+        }
+    }
+
     fn send(&mut self, netfn: u8, command: u8, request: &[u8]) -> Result<(), Error> {
         self.write_command(START_WRITE)?;
         self.write_data(netfn << 2)?;
@@ -759,5 +787,50 @@ mod tests {
         busy.borrow_mut().busy = true;
         assert_eq!(notify.report_on(kcs(&busy), 0xc5), None);
         assert!(busy.into_inner().writes.is_empty());
+    }
+
+    #[test]
+    fn raw_transaction_frames_mctp_kcs_and_aborts_on_timeout() {
+        let mctp_kcs_req = [0xB0, 0x01, 0x05, 0x01, 0x0A, 0x08, 0xC8, 0x00, 0x55];
+        let mctp_kcs_rsp = vec![0xB0, 0x01, 0x00, 0xFF];
+        let bmc = RefCell::new(Bmc {
+            answer: mctp_kcs_rsp.clone(),
+            ..Bmc::default()
+        });
+        let mut buf = [0u8; 16];
+        let n = kcs(&bmc).raw_transaction(&mctp_kcs_req, &mut buf).unwrap();
+        assert_eq!(&buf[..n], &mctp_kcs_rsp[..]);
+        let bmc = bmc.into_inner();
+        assert_eq!(bmc.request, mctp_kcs_req);
+        let end = bmc
+            .writes
+            .iter()
+            .position(|&w| w == (true, END_WRITE))
+            .unwrap();
+        assert_eq!(bmc.writes[end + 1], (false, 0x55));
+
+        // Empty payload is rejected without touching the interface.
+        let empty_bmc = RefCell::new(Bmc::default());
+        assert_eq!(
+            kcs(&empty_bmc).raw_transaction(&[], &mut buf),
+            Err(Error::Short)
+        );
+        assert!(empty_bmc.into_inner().writes.is_empty());
+
+        // Stalled read phase times out and aborts the interface back to Idle.
+        let stalled = RefCell::new(Bmc {
+            answer: mctp_kcs_rsp,
+            stall_read: true,
+            ..Bmc::default()
+        });
+        let mut iface = kcs(&stalled).with_poll_budget(64);
+        assert_eq!(
+            iface.raw_transaction(&mctp_kcs_req, &mut buf),
+            Err(Error::Timeout)
+        );
+        assert!(iface.idle());
+        let stalled = stalled.into_inner();
+        assert!(stalled.writes.contains(&(true, GET_STATUS_ABORT)));
+        assert_eq!((stalled.state, stalled.output), (IDLE, None));
     }
 }

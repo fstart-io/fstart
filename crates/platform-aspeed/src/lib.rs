@@ -16,6 +16,12 @@ pub mod head;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
+#[cfg(all(
+    feature = "bundle-ast2500-main",
+    feature = "mctp-validate",
+    target_arch = "arm"
+))]
+pub mod mctp_bmc;
 
 #[cfg(feature = "stage")]
 #[doc(hidden)]

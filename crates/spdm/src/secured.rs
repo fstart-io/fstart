@@ -1,0 +1,538 @@
+//! Secured Messages using SPDM (DSP0277) over MCTP (DSP0276) and PCIe DOE.
+//!
+//! Wire record layout:
+//! - `session_id`: 4 bytes LE
+//! - `seq_num`: 2 bytes LE on MCTP (`SessionTransport::Mctp`), 0 bytes on DOE
+//!   (`SessionTransport::Doe`)
+//! - `length`: 2 bytes LE = `ciphertext.len() + 16 (tag)`
+//! - `ciphertext`: encrypted `[app_data_len_le16, app_data...]`
+//! - `tag`: 16-byte AES-256-GCM authentication tag
+//!
+//! AAD covers `[session_id, (optional seq_num), length]`.
+
+use crate::Error;
+use crate::crypto::{
+    AEAD_IV_LEN, AEAD_KEY_LEN, AEAD_TAG_LEN, HASH_LEN, aes256_gcm_decrypt_in_place,
+    aes256_gcm_encrypt_in_place, hkdf_expand_spdm, hkdf_extract_sha256, record_iv,
+};
+use zerocopy::little_endian::{U16 as LeU16, U32 as LeU32};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
+use zeroize::Zeroize;
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct OpaqueFmt1Prefix {
+    total_elements: u8,
+    reserved: [u8; 3],
+    id: u8,
+    vendor_len: u8,
+    element_len: LeU16,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct MctpSecuredHeader {
+    session_id: LeU32,
+    seq_num: LeU16,
+    length: LeU16,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct DoeSecuredHeader {
+    session_id: LeU32,
+    length: LeU16,
+}
+
+/// DSP0277 §6.1 `OpaqueDataFmt1` SupportedVersion list (advertising DSP0277 1.1)
+/// sent in `KEY_EXCHANGE`.
+///
+/// Unpadded `OpaqueElementDataLen = 5` (`SMDataVersion(1) + SMDataID(1) +
+/// VersionCount(1) + Version(2)`), followed by 3 zero alignment pad bytes.
+pub const OPAQUE_SUPPORTED_VERSION_1_1: [u8; 16] = [
+    0x01, 0x00, 0x00, 0x00, // TotalElements=1, Reserved[3]=0
+    0x00, 0x00, // ID=DMTF(0x00), VendorLen=0
+    0x05, 0x00, // OpaqueElementDataLen=5
+    0x01, 0x01, // SMDataVersion=1, SMDataID=SupportedVersion(1)
+    0x01, 0x00, 0x11, // VersionCount=1, Version=1.1 (0x1100 LE)
+    0x00, 0x00, 0x00, // 3-byte alignment padding to 4B boundary
+];
+
+/// DSP0277 §6.1 `OpaqueDataFmt1` VersionSelection (selecting DSP0277 1.1)
+/// sent in `KEY_EXCHANGE_RSP`.
+pub const OPAQUE_SELECTED_VERSION_1_1: [u8; 12] = [
+    0x01, 0x00, 0x00, 0x00, // TotalElements=1, Reserved[3]=0
+    0x00, 0x00, // ID=DMTF(0x00), VendorLen=0
+    0x04, 0x00, // OpaqueElementDataLen=4
+    0x01, 0x00, // SMDataVersion=1, SMDataID=VersionSelection(0)
+    0x00, 0x11, // SelectedVersion=1.1 (0x1100 LE)
+];
+
+/// Validate that a `KEY_EXCHANGE` opaque data field advertises DSP0277 1.1 (`0x1100`).
+pub fn opaque_offers_version_1_1(opaque: &[u8]) -> bool {
+    let Ok((hdr, rest)) = OpaqueFmt1Prefix::ref_from_prefix(opaque) else {
+        return false;
+    };
+    if hdr.total_elements == 0 || hdr.id != 0x00 || hdr.vendor_len != 0 {
+        return false;
+    }
+    let elem_len = hdr.element_len.get() as usize;
+    if elem_len < 5 || elem_len > rest.len() {
+        return false;
+    }
+    let elem = &rest[..elem_len];
+    if elem[0] != 0x01 || elem[1] != 0x01 {
+        return false;
+    }
+    let count = elem[2] as usize;
+    let Ok((versions, _)) = <[LeU16]>::ref_from_prefix_with_elems(&elem[3..], count) else {
+        return false;
+    };
+    versions.iter().any(|v| v.get() == 0x1100)
+}
+
+/// Validate that a `KEY_EXCHANGE_RSP` opaque data field selects DSP0277 1.1 (`0x1100`).
+pub fn opaque_selects_version_1_1(opaque: &[u8]) -> bool {
+    let Ok((hdr, rest)) = OpaqueFmt1Prefix::ref_from_prefix(opaque) else {
+        return false;
+    };
+    if hdr.total_elements == 0 || hdr.id != 0x00 || hdr.vendor_len != 0 {
+        return false;
+    }
+    let elem_len = hdr.element_len.get() as usize;
+    if elem_len < 4 || elem_len > rest.len() {
+        return false;
+    }
+    let elem = &rest[..elem_len];
+    let Ok((ver, _)) = LeU16::read_from_prefix(&elem[2..]) else {
+        return false;
+    };
+    elem[0] == 0x01 && elem[1] == 0x00 && ver.get() == 0x1100
+}
+
+/// Encapsulation rules that differ between MCTP (DSP0276) and PCIe DOE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionTransport {
+    /// MCTP (DSP0276): 2-byte LE sequence number transmitted in record header.
+    Mctp,
+    /// PCIe DOE: 0-byte sequence number transmitted (implicit counter only).
+    Doe,
+}
+
+impl SessionTransport {
+    pub const fn seq_num_wire_len(self) -> usize {
+        match self {
+            Self::Mctp => 2,
+            Self::Doe => 0,
+        }
+    }
+
+    pub const fn header_len(self) -> usize {
+        4 + self.seq_num_wire_len() + 2
+    }
+}
+
+/// Lifecycle phase of a [`SecuredSession`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPhase {
+    /// Handshake traffic keys active (only `FINISH` / `FINISH_RSP` permitted).
+    Handshake,
+    /// Application data traffic keys active (PLDM, HEARTBEAT, KEY_UPDATE, END_SESSION).
+    Application,
+}
+
+/// Directional traffic key, base IV, and 64-bit monotonic sequence counter.
+#[derive(Clone)]
+pub struct DirectionKeys {
+    pub secret: [u8; HASH_LEN],
+    pub key: [u8; AEAD_KEY_LEN],
+    pub iv: [u8; AEAD_IV_LEN],
+    pub seq_num: u64,
+}
+
+impl Drop for DirectionKeys {
+    fn drop(&mut self) {
+        self.secret.zeroize();
+        self.key.zeroize();
+        self.iv.zeroize();
+    }
+}
+
+impl DirectionKeys {
+    pub fn derive(version: u8, secret: [u8; HASH_LEN]) -> Result<Self, Error> {
+        let mut key = [0u8; AEAD_KEY_LEN];
+        let mut iv = [0u8; AEAD_IV_LEN];
+        hkdf_expand_spdm(&secret, version, b"key", None, &mut key)?;
+        hkdf_expand_spdm(&secret, version, b"iv", None, &mut iv)?;
+        Ok(Self {
+            secret,
+            key,
+            iv,
+            seq_num: 0,
+        })
+    }
+
+    /// Derive the next ratcheted [`DirectionKeys`] without mutating `self`
+    /// (DSP0277 §6.4), allowing rollback if `KEY_UPDATE` verification fails.
+    pub fn next_ratchet(&self, version: u8) -> Result<Self, Error> {
+        let mut next_secret = [0u8; HASH_LEN];
+        hkdf_expand_spdm(
+            &self.secret,
+            version,
+            b"traffic upd",
+            None,
+            &mut next_secret,
+        )?;
+        let derived = Self::derive(version, next_secret);
+        next_secret.zeroize();
+        derived
+    }
+
+    /// Ratchet traffic keys in place for SPDM `KEY_UPDATE` (DSP0277 §6.4).
+    pub fn ratchet(&mut self, version: u8) -> Result<(), Error> {
+        *self = self.next_ratchet(version)?;
+        Ok(())
+    }
+}
+
+/// Active SPDM secured session (handshake or application data phase).
+pub struct SecuredSession {
+    pub session_id: u32,
+    pub version: u8,
+    pub transport: SessionTransport,
+    pub is_requester: bool,
+    pub phase: SessionPhase,
+    pub handshake_secret: [u8; HASH_LEN],
+    pub req_finished_key: [u8; HASH_LEN],
+    pub rsp_finished_key: [u8; HASH_LEN],
+    pub req_keys: DirectionKeys,
+    pub rsp_keys: DirectionKeys,
+    /// Staged requester-to-responder traffic keys awaiting `VerifyNewKey`.
+    pub pending_req_keys: Option<DirectionKeys>,
+    /// Staged responder-to-requester traffic keys awaiting `UpdateAllKeys` ACK / `VerifyNewKey`.
+    pub pending_rsp_keys: Option<DirectionKeys>,
+    pub active: bool,
+}
+
+impl Drop for SecuredSession {
+    fn drop(&mut self) {
+        self.handshake_secret.zeroize();
+        self.req_finished_key.zeroize();
+        self.rsp_finished_key.zeroize();
+    }
+}
+
+impl SecuredSession {
+    /// Derive handshake traffic keys and finished keys after `KEY_EXCHANGE_RSP`
+    /// (DSP0277 §6.2).
+    pub fn from_handshake(
+        session_id: u32,
+        version: u8,
+        transport: SessionTransport,
+        is_requester: bool,
+        shared_secret: &[u8; 32],
+        th1: &[u8; HASH_LEN],
+    ) -> Result<Self, Error> {
+        let zero_salt = [0u8; HASH_LEN];
+        let handshake_secret = hkdf_extract_sha256(&zero_salt, shared_secret);
+
+        let mut req_hs = [0u8; HASH_LEN];
+        let mut rsp_hs = [0u8; HASH_LEN];
+        hkdf_expand_spdm(
+            &handshake_secret,
+            version,
+            b"req hs data",
+            Some(th1),
+            &mut req_hs,
+        )?;
+        hkdf_expand_spdm(
+            &handshake_secret,
+            version,
+            b"rsp hs data",
+            Some(th1),
+            &mut rsp_hs,
+        )?;
+
+        let mut req_finished_key = [0u8; HASH_LEN];
+        let mut rsp_finished_key = [0u8; HASH_LEN];
+        hkdf_expand_spdm(&req_hs, version, b"finished", None, &mut req_finished_key)?;
+        hkdf_expand_spdm(&rsp_hs, version, b"finished", None, &mut rsp_finished_key)?;
+
+        let req_keys = DirectionKeys::derive(version, req_hs)?;
+        let rsp_keys = DirectionKeys::derive(version, rsp_hs)?;
+        req_hs.zeroize();
+        rsp_hs.zeroize();
+
+        Ok(Self {
+            session_id,
+            version,
+            transport,
+            is_requester,
+            phase: SessionPhase::Handshake,
+            handshake_secret,
+            req_finished_key,
+            rsp_finished_key,
+            req_keys,
+            rsp_keys,
+            pending_req_keys: None,
+            pending_rsp_keys: None,
+            active: true,
+        })
+    }
+
+    /// Transition from handshake keys to application data keys after `FINISH_RSP`
+    /// (DSP0277 §6.3 / DSP0274 Table 89).
+    pub fn derive_data_keys(&mut self, th2: &[u8; HASH_LEN]) -> Result<(), Error> {
+        let mut salt1 = [0u8; HASH_LEN];
+        hkdf_expand_spdm(
+            &self.handshake_secret,
+            self.version,
+            b"derived",
+            None,
+            &mut salt1,
+        )?;
+        let zero_ikm = [0u8; HASH_LEN];
+        let mut master_secret = hkdf_extract_sha256(&salt1, &zero_ikm);
+        salt1.zeroize();
+
+        let mut req_data = [0u8; HASH_LEN];
+        let mut rsp_data = [0u8; HASH_LEN];
+        // DSP0274 Table 89: exact labels are "req app data" and "rsp app data".
+        hkdf_expand_spdm(
+            &master_secret,
+            self.version,
+            b"req app data",
+            Some(th2),
+            &mut req_data,
+        )?;
+        hkdf_expand_spdm(
+            &master_secret,
+            self.version,
+            b"rsp app data",
+            Some(th2),
+            &mut rsp_data,
+        )?;
+        master_secret.zeroize();
+
+        self.req_keys = DirectionKeys::derive(self.version, req_data)?;
+        self.rsp_keys = DirectionKeys::derive(self.version, rsp_data)?;
+        self.pending_req_keys = None;
+        self.pending_rsp_keys = None;
+        req_data.zeroize();
+        rsp_data.zeroize();
+        self.handshake_secret.zeroize();
+        self.req_finished_key.zeroize();
+        self.rsp_finished_key.zeroize();
+        self.phase = SessionPhase::Application;
+        Ok(())
+    }
+
+    /// Stage ratcheted keys for SPDM `KEY_UPDATE` without discarding current keys
+    /// until `VerifyNewKey` completes (DSP0274 §10.21.1).
+    pub fn stage_key_update(&mut self, update_all: bool) -> Result<(), Error> {
+        self.pending_req_keys = Some(self.req_keys.next_ratchet(self.version)?);
+        self.pending_rsp_keys = if update_all {
+            Some(self.rsp_keys.next_ratchet(self.version)?)
+        } else {
+            None
+        };
+        Ok(())
+    }
+
+    /// Commit staged `req_keys` (zeroizing the previous keys on drop).
+    pub fn commit_req_key(&mut self) -> Result<(), Error> {
+        let next = self.pending_req_keys.take().ok_or(Error::InvalidMessage)?;
+        self.req_keys = next;
+        Ok(())
+    }
+
+    /// Commit staged `rsp_keys` if present (zeroizing the previous keys on drop).
+    pub fn commit_rsp_key_if_pending(&mut self) {
+        if let Some(next) = self.pending_rsp_keys.take() {
+            self.rsp_keys = next;
+        }
+    }
+
+    /// Discard any uncommitted `KEY_UPDATE` keys and retain the active keys.
+    pub fn rollback_key_update(&mut self) {
+        self.pending_req_keys = None;
+        self.pending_rsp_keys = None;
+    }
+
+    /// Encrypt `app_data` into a DSP0277 secured record using `tx`.
+    fn encrypt_with(
+        session_id: u32,
+        transport: SessionTransport,
+        tx: &mut DirectionKeys,
+        app_data: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let hdr_len = transport.header_len();
+        let pt_len = 2 + app_data.len();
+        let record_len = pt_len + AEAD_TAG_LEN;
+        let total = hdr_len + record_len;
+        if out.len() < total || record_len > u16::MAX as usize {
+            return Err(Error::BufferTooSmall);
+        }
+
+        let seq = tx.seq_num;
+        tx.seq_num = seq.checked_add(1).ok_or(Error::SequenceOverflow)?;
+
+        if transport == SessionTransport::Mctp {
+            let hdr = MctpSecuredHeader {
+                session_id: LeU32::new(session_id),
+                seq_num: LeU16::new(seq as u16),
+                length: LeU16::new(record_len as u16),
+            };
+            hdr.write_to_prefix(out)
+                .map_err(|_| Error::BufferTooSmall)?;
+        } else {
+            let hdr = DoeSecuredHeader {
+                session_id: LeU32::new(session_id),
+                length: LeU16::new(record_len as u16),
+            };
+            hdr.write_to_prefix(out)
+                .map_err(|_| Error::BufferTooSmall)?;
+        }
+
+        LeU16::new(app_data.len() as u16)
+            .write_to_prefix(&mut out[hdr_len..])
+            .map_err(|_| Error::BufferTooSmall)?;
+        out[hdr_len + 2..hdr_len + pt_len].copy_from_slice(app_data);
+
+        let iv = record_iv(&tx.iv, seq);
+        let (aad, rest) = out[..total].split_at_mut(hdr_len);
+        let (ct, tag_slot) = rest.split_at_mut(pt_len);
+        let tag = aes256_gcm_encrypt_in_place(&tx.key, &iv, aad, ct)?;
+        tag_slot.copy_from_slice(&tag);
+        Ok(total)
+    }
+
+    /// Encrypt `app_data` into a DSP0277 secured record in `out`.
+    pub fn encrypt(&mut self, app_data: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+        if !self.active {
+            return Err(Error::SessionInactive);
+        }
+        let tx = if self.is_requester {
+            &mut self.req_keys
+        } else {
+            &mut self.rsp_keys
+        };
+        Self::encrypt_with(self.session_id, self.transport, tx, app_data, out)
+    }
+
+    /// Encrypt `app_data` using the staged pending TX key (for requester `VerifyNewKey`
+    /// or responder `UpdateAllKeys` `KEY_UPDATE_ACK`).
+    pub fn encrypt_pending(&mut self, app_data: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+        if !self.active {
+            return Err(Error::SessionInactive);
+        }
+        let tx = if self.is_requester {
+            self.pending_req_keys.as_mut()
+        } else {
+            self.pending_rsp_keys.as_mut()
+        }
+        .ok_or(Error::InvalidMessage)?;
+        Self::encrypt_with(self.session_id, self.transport, tx, app_data, out)
+    }
+
+    fn decrypt_with(
+        session_id: u32,
+        transport: SessionTransport,
+        rx: &mut DirectionKeys,
+        record: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, Error> {
+        let hdr_len = transport.header_len();
+        if record.len() < hdr_len + 2 + AEAD_TAG_LEN {
+            return Err(Error::ShortBuffer);
+        }
+        let expected_seq = rx.seq_num;
+        let (sid, rec_len) = if transport == SessionTransport::Mctp {
+            let (hdr, _) =
+                MctpSecuredHeader::ref_from_prefix(record).map_err(|_| Error::ShortBuffer)?;
+            if hdr.seq_num.get() != (expected_seq as u16) {
+                return Err(Error::DecryptFailed);
+            }
+            (hdr.session_id.get(), hdr.length.get() as usize)
+        } else {
+            let (hdr, _) =
+                DoeSecuredHeader::ref_from_prefix(record).map_err(|_| Error::ShortBuffer)?;
+            (hdr.session_id.get(), hdr.length.get() as usize)
+        };
+        if sid != session_id {
+            return Err(Error::InvalidMessage);
+        }
+
+        let expected_len = hdr_len + rec_len;
+        let len_ok = if transport == SessionTransport::Doe {
+            // PCIe DOE pads data objects to 4-byte DW boundaries (0..3 pad bytes).
+            record.len() >= expected_len && record.len() - expected_len <= 3
+        } else {
+            record.len() == expected_len
+        };
+        if !len_ok || rec_len < 2 + AEAD_TAG_LEN {
+            return Err(Error::InvalidMessage);
+        }
+        let pt_len = rec_len - AEAD_TAG_LEN;
+        let aad = &record[..hdr_len];
+        let ct_slice = &record[hdr_len..hdr_len + pt_len];
+        let mut tag = [0u8; AEAD_TAG_LEN];
+        tag.copy_from_slice(&record[hdr_len + pt_len..expected_len]);
+
+        if out.len() < pt_len {
+            return Err(Error::BufferTooSmall);
+        }
+        out[..pt_len].copy_from_slice(ct_slice);
+        let iv = record_iv(&rx.iv, expected_seq);
+        aes256_gcm_decrypt_in_place(&rx.key, &iv, aad, &mut out[..pt_len], &tag)?;
+
+        rx.seq_num = expected_seq.checked_add(1).ok_or(Error::SequenceOverflow)?;
+        let (app_len_le, _) =
+            LeU16::read_from_prefix(&out[..pt_len]).map_err(|_| Error::ShortBuffer)?;
+        let app_len = app_len_le.get() as usize;
+        if 2 + app_len > pt_len {
+            return Err(Error::InvalidMessage);
+        }
+        out.copy_within(2..2 + app_len, 0);
+        Ok(app_len)
+    }
+
+    /// Decrypt and authenticate a DSP0277 secured record into `out`, returning
+    /// the decrypted `app_data` length.
+    pub fn decrypt(&mut self, record: &[u8], out: &mut [u8]) -> Result<usize, Error> {
+        let (len, _) = self.decrypt_trying_pending(record, out)?;
+        Ok(len)
+    }
+
+    /// Decrypt `record`, trying the staged pending RX key first when a `KEY_UPDATE`
+    /// is in progress and falling back to the active RX key on failure.
+    ///
+    /// Returns `(app_data_len, used_pending_key)`.
+    pub fn decrypt_trying_pending(
+        &mut self,
+        record: &[u8],
+        out: &mut [u8],
+    ) -> Result<(usize, bool), Error> {
+        if !self.active {
+            return Err(Error::SessionInactive);
+        }
+        let pending_rx = if self.is_requester {
+            self.pending_rsp_keys.as_mut()
+        } else {
+            self.pending_req_keys.as_mut()
+        };
+        if let Some(rx) = pending_rx
+            && let Ok(len) = Self::decrypt_with(self.session_id, self.transport, rx, record, out)
+        {
+            return Ok((len, true));
+        }
+        let rx = if self.is_requester {
+            &mut self.rsp_keys
+        } else {
+            &mut self.req_keys
+        };
+        let len = Self::decrypt_with(self.session_id, self.transport, rx, record, out)?;
+        Ok((len, false))
+    }
+}
