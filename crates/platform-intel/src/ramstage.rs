@@ -947,44 +947,19 @@ impl<B: IntelBoard> Ramstage<B, Cold> {
         // was given.
         let root = self.pci.as_ref().and_then(|pci| pci.roots().first());
         let root = root.ok_or(ServiceError::NotInitialized)?;
-        let mut tables =
-            crate::acpi::collect(northbridge, southbridge, root, board, &self.video_aml)
-                .map_err(|_| ServiceError::HardwareError)?;
-        let log_reserved_len = if fstart_log::mem::is_attached() && fstart_log::mem::capacity() > 0
-        {
-            let cap = fstart_log::mem::capacity();
-            let mut initial = alloc::vec![0u8; cap];
-            let used = fstart_log::mem::copy_to(&mut initial);
-            let flog = fstart_acpi::flog::build_reserved(cap, &initial[..used]);
-            let reserved = flog.len();
-            tables.extra.push(flog);
-            Some(reserved)
-        } else {
-            None
-        };
-        let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
-        let rsdp = crate::tables::prepare_acpi(store, &platform, &tables.dsdt, &tables.extra)
+        let tables = crate::acpi::collect(northbridge, southbridge, root, board, &self.video_aml)
             .map_err(|_| ServiceError::HardwareError)?;
-        self.ctx.set_acpi_rsdp(Some(rsdp));
-        if let Some(reserved) = log_reserved_len
-            && let Some(acpi_entry) = store.find(fstart_store::tag::ACPI)
-        {
-            // SAFETY: `acpi_entry` is the freshly assembled ACPI table slice.
-            let assembled = unsafe {
-                core::slice::from_raw_parts(
-                    store.address(&acpi_entry) as *const u8,
-                    acpi_entry.len(),
-                )
-            };
-            if let Some(flog_addr) = fstart_acpi::flog::find_in_assembled(assembled, rsdp, reserved)
-            {
-                self.ctx
-                    .set_acpi_log(Some(fstart_core::description::Range::new(
-                        flog_addr,
-                        reserved as u64,
-                    )));
-            }
-        }
+        let store = self.store.as_mut().ok_or(ServiceError::NotInitialized)?;
+        self.ctx.acpi = Some(
+            crate::tables::prepare_acpi(
+                store,
+                &platform,
+                &tables.dsdt,
+                tables.extra,
+                fstart_acpi::flog::build_reserved(),
+            )
+            .map_err(|_| ServiceError::HardwareError)?,
+        );
         Ok(())
     }
 
@@ -1109,7 +1084,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
 
     /// Describe the machine to the build's payload launcher and boot it.
     fn hand_off(&self) -> ! {
-        use fstart_payload::{AcpiTables, Description, Handoff, Placement, Range};
+        use fstart_payload::{Description, Handoff, Placement, Range};
         let (firmware_base, firmware_size) = self.ctx.firmware_region();
         // ACPI, SMBIOS and the coreboot window all live in the store.
         let tables: heapless::Vec<Range, 1> = self
@@ -1130,24 +1105,7 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
         description.framebuffer = self
             .pci_framebuffer
             .or_else(|| self.northbridge.framebuffer_info());
-        description.acpi = self.acpi_rsdp().map(|rsdp| {
-            let region = self
-                .store
-                .as_ref()
-                .and_then(|s| {
-                    let entry = s.find(fstart_store::tag::ACPI)?;
-                    Some(Range::new(
-                        s.address(&entry) as u64,
-                        (entry.len() as u64).next_multiple_of(0x1000),
-                    ))
-                })
-                .unwrap_or_else(|| Range::new(rsdp & !0xfff, 0x10000));
-            AcpiTables {
-                rsdp,
-                region,
-                log: self.ctx.acpi_log(),
-            }
-        });
+        description.acpi = self.ctx.acpi;
         description.acpi_s5 = self.acpi_s5.as_slice();
         description.smbios = self.ctx.smbios();
         description.mainboard = (&self.mainboard.0, &self.mainboard.1);
@@ -1234,8 +1192,7 @@ fn init_mp<P: IntelEarlyPlatform>(
 
 pub struct MainstageCtx {
     e820: fstart_core::services::memory_detect::E820State,
-    acpi_rsdp: Option<u64>,
-    acpi_log: Option<fstart_core::description::Range>,
+    acpi: Option<fstart_core::description::AcpiTables>,
     smbios: Option<u64>,
     firmware_base: u64,
     firmware_size: usize,
@@ -1245,8 +1202,7 @@ impl MainstageCtx {
     pub(crate) fn new(firmware_base: u64, firmware_size: usize) -> Self {
         Self {
             e820: fstart_core::services::memory_detect::E820State::new(),
-            acpi_rsdp: None,
-            acpi_log: None,
+            acpi: None,
             smbios: None,
             firmware_base,
             firmware_size,
@@ -1276,12 +1232,10 @@ impl MainstageCtx {
 
     #[must_use]
     pub const fn acpi_rsdp(&self) -> Option<u64> {
-        self.acpi_rsdp
-    }
-
-    #[must_use]
-    pub const fn acpi_log(&self) -> Option<fstart_core::description::Range> {
-        self.acpi_log
+        match self.acpi {
+            Some(acpi) => Some(acpi.rsdp),
+            None => None,
+        }
     }
 
     #[must_use]
@@ -1292,14 +1246,6 @@ impl MainstageCtx {
     #[must_use]
     pub const fn firmware_region(&self) -> (u64, usize) {
         (self.firmware_base, self.firmware_size)
-    }
-
-    pub(crate) fn set_acpi_rsdp(&mut self, rsdp: Option<u64>) {
-        self.acpi_rsdp = rsdp;
-    }
-
-    pub(crate) fn set_acpi_log(&mut self, log: Option<fstart_core::description::Range>) {
-        self.acpi_log = log;
     }
 
     pub(crate) fn set_smbios(&mut self, smbios: Option<u64>) {

@@ -462,14 +462,14 @@ impl<D> MainstagePayload<D> for X86LinuxPayload {
         #[cfg(feature = "tcg")]
         measure_x86_linux_cmdline(config.bootargs);
         fstart_stage::timestamps::handoff();
-        let acpi_log = description.acpi.and_then(|acpi| acpi.log);
         fstart_arch::x86::boot::boot_linux_with_handoff(&params, || {
-            if let Some(log) = acpi_log {
+            #[cfg(feature = "acpi-log")]
+            if let Some(log) = description.acpi.and_then(|acpi| acpi.log) {
                 // SAFETY: platform reserved this identity-mapped FLOG ACPI table
                 // inside the sealed ACPI store entry; this runs right before
                 // entering Linux after all firmware diagnostics have been logged.
                 unsafe {
-                    fstart_log::mem::finalize_acpi_table_and_detach(log.base, log.size as usize);
+                    fstart_acpi::flog::refresh(log, fstart_acpi::flog::Snapshot::Final);
                 }
             }
         })

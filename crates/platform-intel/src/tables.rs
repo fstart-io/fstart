@@ -111,7 +111,8 @@ fn print_acpi_table(data: &[u8]) {
     let sig = &data[..4];
     // Dumping FLOG at TRACE level would log the firmware log back into itself
     // and flood the serial console.
-    if sig == &fstart_acpi::flog::SIGNATURE {
+    #[cfg(feature = "ramstage")]
+    if sig == fstart_acpi::flog::SIGNATURE {
         return;
     }
     let sig_str = core::str::from_utf8(sig).unwrap_or("????");
@@ -225,14 +226,20 @@ fn print_acpi_tables_acpixtract(data: &[u8]) {
 /// Assembles the collected DSDT AML and extra tables via [`fstart_acpi::platform::assemble_into`]
 /// into a page-aligned [`fstart_store::tag::ACPI`] entry trimmed to the
 /// assembled size, installs a legacy RSDP copy in the EBDA, and hex-dumps
-/// the tables. Returns the RSDP address only after bounded assembly
-/// succeeds. Errors must abort required-table handoff.
+/// the tables. Publish the resulting addresses only after assembly succeeds.
 pub fn prepare_acpi(
     store: &mut fstart_store::Store,
     platform: &fstart_acpi::platform::PlatformConfig,
     dsdt: &[u8],
-    extra: &[Vec<u8>],
-) -> Result<u64, fstart_acpi::AmlError> {
+    mut extra: Vec<Vec<u8>>,
+    log_table: Option<Vec<u8>>,
+) -> Result<fstart_core::description::AcpiTables, fstart_acpi::AmlError> {
+    use fstart_core::description::{AcpiTables, Range};
+    let log_index = log_table.map(|table| {
+        let index = extra.len();
+        extra.push(table);
+        index
+    });
     // Room for boards with large ACPI namespaces (dozens of devices, IORT
     // with many ID mappings) plus any large extra tables (such as FLOG); the
     // entry is trimmed to the assembled size.
@@ -254,7 +261,14 @@ pub fn prepare_acpi(
     // SAFETY: a fresh store entry nothing else references.
     let storage = unsafe { store.bytes_mut(&entry) };
     storage.fill(0);
-    let acpi_len = fstart_acpi::platform::assemble_into(storage, acpi_addr, platform, dsdt, extra)?;
+    let layout = fstart_acpi::platform::assemble_into(storage, acpi_addr, platform, dsdt, &extra)?;
+    let acpi_len = layout.len;
+    let log = log_index.map(|i| {
+        Range::new(
+            acpi_addr + layout.extra_offsets[i] as u64,
+            extra[i].len() as u64,
+        )
+    });
     store
         .resize_last(entry, acpi_len)
         .map_err(|_| fstart_acpi::AmlError::LengthOverflow)?;
@@ -274,7 +288,11 @@ pub fn prepare_acpi(
         print_acpi_tables_acpixtract(acpi_data);
     }
 
-    Ok(acpi_addr)
+    Ok(AcpiTables {
+        rsdp: acpi_addr,
+        region: Range::new(acpi_addr, (acpi_len as u64).next_multiple_of(0x1000)),
+        log,
+    })
 }
 
 /// Extra board-specific SMBIOS Type 41 entry with explicit fields (e.g.

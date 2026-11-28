@@ -284,9 +284,10 @@ fn launch_with_adapters(
     let has_settings = launch_settings.as_mut().is_some_and(settings::install);
     let platform_hooks = FstartHooks {
         settings: has_settings,
+        #[cfg(feature = "acpi-log")]
         acpi_log: launch.acpi_log,
     };
-    let hooks = (has_settings || launch.acpi_log.is_some())
+    let hooks = (has_settings || (cfg!(feature = "acpi-log") && launch.acpi_log.is_some()))
         .then_some(&platform_hooks as &dyn crabefi::PlatformHooks);
     init_platform_raw(PlatformConfig {
         memory_map,
@@ -324,37 +325,33 @@ fn launch_with_adapters(
 /// right before OS handoff.
 struct FstartHooks {
     settings: bool,
+    #[cfg(feature = "acpi-log")]
     acpi_log: Option<fstart_core::description::Range>,
 }
 
+#[cfg(feature = "acpi-log")]
 impl FstartHooks {
-    fn patch_acpi_log(&self) {
+    fn patch_acpi_log(&self, snapshot: fstart_acpi::flog::Snapshot) {
         if let Some(log) = self.acpi_log {
             // SAFETY: platform reserved this identity-mapped FLOG ACPI table
             // inside the sealed ACPI store entry; no heap allocation occurs.
             unsafe {
-                fstart_log::mem::finalize_acpi_table(log.base, log.size as usize);
+                fstart_acpi::flog::refresh(log, snapshot);
             }
         }
     }
 }
 
 impl crabefi::PlatformHooks for FstartHooks {
+    #[cfg(feature = "acpi-log")]
     fn quiesce_dma(&self) {
         // Covers CrabEFI's direct Linux boot as well as pre-ExitBootServices.
-        self.patch_acpi_log();
+        self.patch_acpi_log(fstart_acpi::flog::Snapshot::Continue);
     }
 
+    #[cfg(feature = "acpi-log")]
     fn on_exit_boot_services(&self) {
-        // Capture any final CrabEFI ExitBootServices messages and detach
-        // atomically so nothing after ExitBootServices touches the buffer.
-        if let Some(log) = self.acpi_log {
-            // SAFETY: platform reserved this identity-mapped FLOG ACPI table
-            // inside the sealed ACPI store entry; no heap allocation occurs.
-            unsafe {
-                fstart_log::mem::finalize_acpi_table_and_detach(log.base, log.size as usize);
-            }
-        }
+        self.patch_acpi_log(fstart_acpi::flog::Snapshot::Final);
     }
 
     fn firmware_settings_available(&self) -> bool {

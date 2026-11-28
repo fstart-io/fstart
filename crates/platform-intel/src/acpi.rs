@@ -93,7 +93,7 @@ mod host_baseline {
         let tables = collect(north, south, &root, board, &[])
             .map_err(|e| format!("Intel ACPI collection: {e:?}"))?;
         let mut image = alloc::vec![0; 128 * 1024];
-        let length = fstart_acpi::platform::assemble_into(
+        let layout = fstart_acpi::platform::assemble_into(
             &mut image,
             base,
             &platform,
@@ -101,7 +101,7 @@ mod host_baseline {
             &tables.extra,
         )
         .map_err(|e| format!("Intel ACPI assembly: {e:?}"))?;
-        image.truncate(length);
+        image.truncate(layout.len);
         Ok(image)
     }
 

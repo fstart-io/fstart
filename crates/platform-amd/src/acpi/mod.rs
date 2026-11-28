@@ -461,6 +461,7 @@ impl Tables {
             &self.dsdt,
             &self.extra,
         )
+        .map(|layout| layout.len)
     }
 }
 

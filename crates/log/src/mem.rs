@@ -5,10 +5,8 @@
 //! store's `CONSOLE` entry once DRAM is up, and staying attached across
 //! postcar, ramstage and UEFI payload execution.
 //!
-//! Right before OS handoff, [`finalize_acpi_table`] or
-//! [`finalize_acpi_table_and_detach`] copies the linearized log (oldest to
-//! newest) into a pre-reserved `FLOG` ACPI table in place without allocating,
-//! updating its SDT length and checksum.
+//! A consumer can snapshot the initialized bytes in order without allocating,
+//! and detach the sink atomically with the final snapshot at handoff.
 //!
 //! All buffer access and state transitions are serialized by an internal
 //! spinlock (`MEM_LOCK`). Without an attached buffer, every operation is a
@@ -25,12 +23,6 @@ const OVERFLOW: u32 = 1 << 31;
 
 /// Low 31 bits of [`Header::cursor`]: next write offset in `0..size`.
 const CURSOR_MASK: u32 = !OVERFLOW;
-
-/// Standard ACPI System Description Table header length.
-const ACPI_SDT_HEADER_SIZE: usize = 36;
-
-/// ACPI signature for the firmware log table.
-pub const ACPI_FLOG_SIGNATURE: [u8; 4] = *b"FLOG";
 
 /// Ring-buffer header; `size` body bytes follow it immediately.
 #[derive(Clone, Copy)]
@@ -158,7 +150,7 @@ unsafe fn copy_body_range(slot: Slot, body_offset: usize, dst: &mut [u8]) {
         return;
     }
     // SAFETY: caller guarantees `body_offset..body_offset + dst.len()` lies
-    // within the initialized body inside `slot.ptr..slot.ptr + slot.len`.
+    // within the initialized part of the body following the validated header.
     unsafe {
         core::ptr::copy_nonoverlapping(
             slot.ptr.add(HEADER_SIZE + body_offset),
@@ -233,7 +225,7 @@ unsafe fn append_to_slot(slot: Slot, bytes: &[u8]) {
         if b == b'\r' {
             continue;
         }
-        // SAFETY: `pos < size` and `HEADER_SIZE + size <= slot.len`; writing via
+        // SAFETY: `pos < size`, validated against the backing buffer on attach; writing via
         // raw pointer from `slot.ptr` preserves provenance and never reads the
         // potentially uninitialized destination byte.
         unsafe { slot.ptr.add(HEADER_SIZE + pos).write(b) };
@@ -449,84 +441,19 @@ pub(crate) fn try_write_bytes(bytes: &[u8]) -> bool {
 /// Copy the linearized log (oldest to newest) into `dst`, returning the number
 /// of bytes written. If `dst` is smaller than [`len`], copies the newest tail.
 pub fn copy_to(dst: &mut [u8]) -> usize {
-    with_slot(|slot| {
-        slot.map_or(0, |s| {
-            // SAFETY: `MEM_LOCK` is held and `s` is a validated slot.
-            unsafe { copy_from_slot(s, dst) }
-        })
-    })
+    with_slot(|slot| snapshot(*slot, dst))
 }
 
-/// Patch a pre-reserved `FLOG` ACPI table in place with the current memory log.
-///
-/// Updates the table's body, SDT `Length` field (offset 4..8), zeroes any
-/// unused trailing bytes within `reserved_len`, and recomputes the ACPI SDT
-/// `Checksum` (offset 9). Performs zero heap allocations, so it is safe to call
-/// from UEFI `ExitBootServices()` and `quiesce_dma()` hooks.
-///
-/// Returns `Some(final_table_len)` on success, or `None` if the target does
-/// not hold a valid `FLOG` header or `reserved_len < 36`.
-///
-/// # Safety
-/// `table_addr..table_addr + reserved_len` must be writable, identity-mapped
-/// memory holding the reserved `FLOG` ACPI table, with no concurrent readers
-/// or writers.
-pub unsafe fn finalize_acpi_table(table_addr: u64, reserved_len: usize) -> Option<usize> {
-    // SAFETY: caller contract.
-    unsafe { finalize_acpi_table_inner(table_addr, reserved_len, false) }
+/// Copy the final snapshot and detach under the same lock, so subsequent
+/// writers cannot touch the backing buffer after handoff.
+pub fn copy_to_and_detach(dst: &mut [u8]) -> usize {
+    with_slot(|slot| snapshot(slot.take(), dst))
 }
 
-/// Atomically patch a pre-reserved `FLOG` ACPI table in place and detach the
-/// memory log under a single lock hold, so no concurrent writer can race the
-/// final snapshot or write to the buffer afterwards.
-///
-/// # Safety
-/// As for [`finalize_acpi_table`].
-pub unsafe fn finalize_acpi_table_and_detach(
-    table_addr: u64,
-    reserved_len: usize,
-) -> Option<usize> {
-    // SAFETY: caller contract.
-    unsafe { finalize_acpi_table_inner(table_addr, reserved_len, true) }
-}
-
-unsafe fn finalize_acpi_table_inner(
-    table_addr: u64,
-    reserved_len: usize,
-    detach_after: bool,
-) -> Option<usize> {
-    if table_addr == 0 || reserved_len < ACPI_SDT_HEADER_SIZE {
-        if detach_after {
-            detach();
-        }
-        return None;
-    }
-    with_slot(|slot| {
-        // SAFETY: caller guarantees `table_addr` is writable for `reserved_len` bytes.
-        let table = unsafe { core::slice::from_raw_parts_mut(table_addr as *mut u8, reserved_len) };
-        if table[0..4] != ACPI_FLOG_SIGNATURE {
-            if detach_after {
-                *slot = None;
-            }
-            return None;
-        }
-        let body_written = slot.map_or(0, |s| {
-            // SAFETY: `MEM_LOCK` is held and `s` is a validated slot.
-            unsafe { copy_from_slot(s, &mut table[ACPI_SDT_HEADER_SIZE..]) }
-        });
-        if detach_after {
-            *slot = None;
-        }
-        let final_len = ACPI_SDT_HEADER_SIZE + body_written;
-        let final_len_u32 = u32::try_from(final_len).ok()?;
-        table[4..8].copy_from_slice(&final_len_u32.to_le_bytes());
-        table[final_len..].fill(0);
-        table[9] = 0;
-        let sum = table[..final_len]
-            .iter()
-            .fold(0u8, |acc, &b| acc.wrapping_add(b));
-        table[9] = 0u8.wrapping_sub(sum);
-        Some(final_len)
+fn snapshot(slot: Option<Slot>, dst: &mut [u8]) -> usize {
+    slot.map_or(0, |s| {
+        // SAFETY: called with MEM_LOCK held and a validated slot.
+        unsafe { copy_from_slot(s, dst) }
     })
 }
 
@@ -670,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_acpi_table_updates_length_checksum_and_detaches_atomically() {
+    fn final_snapshot_detaches_the_sink() {
         let _guard = TEST_LOCK.lock().unwrap();
         detach();
 
@@ -678,30 +605,10 @@ mod tests {
         assert!(unsafe { init(log_buf.as_mut_ptr(), log_buf.len()) });
         write_bytes(b"bootblock\n");
 
-        let mut acpi = [0xAAu8; ACPI_SDT_HEADER_SIZE + 64];
-        acpi[0..4].copy_from_slice(&ACPI_FLOG_SIGNATURE);
-        acpi[8] = 1; // revision
-
-        let len1 = unsafe { finalize_acpi_table(acpi.as_mut_ptr() as u64, acpi.len()) }.unwrap();
-        assert_eq!(len1, ACPI_SDT_HEADER_SIZE + 10);
-        assert_eq!(&acpi[36..len1], b"bootblock\n");
-        assert!(acpi[len1..].iter().all(|&b| b == 0));
-        let sum1 = acpi[..len1].iter().fold(0u8, |a, &b| a.wrapping_add(b));
-        assert_eq!(sum1, 0);
-        assert!(is_attached());
-
-        // Append more (e.g. CrabEFI output) and finalize + detach atomically.
-        write_bytes(b"crabefi\n");
-        let len2 = unsafe { finalize_acpi_table_and_detach(acpi.as_mut_ptr() as u64, acpi.len()) }
-            .unwrap();
-        assert_eq!(len2, ACPI_SDT_HEADER_SIZE + 18);
-        assert_eq!(&acpi[36..len2], b"bootblock\ncrabefi\n");
-        let sum2 = acpi[..len2].iter().fold(0u8, |a, &b| a.wrapping_add(b));
-        assert_eq!(sum2, 0);
+        let mut dst = [0; 64];
+        let n = copy_to_and_detach(&mut dst);
+        assert_eq!(&dst[..n], b"bootblock\n");
+        assert!(!write_bytes(b"after handoff"));
         assert!(!is_attached());
-
-        // Wrong signature is rejected.
-        acpi[0..4].copy_from_slice(b"NOPE");
-        assert!(unsafe { finalize_acpi_table(acpi.as_mut_ptr() as u64, acpi.len()) }.is_none());
     }
 }

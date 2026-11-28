@@ -435,13 +435,30 @@ mod tests {
         );
         assert_eq!(short, [0xa5; 36]);
         let mut storage = [0; 4096];
-        let len = assemble_into(&mut storage, 0x100000, &config, &[], &[]).unwrap();
-        let mut exact = alloc::vec![0; len];
+        let base = 0x100000;
+        let extra = [alloc::vec![0x5a; 36], alloc::vec![0xa5; 51]];
+        let layout = assemble_into(&mut storage, base, &config, &[], &extra).unwrap();
+        let mut exact = alloc::vec![0; layout.len];
         assert_eq!(
-            assemble_into(&mut exact, 0x100000, &config, &[], &[]),
-            Ok(len)
+            assemble_into(&mut exact, base, &config, &[], &extra).unwrap(),
+            layout
         );
-        assert_eq!(exact, storage[..len]);
+        assert_eq!(exact, storage[..layout.len]);
+        // Reported placements are the actual XSDT targets, not positions
+        // inferred from the SDT lengths or their rounded sizes.
+        let xsdt = (u64::from_le_bytes(storage[24..32].try_into().unwrap()) - base) as usize;
+        let xsdt_len = u32::from_le_bytes(storage[xsdt + 4..xsdt + 8].try_into().unwrap()) as usize;
+        let entries = &storage[xsdt + xsdt_len - 16..xsdt + xsdt_len];
+        assert_eq!(layout.extra_offsets.len(), extra.len());
+        for ((offset, table), entry) in layout
+            .extra_offsets
+            .iter()
+            .zip(&extra)
+            .zip(entries.as_chunks::<8>().0)
+        {
+            assert_eq!(base + *offset as u64, u64::from_le_bytes(*entry));
+            assert_eq!(&storage[*offset..*offset + table.len()], table);
+        }
         assert_eq!(
             assemble_into(&mut short, u64::MAX, &config, &[], &[]),
             Err(crate::AmlError::LengthOverflow)

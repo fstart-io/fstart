@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 default = []
+acpi-log = ["dep:fstart-acpi", "fstart-acpi/flog"]
 fit = ["dep:dtoolkit", "dep:heapless"]
 # Capabilities are additive: UI includes the full core, and combining full and
 # basic still selects the full runtime bundle.
@@ -23,6 +24,7 @@ sha2-digest = ["fit", "fstart-crypto/sha2-digest"]
 sha3-digest = ["fit", "fstart-crypto?/sha3-digest"]
 
 [dependencies]
+fstart-acpi = { workspace = true, optional = true }
 fstart-core = { workspace = true, optional = true }
 fstart-crypto = { workspace = true, optional = true }
 fstart-log = { workspace = true, optional = true }

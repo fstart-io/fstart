@@ -1,143 +1,114 @@
-//! ACPI `FLOG` (Firmware Log) table builder.
-//!
-//! Stores the firmware's in-memory boot log directly after a standard 36-byte
-//! ACPI System Description Table header so any OS exposes it without a custom
-//! driver (for example `/sys/firmware/acpi/tables/FLOG` on Linux).
-//!
-//! Because later firmware phases (such as CrabEFI) keep logging after ACPI
-//! tables are initially assembled, [`build_reserved`] reserves a fixed-capacity
-//! slot inside the ACPI table area that [`fstart_log::mem::finalize_acpi_table`]
-//! patches in place right before OS handoff.
+//! `FLOG`: a standard ACPI SDT followed by the retained firmware console bytes
+//! in chronological order. The reserved slot stays put while SDT length and
+//! checksum describe only the current snapshot (including before OS handoff).
+//! On Linux, `tail -c +37 /sys/firmware/acpi/tables/FLOG` skips the SDT header;
+//! no platform driver is required. A wrapped ring can start mid-line.
 
-use alloc::vec;
+use acpi_tables::{Checksum, sdt::Sdt};
 use alloc::vec::Vec;
+use fstart_core::description::Range;
+use fstart_log::mem;
 
-/// 4-byte ACPI signature for the firmware log table.
 pub const SIGNATURE: [u8; 4] = *b"FLOG";
+const HEADER_SIZE: usize = 36;
 
-/// Table revision.
-pub const REVISION: u8 = 1;
-
-/// Standard ACPI SDT header size in bytes.
-pub const HEADER_SIZE: usize = 36;
-
-const RSDP_XSDT_OFFSET: usize = 24;
-const XSDT_ENTRY_SIZE: usize = 8;
-
-/// Build a `FLOG` table with `capacity` bytes reserved for the log body and
-/// populated with `initial` bytes (keeping the tail if `initial` exceeds
-/// `capacity`).
-///
-/// The returned `Vec` has length `HEADER_SIZE + capacity` so the ACPI assembler
-/// reserves the full slot, while the SDT `Length` and `Checksum` fields cover
-/// `HEADER_SIZE + body_len` so the table is already valid even if no later
-/// patch runs.
-#[must_use]
-pub fn build_reserved(capacity: usize, initial: &[u8]) -> Vec<u8> {
-    let body = if initial.len() > capacity {
-        &initial[initial.len() - capacity..]
-    } else {
-        initial
-    };
-    let mut table = vec![0u8; HEADER_SIZE + capacity];
-    let active_len = HEADER_SIZE + body.len();
-    table[0..4].copy_from_slice(&SIGNATURE);
-    table[4..8].copy_from_slice(&(active_len as u32).to_le_bytes());
-    table[8] = REVISION;
-    table[10..16].copy_from_slice(&crate::OEM_ID);
-    table[16..24].copy_from_slice(&crate::OEM_TABLE_ID);
-    table[24..28].copy_from_slice(&crate::OEM_REVISION.to_le_bytes());
-    table[28..32].copy_from_slice(&acpi_tables::CREATOR_ID);
-    table[32..36].copy_from_slice(&acpi_tables::CREATOR_REVISION);
-    table[HEADER_SIZE..active_len].copy_from_slice(body);
-    let sum = table[..active_len]
-        .iter()
-        .fold(0u8, |acc, &b| acc.wrapping_add(b));
-    table[9] = 0u8.wrapping_sub(sum);
-    table
+/// Build directly in the reserved table body. No table is needed on a stage
+/// with no attached memory console. Ring capacity is bounded to 31 bits.
+pub fn build_reserved() -> Option<Vec<u8>> {
+    let cap = mem::capacity();
+    if cap == 0 {
+        return None;
+    }
+    let header = Sdt::new(
+        SIGNATURE,
+        HEADER_SIZE as u32,
+        1,
+        crate::OEM_ID,
+        crate::OEM_TABLE_ID,
+        crate::OEM_REVISION,
+    );
+    let mut table = Vec::with_capacity(HEADER_SIZE + cap);
+    table.extend_from_slice(header.as_slice());
+    table.resize(HEADER_SIZE + cap, 0);
+    update(&mut table, Snapshot::Continue);
+    Some(table)
 }
 
-/// Locate the `FLOG` table's physical address inside a contiguous ACPI buffer
-/// assembled at `base_addr` (starting with RSDP), verifying that the entire
-/// `expected_slot_len` bytes lie within `assembled`.
-#[must_use]
-pub fn find_in_assembled(
-    assembled: &[u8],
-    base_addr: u64,
-    expected_slot_len: usize,
-) -> Option<u64> {
-    if expected_slot_len < HEADER_SIZE {
-        return None;
-    }
-    let xsdt_bytes = assembled.get(RSDP_XSDT_OFFSET..RSDP_XSDT_OFFSET + 8)?;
-    let xsdt_addr = u64::from_le_bytes(xsdt_bytes.try_into().ok()?);
-    let xsdt_off = usize::try_from(xsdt_addr.checked_sub(base_addr)?).ok()?;
-    let xsdt_len_start = xsdt_off.checked_add(4)?;
-    let xsdt_len_end = xsdt_off.checked_add(8)?;
-    let xsdt_len_bytes = assembled.get(xsdt_len_start..xsdt_len_end)?;
-    let xsdt_len = u32::from_le_bytes(xsdt_len_bytes.try_into().ok()?) as usize;
-    if xsdt_len < HEADER_SIZE || xsdt_off.checked_add(xsdt_len)? > assembled.len() {
-        return None;
-    }
-    let entries = (xsdt_len - HEADER_SIZE) / XSDT_ENTRY_SIZE;
-    for i in 0..entries {
-        let off = xsdt_off
-            .checked_add(HEADER_SIZE)?
-            .checked_add(i.checked_mul(XSDT_ENTRY_SIZE)?)?;
-        let end = off.checked_add(8)?;
-        let addr = u64::from_le_bytes(assembled.get(off..end)?.try_into().ok()?);
-        let table_off = usize::try_from(addr.checked_sub(base_addr)?).ok()?;
-        let slot_end = table_off.checked_add(expected_slot_len)?;
-        if slot_end <= assembled.len()
-            && assembled.get(table_off..table_off + 4) == Some(&SIGNATURE)
-        {
-            return Some(addr);
+/// Which handoff boundary is taking the snapshot.
+#[derive(Clone, Copy)]
+pub enum Snapshot {
+    /// More console output can follow (UEFI DMA quiescence).
+    Continue,
+    /// Stop writing to the ring atomically with the copy.
+    Final,
+}
+
+/// Refresh the pre-reserved table without allocating at OS handoff.
+///
+/// # Safety
+/// `slot` is the entire writable, identity-mapped FLOG reservation returned by
+/// table placement. It must be disjoint from the ring and exclusively accessible
+/// during this call.
+pub unsafe fn refresh(slot: Range, snapshot: Snapshot) {
+    // SAFETY: the platform retains this exclusive store reservation until handoff.
+    let table =
+        unsafe { core::slice::from_raw_parts_mut(slot.base as *mut u8, slot.size as usize) };
+    update(table, snapshot);
+}
+
+fn update(table: &mut [u8], snapshot: Snapshot) {
+    let Some((header, body)) = table
+        .split_at_mut_checked(HEADER_SIZE)
+        .filter(|(header, _)| header[..4] == SIGNATURE)
+    else {
+        // Even a damaged table must not leave the sink live after handoff.
+        if matches!(snapshot, Snapshot::Final) {
+            mem::detach();
         }
-    }
-    None
+        return;
+    };
+    let used = match snapshot {
+        Snapshot::Continue => mem::copy_to(body),
+        Snapshot::Final => mem::copy_to_and_detach(body),
+    };
+    body[used..].fill(0);
+    header[4..8].copy_from_slice(&((HEADER_SIZE + used) as u32).to_le_bytes());
+    header[9] = 0;
+    let mut checksum = Checksum::default();
+    checksum.append(header);
+    checksum.append(&body[..used]);
+    header[9] = checksum.value();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{FadtConfig, assemble};
 
-    #[test]
-    fn build_reserved_produces_valid_sdt_and_is_found_in_assembled() {
-        let flog = build_reserved(128, b"[INFO ] hello\n");
-        assert_eq!(flog.len(), HEADER_SIZE + 128);
-        assert_eq!(&flog[0..4], &SIGNATURE);
-        let active_len = u32::from_le_bytes(flog[4..8].try_into().unwrap()) as usize;
-        assert_eq!(active_len, HEADER_SIZE + 14);
-        assert_eq!(&flog[HEADER_SIZE..active_len], b"[INFO ] hello\n");
-        let sum = flog[..active_len]
-            .iter()
-            .fold(0u8, |acc, &b| acc.wrapping_add(b));
-        assert_eq!(sum, 0);
-
-        let base = 0x1000_0000u64;
-        let reserved = flog.len();
-        let assembled = assemble(base, &FadtConfig::default(), &[], &[], &[flog]);
-        let found = find_in_assembled(&assembled, base, reserved).expect("FLOG in XSDT");
-        assert!(find_in_assembled(&assembled, base, assembled.len() + 1).is_none());
-        let off = (found - base) as usize;
-        assert_eq!(&assembled[off..off + 4], &SIGNATURE);
-        assert_eq!(
-            &assembled[off + HEADER_SIZE..off + HEADER_SIZE + 14],
-            b"[INFO ] hello\n"
-        );
+    fn check(table: &[u8], expected: &[u8]) {
+        let len = u32::from_le_bytes(table[4..8].try_into().unwrap()) as usize;
+        assert_eq!(&table[..4], &SIGNATURE);
+        assert_eq!(&table[HEADER_SIZE..len], expected);
+        assert_eq!(table[..len].iter().copied().fold(0u8, u8::wrapping_add), 0);
+        assert!(table[len..].iter().all(|&b| b == 0));
     }
 
     #[test]
-    fn build_reserved_keeps_tail_when_initial_exceeds_capacity() {
-        let flog = build_reserved(4, b"abcdef");
-        assert_eq!(flog.len(), HEADER_SIZE + 4);
-        let active_len = u32::from_le_bytes(flog[4..8].try_into().unwrap()) as usize;
-        assert_eq!(active_len, HEADER_SIZE + 4);
-        assert_eq!(&flog[HEADER_SIZE..active_len], b"cdef");
-        let sum = flog[..active_len]
-            .iter()
-            .fold(0u8, |acc, &b| acc.wrapping_add(b));
-        assert_eq!(sum, 0);
+    fn handoff_updates_only_the_reserved_slot_and_detaches_on_final_snapshot() {
+        let mut backing = [0u32; 16];
+        // SAFETY: aligned backing exclusively owned until the final snapshot.
+        assert!(unsafe { mem::init(backing.as_mut_ptr().cast(), size_of_val(&backing)) });
+        mem::write_bytes(b"boot");
+        let mut table = build_reserved().unwrap();
+        check(&table, b"boot");
+        let slot = Range::new(table.as_mut_ptr() as u64, table.len() as u64);
+        mem::write_bytes(b" UEFI");
+        // SAFETY: `table` exclusively owns the complete reservation.
+        unsafe { refresh(slot, Snapshot::Continue) };
+        check(&table, b"boot UEFI");
+        mem::write_bytes(b" exit");
+        unsafe { refresh(slot, Snapshot::Final) };
+        check(&table, b"boot UEFI exit");
+        assert!(!mem::is_attached());
+        assert!(build_reserved().is_none());
     }
 }

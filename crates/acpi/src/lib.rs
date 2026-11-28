@@ -51,6 +51,7 @@ pub mod devices;
 pub mod dmar;
 pub mod einj;
 pub mod ext;
+#[cfg(feature = "flog")]
 pub mod flog;
 pub mod gpe;
 pub mod gtdt;

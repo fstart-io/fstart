@@ -717,6 +717,7 @@ dependencies = [
  "fstart-acpi-macros",
  "fstart-arch",
  "fstart-core",
+ "fstart-log",
  "fstart-pci",
  "tock-registers",
  "zerocopy",
@@ -1326,6 +1327,7 @@ version = "0.1.0"
 dependencies = [
  "crabefi-core",
  "dtoolkit",
+ "fstart-acpi",
  "fstart-arch",
  "fstart-core",
  "fstart-crypto",
@@ -1713,6 +1715,7 @@ dependencies = [
 name = "fstart-payload"
 version = "0.1.0"
 dependencies = [
+ "fstart-acpi",
  "fstart-arch",
  "fstart-boot",
  "fstart-core",
