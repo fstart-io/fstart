@@ -3,8 +3,9 @@
 
 use fstart_driver_usbdebug::Config;
 
-/// coreboot `CONFIG_EHCI_BAR` for ICH9 and Ibex Peak: one 4 KiB page below
-/// the local APIC, clear of the fixed HPET, I/O APIC and flash decodes.
+/// coreboot `CONFIG_EHCI_BAR` for ICH9 and Ibex Peak, BAR0 until the ramstage
+/// allocator places it: one 4 KiB page above the local APIC, clear of the
+/// fixed HPET, I/O APIC and flash decodes.
 const EHCI_DEBUG_BAR: u32 = 0xfef0_0000;
 const EHCI_DEBUG_BAR_SIZE: u64 = 0x1000;
 /// The ECAM window both chipsets decode (256 buses).

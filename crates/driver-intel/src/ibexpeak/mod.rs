@@ -682,11 +682,8 @@ mod tests {
     #[test]
     fn ehci_debug_maps_the_selected_controller() {
         let mut config = IntelIbexPeakConfig::new();
-        let debug = |config: &IntelIbexPeakConfig| {
-            config
-                .ehci_debug(0xe000_0000)
-                .map(|d| d.fixed_bar().address)
-        };
+        let debug =
+            |config: &IntelIbexPeakConfig| config.ehci_debug(0xe000_0000).map(|d| d.address());
         assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1a, 0)));
         config.ehci_debug_controller = Some(EhciController::Ehci1);
         assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1d, 0)));

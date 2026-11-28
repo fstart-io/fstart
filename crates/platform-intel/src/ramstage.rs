@@ -486,17 +486,7 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
             .and_then(|root| fstart_pci::PciEcam::new([root]))
             .inspect_err(|error| fstart_log::error!("pci: root setup failed: {:?}", error))
             .map_err(|_| ServiceError::HardwareError)?;
-        let mut fixed_bars = self.southbridge.fixed_pci_bars();
-        // Without --debug ehci no console initialized this BAR: let PCI
-        // allocate it normally.
-        if cfg!(feature = "ehci-console")
-            && let Some(debug) = B::CONFIG.ehci_debug()
-        {
-            fixed_bars
-                .push(debug.fixed_bar())
-                .map_err(|_| ServiceError::InvalidParam)?;
-        }
-        pci.add_fixed_bars(fixed_bars.as_slice())
+        pci.add_fixed_bars(self.southbridge.fixed_pci_bars().as_slice())
             .inspect_err(|error| {
                 fstart_log::error!("pci: fixed BAR reservation failed: {:?}", error);
             })
@@ -525,7 +515,9 @@ impl<B: IntelBoard> Ramstage<B, MemoryMap> {
             .map_err(|_| ServiceError::HardwareError)?;
         }
         let pci = self.pci.insert(pci);
-        pci.enumerate_and_allocate()
+        // The EHCI debug console's BAR is the allocator's like any other.
+        crate::debug_console::around_pci_allocation(|| pci.enumerate_and_allocate())
+            .inspect_err(|error| fstart_log::error!("pci: EHCI debug console busy: {:?}", error))?
             .inspect_err(|error| {
                 fstart_log::error!("pci: enumeration/allocation failed: {:?}", error);
             })

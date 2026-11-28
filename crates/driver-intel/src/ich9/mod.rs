@@ -1839,11 +1839,7 @@ mod tests {
             }),
             ..IntelIch9Config::new()
         };
-        let debug = |config: &IntelIch9Config| {
-            config
-                .ehci_debug(0xe000_0000)
-                .map(|d| d.fixed_bar().address)
-        };
+        let debug = |config: &IntelIch9Config| config.ehci_debug(0xe000_0000).map(|d| d.address());
         assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1a, 7)));
         config.ehci_debug_controller = Some(EhciController::Ehci1);
         assert_eq!(debug(&config), Some(PciAddress::new(0, 0, 0x1d, 7)));
