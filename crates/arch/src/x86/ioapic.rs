@@ -112,6 +112,14 @@ impl IoApic {
         self.mmio(PIN_ASSERTION).set(pin.into());
     }
 
+    /// coreboot `ioapic_setup_gsi0_id()`: ID `id`, every entry masked, and
+    /// the legacy 8259 output on pin 0 routed to `bsp_apic_id`.
+    pub fn setup_gsi0(&self, id: u8, bsp_apic_id: u8) {
+        self.set_id(id);
+        self.mask_all();
+        self.route_i8259(bsp_apic_id);
+    }
+
     /// Route the legacy 8259 output (pin 0) to `bsp_apic_id` as ExtINT, the
     /// virtual-wire mode of the GSI0 IOAPIC.
     pub fn route_i8259(&self, bsp_apic_id: u8) {

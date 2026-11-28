@@ -507,9 +507,7 @@ impl IntelIch7 {
         let bsp_lapic_id = fstart_arch::x86::lapic::Lapic::at(LAPIC_BASE).id();
         // coreboot register_new_ioapic_gsi0(): ID 0, mask the table, then
         // route the legacy 8259 output to the BSP as ExtINT.
-        ioapic.set_id(0);
-        ioapic.mask_all();
-        ioapic.route_i8259(bsp_lapic_id as u8);
+        ioapic.setup_gsi0(0, bsp_lapic_id as u8);
         fstart_log::info!(
             "intel-ich7: IOAPIC redirs={} IRQ0 ExtINT routed to LAPIC {}",
             ioapic.redirection_entries(),

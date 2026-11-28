@@ -129,10 +129,7 @@ impl IntelIbexPeak {
         // SAFETY: the PCH I/O APIC is decoded at its fixed base (OIC.AEN).
         let ioapic = unsafe { fstart_arch::x86::ioapic::IoApic::new(super::IOAPIC_BASE) };
         ioapic.lock_redirection_entries();
-        // ioapic_setup_gsi0(): ID 0, every entry masked, i8259 virtual wire.
-        ioapic.set_id(0);
-        ioapic.mask_all();
-        ioapic.route_i8259(fstart_arch::x86::lapic::Lapic::from_msr().id() as u8);
+        ioapic.setup_gsi0(0, fstart_arch::x86::lapic::Lapic::from_msr().id() as u8);
     }
 
     /// coreboot `pch_enable_serial_irqs()`: 21-frame packets, one
