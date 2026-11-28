@@ -105,6 +105,10 @@ impl<V: Variant> Init for Iod<V> {
         Silicon::release_aps::<V>(&state.soc, &state.si, aps)
     }
 
+    fn use_sipi_ap_launch(_: &Ctx<'_, Self>, state: &State) -> bool {
+        state.soc.retained_locks
+    }
+
     fn cpu_errors(cpu: &Self::Cpu) -> u32 {
         cpu.errors()
     }

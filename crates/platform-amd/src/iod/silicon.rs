@@ -359,7 +359,18 @@ impl Silicon {
             let bar = nbios[i].psp_bar().step("PSP BAR")?;
             if rb.socket == 0 {
                 ctx.psp_bar = bar;
-                msr().reg(fstart_driver_amd::ccx::msr::PSP_ADDRESS).set(bar);
+                let cpu = msr();
+                let reg = cpu.reg(fstart_driver_amd::ccx::msr::PSP_ADDRESS);
+                let existing = reg.get();
+                if existing == 0 {
+                    reg.set(bar);
+                } else if existing != bar {
+                    fstart_log::warn!(
+                        "iod: PSP_ADDRESS already set to {:#x}, expected {:#x}",
+                        existing,
+                        bar
+                    );
+                }
             }
         }
         if generation == cpu::Silicon::Gn {
@@ -401,6 +412,13 @@ impl Silicon {
             let map = core_map(&ctx.apob, s).step("APOB core map")?;
             let _ = si.maps.push(map);
         }
+        if ctx.retained_locks {
+            fstart_log::info!(
+                "iod: SMU already initialized across CPU-only reset; skipping PPTable/workarounds"
+            );
+            si.nbios.iter().for_each(nbio_ssp::smu_syshub_bit11);
+            return Ok(());
+        }
         let power = ctx.policy.power;
         for (s, smu) in si.smus.iter().enumerate() {
             let ids: Vec<u16> = apic_ids(generation, s as u8, &si.maps[s]).collect();
@@ -433,6 +451,12 @@ impl Silicon {
         ctx: &mut Ctx,
         si: &Silicon,
     ) -> Result<(), &'static str> {
+        if ctx.retained_locks {
+            fstart_log::info!(
+                "iod: FCH secondaries/USB already initialized across CPU-only reset; skipping"
+            );
+            return Ok(());
+        }
         let generation = V::SILICON;
         fstart_driver_amd::fch::huashan::usb::reset(
             &ctx.fch,
@@ -465,6 +489,12 @@ impl Silicon {
         si: &Silicon,
         engines: &heapless::Vec<Engine<'static>, MAX_ENGINES>,
     ) -> Result<(), &'static str> {
+        if ctx.retained_locks {
+            fstart_log::info!(
+                "iod: DXIO links already trained across CPU-only reset; skipping retraining"
+            );
+            return Ok(());
+        }
         let generation = V::SILICON;
         let policy = ctx.policy.dxio;
         // The vendor PCIe speed workaround reads its fuse on socket 0 (bus 0).
@@ -731,22 +761,28 @@ impl Silicon {
         power::write_cac_weights(&cpu, &cac);
 
         ctx.apic_ids = apic_ids.to_vec();
-        let rev = ctx.identity.revision;
-        // Keep CC6 disabled until boot-time calibration finishes. Milan's early
-        // CC6 PPI belongs to the topology-change reset path, not normal boot.
-        let features = v11::feature_mask(rev, &FeaturePolicy::default());
-        for (socket, smu) in si.smus.iter().enumerate() {
-            v11::ccx_done(
-                smu,
-                generation,
-                features,
-                &CcxDonePolicy::donor(rev),
-                &ctx.timer,
-            )
-            .inspect_err(|_| {
-                fstart_log::error!("sp3: socket {} CCX completion failed", socket as u32);
-            })
-            .step("SMU CCX done")?;
+        if !ctx.retained_locks {
+            let rev = ctx.identity.revision;
+            // Keep CC6 disabled until boot-time calibration finishes. Milan's early
+            // CC6 PPI belongs to the topology-change reset path, not normal boot.
+            let features = v11::feature_mask(rev, &FeaturePolicy::default());
+            for (socket, smu) in si.smus.iter().enumerate() {
+                v11::ccx_done(
+                    smu,
+                    generation,
+                    features,
+                    &CcxDonePolicy::donor(rev),
+                    &ctx.timer,
+                )
+                .inspect_err(|_| {
+                    fstart_log::error!("sp3: socket {} CCX completion failed", socket as u32);
+                })
+                .step("SMU CCX done")?;
+            }
+        } else {
+            fstart_log::info!(
+                "iod: SMU CCX completion already done across CPU-only reset; skipping"
+            );
         }
         {
             ctx.cppc = cppc::<V>(ctx, si, mp)?;

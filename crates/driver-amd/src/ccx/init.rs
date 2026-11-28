@@ -241,7 +241,11 @@ pub fn thread_init<M: MsrAccess + ?Sized>(threads: &Threads, cpu: &M) -> bool {
         // APs only (PSP_APOB §3.2, threads ≠ 0): the BSP wrote its PSP_ADDR
         // with the BAR, and a second write raises #GP.
         if let Some(bar) = threads.psp_addr[usize::from(thread.location().socket & 1)] {
-            cpu.reg(super::msr::PSP_ADDRESS).set(bar);
+            use tock_registers::interfaces::Readable;
+            let reg = cpu.reg(super::msr::PSP_ADDRESS);
+            if reg.get() == 0 {
+                reg.set(bar);
+            }
         }
         threads.ccx.early(cpu, &thread);
         let inputs = ApInputs {

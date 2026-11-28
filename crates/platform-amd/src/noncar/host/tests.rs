@@ -184,8 +184,9 @@ fn picasso_packs_the_blob_tables_into_a_native_image() {
 /// AMD host plan, for SMM `-Cjump-tables=no` + `-Zemit-stack-sizes`, for
 /// expanding the Zeppelin reset image to 3 MiB, for stage `-Zplt=yes`
 /// with compact soft `sha1`/`sha2`, for moving `smm.bin` to FFS without
-/// per-board `FSTART_SMM_IMAGE`/`FSTART_MP_MAX_CPUS` unit env, and for
-/// Zeppelin's NVRAM reservation.)
+/// per-board `FSTART_SMM_IMAGE`/`FSTART_MP_MAX_CPUS` unit env, for
+/// Zeppelin's NVRAM reservation, and for separating `.data` VMA/LMA in the
+/// AMD PSP reset image.)
 #[test]
 fn zeppelin_units_are_pinned() {
     let units = |payload: &str| {
@@ -200,9 +201,9 @@ fn zeppelin_units_are_pinned() {
     assert_eq!(
         ["halt", "linux", "uefi"].map(units),
         [
-            "c2d4d9f8870d7eed1e5b544cf0e402cb068dd0f314f412bf2686616f413a55cc",
-            "050e69827aca4fea21f0fea92becaf145fb5f51bd4cde513f5b15ffc8d1c44b0",
-            "c3fda55ddf70a26e73c38ee5b6803b0bad26f4a91d17cb421eee3ac9317db38c",
+            "5c051e045e193283d4964e43443c506d11022cb272ecedc8a77cce3118cc55ee",
+            "2e823c086cf2be417ab2d61d0b562d0d100ef54d81eae87207bc88ffa4571140",
+            "fa745ef4359ab91ee2f888de84bdb9232b3f995f965c04a90f8c96e0ccb824d8",
         ]
     );
 }

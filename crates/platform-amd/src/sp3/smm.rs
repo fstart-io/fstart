@@ -77,11 +77,29 @@ pub const fn fch_smi(generation: Generation) -> fstart_driver_amd::fch::smi::Con
     }
 }
 
-/// The SoC's own SMI sources after the FCH's: Rome's CF9 trap.
+/// Route Rome's CF9 resets directly to the FCH rather than trapping them in
+/// SMM, so processor-only retaining resets (`0x00`/`0x04`) are not converted
+/// into system resets (`0x06`).
 #[cfg(feature = "bundle")]
 pub fn sources(fch: &crate::sp3::silicon::hw::PrimaryFch, config: &crate::smm::SmmConfig<Sp3>) {
+    use fstart_driver_amd::fch::{
+        FchHw,
+        acpimmio::{PM_D2, PmioDebug},
+        early, huashan,
+    };
+    use fstart_driver_amd::window::Window;
+    use tock_registers::interfaces::{ReadWriteable, Readable};
     if config.soc.generation == Generation::Rome {
-        fstart_driver_amd::fch::huashan::smm::arm_cf9_trap(fch);
+        huashan::smm::disarm_cf9_trap(fch);
+        early::enable_cf9_io(fch);
+        let debug = fch.acpi().at(PM_D2);
+        let before = debug.get();
+        debug.modify(PmioDebug::CF9_RST_DISABLE::CLEAR);
+        fstart_log::info!(
+            "rome: direct CF9 decode PMxD2 {:#x} -> {:#x}",
+            before,
+            debug.get()
+        );
     }
 }
 

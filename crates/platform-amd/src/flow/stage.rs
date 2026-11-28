@@ -412,12 +412,14 @@ fn bring_up_cpus<S: Soc>(
     let ctx = machine.ctx();
     let cpu = S::cpu_driver(&ctx, &mut chipset, fstart_stage::microcode_blob())?;
     let threads = S::threads(&ctx, &chipset)?;
+    let use_sipi = S::use_sipi_ap_launch(&ctx, &chipset);
     let cpus = mp::start(
         S::NAME,
         &cpu,
         || S::cpu_errors(&cpu),
         threads,
         ctx.board.max_cpus,
+        use_sipi,
         |aps| S::release_aps(&ctx, &chipset, aps),
     )?;
     let state = S::cpus_up(&ctx, chipset, &cpus.mp, &cpus.apic_ids)?;
