@@ -589,6 +589,7 @@ core::arch::global_asm!(
     "hlt",
     "jmp 5b",
     full_reset = const super::CF9_FULL,
+    full_reset_type = const super::CF9_FULL & !super::CF9_RST_CPU,
     postcar_stash = const super::car_teardown::POSTCAR_STASH_ADDR,
     options(att_syntax),
 );

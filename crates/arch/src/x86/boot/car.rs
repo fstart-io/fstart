@@ -319,11 +319,14 @@ core::arch::global_asm!(
     "rdmsr",
     "andl $0xC00, %eax", // DEF_TYPE_EN | FIX_EN
     "jz 1f",
-    // Warm reset detected — write 0x06 to CF9.
+    // Warm reset detected: a hard reset, as `cf9_reset` does it (SYS_RST,
+    // then SYS_RST | RST_CPU).
     // POST 0xef: dirty MTRR state; forcing reset.
     "movb $0xef, %al",
     "outb %al, $0x80",
     "movw $0xCF9, %dx",
+    "movb $0x02, %al",
+    "outb %al, %dx",
     "movb $0x06, %al",
     "outb %al, %dx",
     "2: hlt",

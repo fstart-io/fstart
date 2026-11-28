@@ -29,7 +29,8 @@
 ///
 /// # Safety of the operation
 /// CF9 is the architected reset port on every IA-32 platform fstart supports;
-/// the write sequence is the documented one (clear, then request reset).
+/// the write sequence is the documented one (select the reset type, then
+/// raise `RST_CPU`).
 pub fn system_reset(hard: bool) -> ! {
     cf9_reset(if hard { CF9_HARD } else { CF9_SOFT })
 }
@@ -42,16 +43,23 @@ pub fn full_reset() -> ! {
     cf9_reset(CF9_FULL)
 }
 
-/// CF9 RST_CPU and SYS_RST: a soft reset, a hard one with both.
-const CF9_SOFT: u8 = 0x02;
-const CF9_HARD: u8 = 0x06;
-/// CF9 FULL_RST on top of a hard reset.
-const CF9_FULL: u8 = 0x0E;
+/// CF9 (`RST_CNT`) bit 1, `SYS_RST`: the reset also asserts PLTRST#.
+const CF9_SYS_RST: u8 = 1 << 1;
+/// CF9 bit 2, `RST_CPU`: its 0 -> 1 edge starts the selected reset.
+const CF9_RST_CPU: u8 = 1 << 2;
+/// CF9 bit 3, `FULL_RST`: a hard reset goes through S5.
+const CF9_FULL_RST: u8 = 1 << 3;
+/// INIT# only.
+const CF9_SOFT: u8 = CF9_RST_CPU;
+const CF9_HARD: u8 = CF9_SYS_RST | CF9_RST_CPU;
+const CF9_FULL: u8 = CF9_FULL_RST | CF9_HARD;
 
 fn cf9_reset(request: u8) -> ! {
+    // coreboot `do_system_reset()`: latch the reset type with RST_CPU clear,
+    // then raise RST_CPU. Its edge starts the reset the other bits select.
     // SAFETY: see `system_reset`.
     unsafe {
-        fstart_core::pio::outb(0xCF9, 0x00);
+        fstart_core::pio::outb(0xCF9, request & !CF9_RST_CPU);
         fstart_core::pio::outb(0xCF9, request);
     }
     loop {
@@ -640,7 +648,7 @@ macro_rules! postcar_uart_checkpoint {
 #[cfg(target_os = "none")]
 macro_rules! postcar_stash_reset {
     () => {
-        "movw $0xcf9, %dx\nxorb %al, %al\noutb %al, %dx\nmovb ${full_reset}, %al\noutb %al, %dx"
+        "movw $0xcf9, %dx\nmovb ${full_reset_type}, %al\noutb %al, %dx\nmovb ${full_reset}, %al\noutb %al, %dx"
     };
 }
 
