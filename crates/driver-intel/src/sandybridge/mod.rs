@@ -793,16 +793,26 @@ impl crate::IntelNorthbridgeDriver for IntelSandybridge {
     /// `romstage.c`) and run system-agent early init.
     fn early_init(&mut self) -> Result<(), ServiceError> {
         self.enable_ecam();
-        // coreboot `mainboard_romstage_entry()`: MCHBAR still decoding with
-        // the raminit marker set means a CPU-only reset after raminit, which
-        // needs a hard reset to train again. Test before
-        // `systemagent_early_init()` enables MCHBAR itself.
+        // MCHBAR still decoding with the raminit marker set means a CPU-only
+        // reset after raminit. Keep the live DRAM controller and memory map
+        // when they are intact so deferred UEFI variables survive warm reset.
         if self.raminit_done() {
+            if self.memory_map().is_ok() {
+                fstart_log::info!(
+                    "sandybridge: raminit marker set with live memory map, keeping DRAM after CPU reset"
+                );
+                self.dram_ready = true;
+                return Ok(());
+            }
             fstart_log::info!("sandybridge: raminit marker set, resetting");
             self.reset();
         }
         self.systemagent_early_init();
         Ok(())
+    }
+
+    fn detect_warm_reset(&self) -> bool {
+        self.dram_ready
     }
 
     /// Ramstage: recover the DRAM decode without re-running early init.
@@ -817,6 +827,10 @@ impl crate::IntelNorthbridgeDriver for IntelSandybridge {
     }
 
     fn dram_link_init(&mut self) -> Result<(), ServiceError> {
+        if self.dram_ready {
+            fstart_log::info!("sandybridge: keeping initialized DMI/ME links after CPU reset");
+            return Ok(());
+        }
         let mch = self.mch();
         mch.sapmctl.set(mch.sapmctl.get() | 1);
         // Wait for the ME to size its UMA.
@@ -997,6 +1011,13 @@ impl fstart_core::services::MemoryInit for IntelSandybridge {
         }: crate::SpdTraining<'_>,
     ) -> Result<Option<usize>, ServiceError> {
         use zerocopy::IntoBytes;
+        if self.dram_ready && self.boot_path == BootPath::WarmReset {
+            self.memory_map()?;
+            fstart_log::info!(
+                "sandybridge: kept the initialized memory controller after CPU reset"
+            );
+            return Ok(None);
+        }
         self.dram_ready = false;
         let record = self.raminit(smbus, cached)?;
         self.memory_map()?;

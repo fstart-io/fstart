@@ -469,8 +469,39 @@ fn program_geometry<P: ConfigRegionAccess>(iosf: &Iosf<P>, p: &Params) -> Result
     Ok(())
 }
 
-/// Program BMBOUND, BMBOUND_HI, TXE/GFX IMRs and TSEG SMRRs.
-fn program_memory_map<P: ConfigRegionAccess>(iosf: &Iosf<P>, map: &MemoryMap) {
+/// Decode installed channel-0 DRAM size (in MiB) from a live `DRP` register.
+///
+/// Useful after a CPU-only retaining reset (`INIT#`), when the B-unit has
+/// already locked `BMBOUND`/`BMBOUND_HI` (so they read as 0) while the D-unit
+/// stays live (`DCO.IC=1`) and `DRP` remains readable.
+pub(crate) fn drp_size_mb<P: ConfigRegionAccess>(iosf: &Iosf<P>) -> Option<u32> {
+    let drp = iosf.reg(DRP_REG).extract();
+    let ranks = drp.read(DRP::RANK_EN).count_ones();
+    let width = drp.read(DRP::DIMM0_WIDTH);
+    let density = drp.read(DRP::DIMM0_DENSITY);
+    if ranks == 0 || width > 2 {
+        return None;
+    }
+    let rank_mb = (128u32 << density) << (3 - width);
+    ranks.checked_mul(rank_mb)
+}
+
+/// Derive `(BMBOUND, BMBOUND_HI)` byte addresses from total DRAM in MiB,
+/// matching [`compute_memory_map`] and [`program_memory_bounds`].
+pub(crate) fn bounds_from_tom_mb(tom_mb: u32) -> (u32, u64) {
+    const MMIO_MB: u32 = 0x800;
+    let bmbound_mb = (0x1000 - MMIO_MB).min(tom_mb);
+    let bmbound_hi = if tom_mb > bmbound_mb {
+        ((tom_mb + MMIO_MB) & !0xff) >> 8
+    } else {
+        tom_mb >> 8
+    };
+    (bmbound_mb << 20, u64::from(bmbound_hi) << 28)
+}
+
+/// Program the two memory/IO boundaries. They can be reset by INIT# even
+/// when the DRAM controller, TSEG, and the stolen ranges are still live.
+pub(crate) fn program_memory_bounds<P: ConfigRegionAccess>(iosf: &Iosf<P>, map: &MemoryMap) {
     const MMIO_MB: u32 = 0x800;
     let bmbound_hi = if map.tom_mb > map.bmbound_mb {
         ((map.tom_mb + MMIO_MB) & !0xff) >> 8
@@ -481,7 +512,11 @@ fn program_memory_map<P: ConfigRegionAccess>(iosf: &Iosf<P>, map: &MemoryMap) {
         .modify(BMBOUND::ADDRESS.val(map.bmbound_mb >> 7));
     iosf.reg(bunit::BMBOUND_HI_REG)
         .modify(BMBOUND_HI::ADDRESS.val(bmbound_hi));
+}
 
+/// Program BMBOUND, BMBOUND_HI, TXE/GFX IMRs and TSEG SMRRs.
+fn program_memory_map<P: ConfigRegionAccess>(iosf: &Iosf<P>, map: &MemoryMap) {
+    program_memory_bounds(iosf, map);
     if map.txe_mb != 0 {
         // Fence the stolen regions off from the host cores.
         iosf.reg(bunit::bimr_low(0)).set(map.gtt_base_mb << 10);
@@ -714,5 +749,11 @@ mod tests {
         assert_eq!(width_encoding(dimm.width.bits()), Ok(1));
         assert_eq!(density_encoding(&dimm), Ok(2));
         assert_eq!(addr_map_index(dimm.size_mb()), 2);
+    }
+
+    #[test]
+    fn bounds_from_tom_matches_memory_map() {
+        assert_eq!(bounds_from_tom_mb(2048), (0x8000_0000, 0x8000_0000));
+        assert_eq!(bounds_from_tom_mb(4096), (0x8000_0000, 0x1_8000_0000));
     }
 }

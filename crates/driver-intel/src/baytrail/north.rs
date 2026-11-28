@@ -106,12 +106,32 @@ impl BaytrailNorth {
         fstart_pci::ecam::init(self.config.ecam_base as usize);
     }
 
+    /// Reconstruct `(BMBOUND, BMBOUND_HI)` from a live D-unit `DRP` when the
+    /// B-unit is already locked (so `BMBOUND` reads as 0 across a CPU-only
+    /// retaining reset).
+    fn live_drp_bounds(&self) -> Option<(u32, u64)> {
+        let iosf = self.iosf();
+        if !iosf
+            .reg(raminit::dunit::DCO_REG)
+            .is_set(raminit::dunit::DCO::IC)
+        {
+            return None;
+        }
+        let tom_mb = raminit::mc::drp_size_mb(&iosf)?;
+        Some(raminit::mc::bounds_from_tom_mb(tom_mb))
+    }
+
     /// Top of low memory: BMBOUND, as latched before the bus scan.
     pub fn tolm(&self) -> u32 {
         if self.tolm != 0 {
             return self.tolm;
         }
-        self.iosf().reg(bunit::BMBOUND_REG).get() & BMBOUND::ADDRESS.mask << BMBOUND::ADDRESS.shift
+        let hw = self.iosf().reg(bunit::BMBOUND_REG).get()
+            & (BMBOUND::ADDRESS.mask << BMBOUND::ADDRESS.shift);
+        if hw != 0 {
+            return hw;
+        }
+        self.live_drp_bounds().map_or(0, |(tolm, _)| tolm)
     }
 
     /// End of DRAM above 4 GiB.
@@ -119,11 +139,15 @@ impl BaytrailNorth {
         if self.tolm != 0 {
             return self.high_end;
         }
-        u64::from(
+        let hw = u64::from(
             self.iosf()
                 .reg(bunit::BMBOUND_HI_REG)
                 .read(BMBOUND_HI::ADDRESS),
-        ) << 28
+        ) << 28;
+        if hw != 0 {
+            return hw;
+        }
+        self.live_drp_bounds().map_or(0, |(_, high)| high)
     }
 
     /// TSEG base and end (the SMRR range, 1 MiB granular).
@@ -249,14 +273,19 @@ impl crate::IntelNorthbridgeDriver for BaytrailNorth {
     }
 
     fn detect_warm_reset(&self) -> bool {
-        let pmsts = self.iosf().reg(raminit::dunit::PMSTS_REG).extract();
+        use tock_registers::interfaces::Readable;
+        let iosf = self.iosf();
+        let pmsts = iosf.reg(raminit::dunit::PMSTS_REG).extract();
+        let dco = iosf.reg(raminit::dunit::DCO_REG).get();
         let ps = super::pmc::PowerState::read();
         let mem_sr = ps.gen_pmcon1 & super::pmc::GEN_PMCON1::MEM_SR::SET.value != 0;
-        let warm =
-            !ps.power_failed() && (pmsts.is_set(raminit::dunit::PMSTS::SELF_REFRESH) || mem_sr);
+        let controller_live = dco & raminit::dunit::DCO::IC::SET.value != 0;
+        let warm = !ps.power_failed()
+            && (controller_live || pmsts.is_set(raminit::dunit::PMSTS::SELF_REFRESH) || mem_sr);
         fstart_log::info!(
-            "baytrail: warm-reset check PMSTS={:#010x} GEN_PMCON1={:#010x} -> {}",
+            "baytrail: warm-reset check PMSTS={:#010x} DCO={:#010x} GEN_PMCON1={:#010x} -> {}",
             pmsts.get(),
+            dco,
             ps.gen_pmcon1,
             warm
         );
@@ -373,6 +402,51 @@ impl fstart_core::services::MemoryInit for BaytrailNorth {
         let mut buffer = [0u8; 256];
         let spd = self.spd_bytes(input.smbus, &mut buffer)?;
         let txe_mb = txe::uma_size_mb(self.config.txe);
+        if self.boot_path == BootPath::WarmReset
+            && iosf
+                .reg(raminit::dunit::DCO_REG)
+                .is_set(raminit::dunit::DCO::IC)
+        {
+            let params = raminit::Params::new(spd, raminit::mc::fused_max_freq(&iosf))?;
+            let expected = raminit::mc::compute_memory_map(
+                params.dimm.size_mb(),
+                Self::igd_stolen(),
+                txe_mb,
+                TSEG_MB,
+            );
+            let hw_tolm = iosf.reg(bunit::BMBOUND_REG).get()
+                & (BMBOUND::ADDRESS.mask << BMBOUND::ADDRESS.shift);
+            let drp_mb = raminit::mc::drp_size_mb(&iosf);
+            let tolm = self.tolm();
+            let high_end = self.bmbound_hi();
+            let (smram_start, smram_end) = self.smm_range();
+            let (expected_tolm, expected_high) = raminit::mc::bounds_from_tom_mb(expected.tom_mb);
+            let expected_tseg = u64::from(expected.tseg_base_mb) << 20;
+            fstart_log::info!(
+                "baytrail: live map hw_BMBOUND={:#x} drp_mb={:?} resolved={:#x}..{:#x} TSEG={:#x}..{:#x}, expected BMBOUND={:#x} TSEG={:#x}",
+                hw_tolm,
+                drp_mb,
+                tolm,
+                high_end,
+                smram_start,
+                smram_end,
+                expected_tolm,
+                expected_tseg
+            );
+            if smram_start != expected_tseg
+                || smram_end != expected_tseg + (u64::from(TSEG_MB) << 20)
+                || drp_mb != Some(params.dimm.size_mb())
+                || tolm != expected_tolm
+                || high_end != expected_high
+            {
+                return Err(ServiceError::HardwareError);
+            }
+            self.tolm = expected_tolm;
+            self.high_end = expected_high;
+            self.memory_info = Some(raminit::memory_info(&params, spd));
+            fstart_log::info!("baytrail: kept the initialized memory controller after CPU reset");
+            return Ok(None);
+        }
         if self.boot_path == BootPath::S3Resume {
             let Some(cached) = input.cached else {
                 fstart_log::error!("baytrail: S3 resume without training cache");

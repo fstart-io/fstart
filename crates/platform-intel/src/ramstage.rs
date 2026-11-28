@@ -1159,6 +1159,16 @@ impl<B: IntelBoard> Ramstage<B, Ready> {
                         if reserved {
                             handoff.deferred_buffer =
                                 Some(Range::new(deferred.base, deferred.size));
+                            if matches!(B::Platform::NAME, "baytrail" | "sandybridge") {
+                                use fstart_payload::crabefi::{
+                                    RuntimeResetConfig, reset_mechanism,
+                                };
+                                handoff.runtime_reset = Some(RuntimeResetConfig {
+                                    mechanism: reset_mechanism::X86_CF9_INIT,
+                                    reserved: 0,
+                                    io_or_mmio_base: 0xcf9,
+                                });
+                            }
                         }
                     }
                 }
@@ -1245,10 +1255,20 @@ fn init_mp<P: IntelEarlyPlatform>(
         ServiceError::HardwareError
     };
     let mut relocate = |mp: &MpHandle| {
-        relocated = smm_image
-            .map(|image| smm.relocate(mp, image))
-            .transpose()
-            .map_err(report)?;
+        relocated = match smm_image.map(|image| smm.relocate(mp, image)).transpose() {
+            Ok(rel) => rel,
+            Err(IntelSmmError::SmramOpenFailed)
+                if matches!(P::NAME, "baytrail" | "sandybridge")
+                    && fstart_arch::x86::cpu::intel::smm::SmramControl::smram_lock(northbridge) =>
+            {
+                fstart_log::info!(
+                    "{} SMM: TSEG already closed/locked across CPU-only reset; keeping retained handler",
+                    P::NAME
+                );
+                None
+            }
+            Err(e) => return Err(report(e)),
+        };
         Ok(())
     };
     let mp = if P::RELOCATE_BEFORE_CPU_INIT {
