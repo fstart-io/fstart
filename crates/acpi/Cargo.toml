@@ -7,6 +7,8 @@ license.workspace = true
 [features]
 default = ["arm"]
 std = []
+# Publish the stage memory console as a driverless ACPI table at OS handoff.
+flog = ["dep:fstart-log", "fstart-log/memconsole"]
 # Type 9 PCIe-slot occupancy and endpoint association from cached PCI topology.
 pci = ["dep:fstart-pci"]
 arm = []
@@ -16,6 +18,7 @@ x86 = ["dep:fstart-arch"]
 [dependencies]
 acpi_tables = "0.2"
 fstart-core = { workspace = true }
+fstart-log = { workspace = true, optional = true }
 fstart-pci = { workspace = true, optional = true }
 fstart-arch = { workspace = true, features = ["x86_64"], optional = true }
 fstart-acpi-macros = { workspace = true }

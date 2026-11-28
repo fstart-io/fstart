@@ -237,6 +237,9 @@ fn static_checks() -> Vec<Check> {
         // Without the default consoles, and with the debug ones.
         Check::test("fstart-log").no_default_features(),
         Check::test("fstart-log").features(&["debug-consoles"]),
+        Check::test("fstart-log").features(&["memconsole"]),
+        Check::test("fstart-log").features(&["memconsole", "debug-consoles"]),
+        Check::test("fstart-acpi").features(&["x86", "flog"]),
     ]
 }
 

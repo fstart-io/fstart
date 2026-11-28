@@ -580,6 +580,7 @@ mod stage {
             description.acpi = self.acpi_rsdp.map(|rsdp| AcpiTables {
                 rsdp,
                 region: acpi_buffer,
+                log: None,
             });
             // Q35's fw_cfg `_S5` uses type 0; PMBASE is programmed by q35.rs.
             let acpi_s5 = [fstart_core::description::AcpiSleepControl::new(

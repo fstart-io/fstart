@@ -29,6 +29,7 @@ payload-coreboot = ["fstart-payload/coreboot", "dep:fstart-coreboot"]
 
 # Common bootstrap support must not pull heap-using mainstage services in.
 stage = [
+  "fstart-log/memconsole",
   "dep:fstart-stage", "fstart-stage/bootstrap",
   "dep:fstart-resume",
   "dep:fstart-ffs",
@@ -36,7 +37,7 @@ stage = [
 ]
 # The DRAM mainstage: payload loading over the FFS directory, with a heap.
 ramstage = [
-  "stage", "dep:fstart-payload", "fstart-stage/ffs", "fstart-arch/alloc",
+  "stage", "dep:fstart-payload", "fstart-payload/acpi-log", "fstart-acpi/flog", "fstart-stage/ffs", "fstart-arch/alloc",
   # The option report; earlier stages resolve without allocating.
   "fstart-log/alloc", "dep:fstart-driver-vbios", "dep:fstart-driver-tpm",
 ]

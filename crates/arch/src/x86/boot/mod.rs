@@ -882,13 +882,24 @@ fn log_bsp_x86_cache_state(label: &str) {
 /// `bootargs`, `zero_page_addr`.
 /// Ignored fields: `dtb_addr`, `fw_addr`, `hart_id`.
 pub fn boot_linux(params: &fstart_core::services::boot::BootLinuxParams<'_>) -> ! {
-    boot_linux_direct(
+    boot_linux_with_handoff(params, || {})
+}
+
+/// Like [`boot_linux`], invoking `before_enter` right before transferring
+/// control to Linux (after all boot-parameter, e820, and MTRR diagnostics have
+/// been logged).
+pub fn boot_linux_with_handoff(
+    params: &fstart_core::services::boot::BootLinuxParams<'_>,
+    before_enter: impl FnOnce(),
+) -> ! {
+    boot_linux_direct_with_handoff(
         params.kernel_addr,
         params.rsdp_addr,
         params.e820_entries,
         params.bootargs,
         params.zero_page_addr,
         params.print_x86_mtrrs,
+        before_enter,
     )
 }
 
@@ -899,6 +910,26 @@ pub fn boot_linux_direct(
     bootargs: &str,
     zero_page_addr: u64,
     print_x86_mtrrs: bool,
+) -> ! {
+    boot_linux_direct_with_handoff(
+        kernel_addr,
+        rsdp_addr,
+        e820_entries,
+        bootargs,
+        zero_page_addr,
+        print_x86_mtrrs,
+        || {},
+    )
+}
+
+fn boot_linux_direct_with_handoff(
+    kernel_addr: u64,
+    rsdp_addr: u64,
+    e820_entries: &[E820Entry],
+    bootargs: &str,
+    zero_page_addr: u64,
+    print_x86_mtrrs: bool,
+    before_enter: impl FnOnce(),
 ) -> ! {
     // SAFETY: the legacy pointer contract supplies a complete bzImage. Read
     // its typed header to derive the declared extent, not an arbitrary 8 MiB
@@ -918,13 +949,14 @@ pub fn boot_linux_direct(
     // SAFETY: same complete-image contract; the bounded API below checks the
     // header/protocol and protected-mode extent before copying any image data.
     let bzimage = unsafe { core::slice::from_raw_parts(kernel_addr as *const u8, size) };
-    boot_linux_bzimage(
+    boot_linux_bzimage_with_handoff(
         bzimage,
         rsdp_addr,
         e820_entries,
         bootargs,
         zero_page_addr,
         print_x86_mtrrs,
+        before_enter,
     )
 }
 
@@ -939,6 +971,26 @@ pub fn boot_linux_bzimage(
     bootargs: &str,
     zero_page_addr: u64,
     print_x86_mtrrs: bool,
+) -> ! {
+    boot_linux_bzimage_with_handoff(
+        bzimage,
+        rsdp_addr,
+        e820_entries,
+        bootargs,
+        zero_page_addr,
+        print_x86_mtrrs,
+        || {},
+    )
+}
+
+fn boot_linux_bzimage_with_handoff(
+    bzimage: &[u8],
+    rsdp_addr: u64,
+    e820_entries: &[E820Entry],
+    bootargs: &str,
+    zero_page_addr: u64,
+    print_x86_mtrrs: bool,
+    before_enter: impl FnOnce(),
 ) -> ! {
     let kernel_addr = bzimage.as_ptr() as u64;
     let zero_page = zero_page_addr;
@@ -1177,6 +1229,7 @@ pub fn boot_linux_bzimage(
 
     log_x86_irq_handoff_state();
 
+    before_enter();
     mode::enter_linux(pm_kernel_addr, zero_page)
 }
 

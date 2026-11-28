@@ -167,13 +167,23 @@ pub fn assemble_and_write(
     device_dsdt_aml: &[u8],
     device_extra_tables: &[Vec<u8>],
 ) -> usize {
-    let data = assemble_for_platform(table_addr, platform, device_dsdt_aml, device_extra_tables);
+    let (data, _) =
+        assemble_for_platform(table_addr, platform, device_dsdt_aml, device_extra_tables);
     let len = data.len();
     // SAFETY: the caller supplies a sufficiently large writable physical region.
     unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), table_addr as *mut u8, len);
     }
     len
+}
+
+/// Placement of the assembled table set, relative to its RSDP.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TableLayout {
+    /// Total bytes occupied, including alignment padding.
+    pub len: usize,
+    /// Byte offset for each supplied extra table, in input order.
+    pub extra_offsets: Vec<usize>,
 }
 
 /// Assemble into bounded caller-owned storage. No bytes are copied until the
@@ -184,16 +194,20 @@ pub fn assemble_into(
     platform: &PlatformConfig,
     device_dsdt_aml: &[u8],
     device_extra_tables: &[Vec<u8>],
-) -> Result<usize, crate::AmlError> {
+) -> Result<TableLayout, crate::AmlError> {
     table_addr
         .checked_add(u64::try_from(bytes.len()).map_err(|_| crate::AmlError::LengthOverflow)?)
         .ok_or(crate::AmlError::LengthOverflow)?;
-    let data = assemble_for_platform(table_addr, platform, device_dsdt_aml, device_extra_tables);
+    let (data, extra_offsets) =
+        assemble_for_platform(table_addr, platform, device_dsdt_aml, device_extra_tables);
     let out = bytes
         .get_mut(..data.len())
         .ok_or(crate::AmlError::Capacity)?;
     out.copy_from_slice(&data);
-    Ok(data.len())
+    Ok(TableLayout {
+        len: data.len(),
+        extra_offsets,
+    })
 }
 
 fn assemble_for_platform(
@@ -201,7 +215,7 @@ fn assemble_for_platform(
     platform: &PlatformConfig,
     device_dsdt_aml: &[u8],
     device_extra_tables: &[Vec<u8>],
-) -> Vec<u8> {
+) -> (Vec<u8>, Vec<usize>) {
     // Delegate to the platform module to build platform-specific
     // tables (MADT, GTDT/HPET) and FADT configuration.
     let (platform_tables, fadt_config) = match platform {
@@ -211,7 +225,7 @@ fn assemble_for_platform(
         PlatformConfig::X86(cfg) => x86::build_platform_tables(cfg),
     };
 
-    assemble(
+    assemble_with_offsets(
         table_addr,
         &fadt_config,
         &platform_tables,
@@ -238,6 +252,23 @@ pub fn assemble(
     device_dsdt_aml: &[u8],
     device_extra_tables: &[Vec<u8>],
 ) -> Vec<u8> {
+    assemble_with_offsets(
+        base_addr,
+        fadt_config,
+        platform_tables,
+        device_dsdt_aml,
+        device_extra_tables,
+    )
+    .0
+}
+
+fn assemble_with_offsets(
+    base_addr: u64,
+    fadt_config: &FadtConfig,
+    platform_tables: &[Vec<u8>],
+    device_dsdt_aml: &[u8],
+    device_extra_tables: &[Vec<u8>],
+) -> (Vec<u8>, Vec<usize>) {
     // Build DSDT: header + device AML inside \_SB scope.
     let dsdt_bytes = build_dsdt(device_dsdt_aml);
 
@@ -346,7 +377,7 @@ pub fn assemble(
         copy_at(&mut buffer, extra_offsets[i], et);
     }
 
-    buffer
+    (buffer, extra_offsets)
 }
 
 /// Build the FADT from architecture-neutral configuration.

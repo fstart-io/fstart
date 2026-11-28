@@ -204,6 +204,14 @@ pub trait IntelEarlyPlatform:
     fn training_buffers() -> Option<crate::memory_cache::TrainingBuffers<'static>> {
         None
     }
+    /// Take platform-owned CAR storage for early bootblock console logs before
+    /// DRAM is trained. Platforms with tight CAR (e.g. 32 KiB legacy CPUs)
+    /// leave this `None` and begin recording once DRAM and the firmware store
+    /// are up.
+    #[cfg(feature = "bundle-bootblock")]
+    fn bootblock_car_log() -> Option<&'static mut [u8]> {
+        None
+    }
     /// Take platform-owned CAR storage for a copy of the bootblock's entry
     /// page tables so `--debug flash-console` can program SPI flash without
     /// page-table walks hitting the busy flash chip. Only platforms with

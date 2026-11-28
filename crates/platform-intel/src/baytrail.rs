@@ -268,6 +268,13 @@ mod stage {
             > = crate::memory_cache::TrainingWorkspace::new();
             WORK.take()
         }
+
+        #[cfg(feature = "bundle-bootblock")]
+        fn bootblock_car_log() -> Option<&'static mut [u8]> {
+            static LOG: crate::store::CarLogWorkspace<0x2000> =
+                crate::store::CarLogWorkspace::new();
+            LOG.take()
+        }
     }
 
     impl IntelChipsetConfig for BaytrailPlatform {

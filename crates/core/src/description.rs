@@ -78,6 +78,10 @@ pub struct AcpiTables {
     /// The memory holding the tables and what they point to (the TCG event
     /// log, ...); reserved from the payload as ACPI NVS.
     pub region: Range,
+    /// Optional pre-reserved `FLOG` ACPI table (`base` = SDT address, `size` =
+    /// total reserved bytes including the 36-byte header) to patch with the
+    /// final in-memory firmware log before OS handoff.
+    pub log: Option<Range>,
 }
 
 impl AcpiTables {
@@ -87,6 +91,7 @@ impl AcpiTables {
         Self {
             rsdp,
             region: Range::new(rsdp & !0xfff, 0x10000),
+            log: None,
         }
     }
 }

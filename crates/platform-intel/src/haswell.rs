@@ -166,6 +166,12 @@ impl<const LP: bool> crate::IntelEarlyPlatform for HaswellLynxPoint<LP> {
         > = crate::memory_cache::TrainingWorkspace::new();
         WORK.take()
     }
+
+    #[cfg(feature = "bundle-bootblock")]
+    fn bootblock_car_log() -> Option<&'static mut [u8]> {
+        static LOG: crate::store::CarLogWorkspace<0x4000> = crate::store::CarLogWorkspace::new();
+        LOG.take()
+    }
 }
 
 #[cfg(feature = "stage")]

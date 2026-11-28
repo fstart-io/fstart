@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 default = []
+acpi-log = ["dep:fstart-acpi", "fstart-acpi/flog", "fstart-boot?/acpi-log"]
 # Linux on Arm and RISC-V (device tree) and on x86 (zero page).
 linux = ["fstart-stage/fdt"]
 # x86 coreboot payloads (SeaBIOS, ...): coreboot table plus 32-bit entry.
@@ -25,6 +26,7 @@ crabefi-hid-i2c = ["crabefi-basic", "fstart-boot/crabefi-hid-i2c"]
 crabefi-basic = ["fstart-stage/alloc", "fstart-stage/bootstrap", "dep:fstart-boot", "fstart-arch/riscv64-sbi-resume", "fstart-boot/crabefi-basic"]
 
 [dependencies]
+fstart-acpi = { workspace = true, optional = true }
 fstart-arch = { workspace = true }
 fstart-core = { workspace = true }
 fstart-log = { workspace = true }

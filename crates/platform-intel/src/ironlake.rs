@@ -412,6 +412,13 @@ mod stage {
                 crate::memory_cache::TrainingWorkspace::new();
             WORKSPACE.take()
         }
+
+        #[cfg(feature = "bundle-bootblock")]
+        fn bootblock_car_log() -> Option<&'static mut [u8]> {
+            static LOG: crate::store::CarLogWorkspace<0x2000> =
+                crate::store::CarLogWorkspace::new();
+            LOG.take()
+        }
         /// The OS display driver restores the screen; resume skips the
         /// modeset like coreboot (`gma_func0_init()` on S3).
         const RESUME_DISPLAY_INIT: bool = false;

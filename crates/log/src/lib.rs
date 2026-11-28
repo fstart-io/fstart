@@ -41,6 +41,16 @@
 
 #![no_std]
 
+#[cfg(feature = "memconsole")]
+pub mod mem;
+#[cfg(feature = "memconsole")]
+use mem::write_bytes as write_to_ring;
+#[cfg(not(feature = "memconsole"))]
+#[inline]
+fn write_to_ring(_: &[u8]) -> bool {
+    false
+}
+
 // Re-export ufmt for code that uses `fstart_log::ufmt::uWrite` etc.
 // Note: fstart_log macros use `::ufmt` paths because ufmt's own
 // macros internally expand to `ufmt::` paths. This means any crate
@@ -247,7 +257,7 @@ fn consoles() -> impl Iterator<Item = &'static dyn Console> {
     core::iter::once(unsafe { *CONSOLE.0.get() }).flatten()
 }
 
-/// Raw payload console for builds opting into firmware debug backends.
+/// Raw payload console for builds routing output to the board and extra sinks.
 /// Output succeeds if any backend accepts it; otherwise its error is returned.
 /// Input has fixed board-first priority, falling back past idle/failed backends.
 ///
@@ -257,11 +267,12 @@ fn consoles() -> impl Iterator<Item = &'static dyn Console> {
 pub struct ConsoleMux;
 
 fn mux_output(
+    bytes: Option<&[u8]>,
     mut operation: impl FnMut(&dyn Console) -> Result<(), ServiceError>,
 ) -> Result<(), ServiceError> {
     let _guard = ConsoleLockGuard::try_acquire()?;
     let mut error = ServiceError::NotInitialized;
-    let mut accepted = false;
+    let mut accepted = bytes.is_some_and(write_to_ring);
     for console in consoles() {
         match timed(|| operation(console)) {
             Ok(()) => accepted = true,
@@ -273,11 +284,11 @@ fn mux_output(
 
 impl Console for ConsoleMux {
     fn write_byte(&self, byte: u8) -> Result<(), ServiceError> {
-        mux_output(|console| console.write_byte(byte))
+        mux_output(Some(&[byte]), |console| console.write_byte(byte))
     }
 
     fn write_bytes(&self, bytes: &[u8]) -> Result<(), ServiceError> {
-        mux_output(|console| console.write_bytes(bytes))
+        mux_output(Some(bytes), |console| console.write_bytes(bytes))
     }
 
     fn read_byte(&self) -> Result<Option<u8>, ServiceError> {
@@ -295,7 +306,7 @@ impl Console for ConsoleMux {
     }
 
     fn flush(&self) -> Result<(), ServiceError> {
-        mux_output(|console| console.flush())
+        mux_output(None, |console| console.flush())
     }
 }
 
@@ -623,6 +634,21 @@ pub struct ConsoleWriter {
     /// Held from `writer()` until the macro's writer goes out of scope, which
     /// brackets the tag, the message and the flush.
     _guard: ConsoleLockGuard,
+    /// Set by `panic_writer()` so memory-log writes use try-lock and never
+    /// deadlock if a panic fires while `MEM_LOCK` is held.
+    #[cfg(feature = "memconsole")]
+    panicking: bool,
+}
+
+impl ConsoleWriter {
+    #[inline]
+    fn write_mem(&self, bytes: &[u8]) -> bool {
+        #[cfg(feature = "memconsole")]
+        if self.panicking {
+            return mem::try_write_bytes(bytes);
+        }
+        write_to_ring(bytes)
+    }
 }
 
 impl ufmt::uWrite for ConsoleWriter {
@@ -634,39 +660,18 @@ impl ufmt::uWrite for ConsoleWriter {
     #[cfg(not(feature = "debug-consoles"))]
     #[inline(never)]
     fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
+        let accepted = self.write_mem(s.as_bytes());
         // SAFETY: CONSOLE is written once during init, then only read.
         let console = unsafe { *CONSOLE.0.get() };
-        if let Some(c) = console {
-            // Serial terminals require \r\n, but ufmt's uwriteln! only
-            // emits \n.  Translate on the fly so every newline is \r\n.
-            let bytes = s.as_bytes();
-            let mut start = 0;
-            for (i, &b) in bytes.iter().enumerate() {
-                if b == b'\n' {
-                    if i > start {
-                        // SAFETY: slicing a valid UTF-8 string at ASCII
-                        // byte boundaries always yields valid UTF-8.
-                        let chunk = unsafe { core::str::from_utf8_unchecked(&bytes[start..i]) };
-                        timed(|| c.write_str(chunk)).map_err(|_| ())?;
-                    }
-                    timed(|| c.write_str("\r\n")).map_err(|_| ())?;
-                    start = i + 1;
-                }
-            }
-            if start < bytes.len() {
-                let tail = unsafe { core::str::from_utf8_unchecked(&bytes[start..]) };
-                timed(|| c.write_str(tail)).map_err(|_| ())?;
-            }
-            Ok(())
-        } else {
-            Ok(())
-        }
+        let result = console.map_or(Ok(()), |c| write_translated(c, s));
+        if accepted { Ok(()) } else { result }
     }
 
     #[cfg(feature = "debug-consoles")]
     #[inline]
     fn write_str(&mut self, s: &str) -> Result<(), Self::Error> {
-        write_all(s)
+        let mem_taken = self.write_mem(s.as_bytes());
+        write_all(s, mem_taken)
     }
 }
 
@@ -687,12 +692,15 @@ impl embedded_io::Write for ConsoleWriter {
         if buf.is_empty() {
             return Ok(0);
         }
+        let accepted = self.write_mem(buf);
         // SAFETY: CONSOLE is written once during init, then only read.
         let console = unsafe { *CONSOLE.0.get() };
-        if let Some(c) = console {
-            timed(|| c.write_bytes(buf))?;
+        let result = console.map_or(Ok(()), |c| timed(|| c.write_bytes(buf)));
+        if accepted {
+            Ok(buf.len())
+        } else {
+            result.map(|()| buf.len())
         }
-        Ok(buf.len())
     }
 
     #[cfg(feature = "debug-consoles")]
@@ -701,7 +709,7 @@ impl embedded_io::Write for ConsoleWriter {
             return Ok(0);
         }
         let mut result = Ok(());
-        let mut taken = false;
+        let mut taken = self.write_mem(buf);
         for c in consoles() {
             match timed(|| c.write_bytes(buf)) {
                 Ok(()) => taken = true,
@@ -748,9 +756,9 @@ impl embedded_io::Write for ConsoleWriter {
 /// not cut another's messages short.
 #[cfg(feature = "debug-consoles")]
 #[inline(never)]
-fn write_all(s: &str) -> Result<(), ()> {
+fn write_all(s: &str, mem_taken: bool) -> Result<(), ()> {
     let mut result = Ok(());
-    let mut taken = false;
+    let mut taken = mem_taken;
     for c in consoles() {
         match write_translated(c, s) {
             Ok(()) => taken = true,
@@ -762,7 +770,6 @@ fn write_all(s: &str) -> Result<(), ()> {
 
 /// Write `s` to `c`. Serial terminals require \r\n, but ufmt's uwriteln!
 /// only emits \n: translate on the fly so every newline is \r\n.
-#[cfg(feature = "debug-consoles")]
 #[inline(always)]
 fn write_translated(c: &dyn Console, s: &str) -> Result<(), ()> {
     let bytes = s.as_bytes();
@@ -796,6 +803,8 @@ fn write_translated(c: &dyn Console, s: &str) -> Result<(), ()> {
 pub fn writer() -> ConsoleWriter {
     ConsoleWriter {
         _guard: ConsoleLockGuard::acquire(),
+        #[cfg(feature = "memconsole")]
+        panicking: false,
     }
 }
 
@@ -809,6 +818,8 @@ pub fn panic_writer() -> ConsoleWriter {
     CONSOLE_LOCK.store(true, Ordering::Release);
     ConsoleWriter {
         _guard: ConsoleLockGuard,
+        #[cfg(feature = "memconsole")]
+        panicking: true,
     }
 }
 
@@ -898,6 +909,7 @@ impl<T: core::fmt::Debug + ?Sized> ufmt::uDebug for DebugValue<'_, T> {
 #[cfg(not(feature = "debug-consoles"))]
 #[inline]
 pub fn raw_write_byte(b: u8) {
+    write_to_ring(&[b]);
     // SAFETY: CONSOLE is written once during init, then only read.
     let console = unsafe { *CONSOLE.0.get() };
     if let Some(c) = console {
@@ -920,6 +932,7 @@ pub fn flush() {
 #[cfg(feature = "debug-consoles")]
 #[inline(never)]
 pub fn raw_write_byte(b: u8) {
+    write_to_ring(&[b]);
     for c in consoles() {
         let _ = timed(|| c.write_byte(b));
     }
