@@ -67,9 +67,51 @@ fn cf9_reset(request: u8) -> ! {
     }
 }
 
-// One Atom NEM model list (Bonnell/Saltwell + Silvermont 0x37) for CAR setup
-// and both teardown ABIs so no model can enable MSR 0x2e0 without clearing it.
-macro_rules! atom_nem_model_branch {
+// The family-6 display model, `(ext_model << 4) | model`, of the CPUID(1).EAX
+// signature in `signature`, into `model`; `scratch` is clobbered. For the
+// NEM model lists below, which take the display model.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_display_model {
+    ($signature:literal, $model:literal, $scratch:literal) => {
+        concat!(
+            "movl ",
+            $signature,
+            ", ",
+            $model,
+            "\n",
+            "shrl $4, ",
+            $model,
+            "\n",
+            "andl $0x0f, ",
+            $model,
+            "\n",
+            "movl ",
+            $signature,
+            ", ",
+            $scratch,
+            "\n",
+            "shrl $12, ",
+            $scratch,
+            "\n",
+            "andl $0xf0, ",
+            $scratch,
+            "\n",
+            "orl ",
+            $scratch,
+            ", ",
+            $model,
+            "\n",
+        )
+    };
+}
+
+// One Atom NEM model list (Bonnell/Saltwell + Silvermont 0x37) for CAR setup,
+// the early microcode update and both teardown ABIs, so no model can enable
+// MSR 0x2e0 without clearing it.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_atom_nem_model_branch {
     ($register:literal, $target:literal) => {
         concat!(
             "cmpl $0x1c, ",
@@ -105,11 +147,13 @@ macro_rules! atom_nem_model_branch {
         )
     };
 }
-pub(crate) use atom_nem_model_branch;
 
-// One IMC-family list for CAR setup and both teardown ABIs. The caller has
-// already extracted the display model into `register`; no stack is required.
-macro_rules! imc_nem_model_branch {
+// One IMC-family list for CAR setup, the early microcode update and both
+// teardown ABIs. The caller has already extracted the display model into
+// `register`; no stack is required.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __x86_imc_nem_model_branch {
     ($register:literal, $target:literal) => {
         concat!(
             "cmpl $0x1a, ",
@@ -185,7 +229,6 @@ macro_rules! imc_nem_model_branch {
         )
     };
 }
-pub(crate) use imc_nem_model_branch;
 
 pub mod car;
 pub mod car_storage;
@@ -452,6 +495,23 @@ macro_rules! x86_reset_entry {
             // ---- Very early BSP microcode update ----
             // Uses only registers and the anchor-patched microcode offset.  It runs
             // before CAR/Rust so CPU errata fixes are present for the rest of init.
+            // The NEM CAR models load it from `_car_nem_common` instead, once the
+            // CAR and ROM MTRRs cache the update, as coreboot's
+            // `cpu/intel/car/non-evict/cache_as_ram.S` does.
+            "movl $_has_car, %eax",
+            "testl %eax, %eax",
+            "je _early_microcode_now",
+            "movl $1, %eax",
+            "cpuid",
+            "movl %eax, %ebx",
+            "shrl $8, %eax",
+            "andl $0x0f, %eax",
+            "cmpl $0x06, %eax",
+            "jne _early_microcode_now",
+            $crate::__x86_display_model!("%ebx", "%eax", "%ecx"),
+            $crate::__x86_atom_nem_model_branch!("%eax", "_after_early_microcode"),
+            $crate::__x86_imc_nem_model_branch!("%eax", "_after_early_microcode"),
+            "_early_microcode_now:",
             "movl $_after_early_microcode, %esp",
             "jmp _early_intel_microcode",
             "_after_early_microcode:",
@@ -506,8 +566,9 @@ macro_rules! x86_reset_entry {
 
 // Very-early Intel microcode update for BSP.
 //
-// Pre-CAR bootblock only: postcar/ramstage get microcode through the FFS
-// blob (MP init); only the reset path references it, so they drop it.
+// Bootblock only, before CAR or from the NEM CAR setup: postcar/ramstage get
+// microcode through the FFS blob (MP init); only the reset path references
+// it, so they drop it. It leaves the CPUID(1).EAX signature in %ebx.
 // Entry/return convention matches coreboot's no-stack helpers: `%esp` contains
 // the absolute return address. The routine may clobber all general registers.
 #[cfg(feature = "early-ffs-anchor")]
