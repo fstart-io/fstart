@@ -178,6 +178,7 @@ fn stored_file(directory: DirectoryView<'_>, file_type: FileType) -> Option<Boot
 /// Return authenticated owned data, never a view into mutable boot media.
 /// The allocation is retained for stage lifetime to preserve the legacy slice
 /// API. Callers with a temporary arena should prefer the scratch variant.
+#[cfg(feature = "fit")]
 fn find_ffs_file_data<'a>(
     _anchor_data: &[u8],
     media: &'a (impl BootMedia + ?Sized),
@@ -209,28 +210,36 @@ fn find_ffs_file_data<'a>(
 /// it has no blob.
 #[must_use]
 pub fn microcode_blob() -> Option<&'static [u8]> {
-    use crate::heap::alloc::{Layout, alloc};
+    use crate::heap::alloc::{Layout, alloc, dealloc};
     use fstart_core::services::boot_media::MemoryMapped;
 
     let ctx = fstart_core::services::ffs_context::memory_mapped()?;
-    let size = usize::try_from(ctx.image_size).ok()?;
+    let media_size = usize::try_from(ctx.image_size).ok()?;
     // SAFETY: the boot-media provider published this window for the stage.
-    let media = unsafe { MemoryMapped::from_raw_addr(ctx.image_base, size) };
-    // SAFETY: documented valid for the whole stage once published.
-    let anchor = unsafe { ctx.anchor_bytes() };
-    let verified = find_ffs_file_data(anchor, &media, FileType::CpuMicrocode)
-        .filter(|blob| !blob.is_empty())?;
-    let layout = Layout::from_size_align(verified.len(), 16).ok()?;
-    // SAFETY: nonzero size; never freed.
-    let copy = unsafe { alloc(layout) };
-    if copy.is_null() {
+    let media = unsafe { MemoryMapped::from_raw_addr(ctx.image_base, media_size) };
+    let descriptor = stored_file(crate::directory::view(&media).ok()?, FileType::CpuMicrocode)?;
+    let size = usize::try_from(descriptor.stored_size)
+        .ok()
+        .filter(|&n| n != 0)?;
+    if descriptor.offset.checked_add(descriptor.stored_size)? > media.size() as u64 {
         return None;
     }
-    // SAFETY: fresh allocation of exactly this size.
-    unsafe {
-        core::ptr::copy_nonoverlapping(verified.as_ptr(), copy, verified.len());
-        Some(core::slice::from_raw_parts(copy, verified.len()))
+    let layout = Layout::from_size_align(size, 16).ok()?;
+    // SAFETY: nonzero size; freed below on any read or digest failure.
+    let ptr = unsafe { alloc(layout) };
+    if ptr.is_null() {
+        return None;
     }
+    // SAFETY: fresh exclusive allocation of `size` bytes.
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, size) };
+    if read_exact(&media, descriptor.offset, buf).is_err()
+        || hash_sha256(buf) != descriptor.stored_digest
+    {
+        // SAFETY: `ptr` came from `alloc(layout)` above and is not aliased.
+        unsafe { dealloc(ptr, layout) };
+        return None;
+    }
+    Some(buf)
 }
 
 /// Authenticate the exact stable scratch bytes before returning them to parsers

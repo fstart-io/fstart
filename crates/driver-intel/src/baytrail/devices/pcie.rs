@@ -85,24 +85,16 @@ fn slot_present(device: &EcamDevice) -> bool {
     device.read32(SLCTL_SLSTS) & PDS != 0
 }
 
-/// Squelch an empty port (coreboot `no_dev_behind_port`).
-fn quiesce(device: &EcamDevice) {
-    device.or32(PCIEALC, 1 << 26);
-    for _ in 0..5_000 {
-        if device.read32(PCIESTS1) & 0x1f00_0000 == 1 << 24 {
-            break;
-        }
-        fstart_arch::x86::udelay(10);
-    }
-    device.or32(PHYCTL4, SQDIS);
-}
-
 /// The port state enumeration and init need from the enable phase.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PcieState {
     /// PLL_OFF_EN of port 1 shifts every port's L1 exit latency.
     pub pll_off: bool,
     pub enabled: [bool; 4],
+    /// Ports with a device present (`SLCTL_SLSTS.PDS`). Port 1 may stay
+    /// enabled without a device solely so function 0 remains visible for
+    /// populated ports 2-4; we must not burn a 50 ms link-wait timeout on it.
+    pub populated: [bool; 4],
 }
 
 /// Before enumeration: drop strapped-off and empty ports, hide disabled
@@ -115,37 +107,71 @@ pub fn enable(config: &PcieConfig) -> PcieState {
     }
     state.pll_off = first.read32(PHYCTL2_IOSFBCTL) & PLL_OFF_EN != 0;
     let strpfusecfg = first.read32(STRPFUSECFG);
+
+    let mut present = [false; 4];
     for n in 1..=4u8 {
+        let i = usize::from(n - 1);
         let device = port(n);
-        if !device.is_present() {
+        if device.is_present() {
+            present[i] = true;
+            state.populated[i] = slot_present(&device);
+        }
+    }
+
+    let any_other_populated = state.populated[1..].iter().any(|&p| p);
+    let mut quiesce_mask = 0u8;
+    for n in 1..=4u8 {
+        let i = usize::from(n - 1);
+        if !present[i] {
             continue;
         }
-        let mut enabled = config.ports[usize::from(n - 1)] && strapped(strpfusecfg, n);
-        if !slot_present(&device) {
+        let device = port(n);
+        let mut enabled = config.ports[i] && strapped(strpfusecfg, n);
+        if !state.populated[i] {
             fstart_log::debug!("baytrail: no PCIe device behind port {}", n);
             // Port 1 stays while another port has a device.
-            let others_empty = n != 1
-                || (2..=4).all(|other| {
-                    let other = port(other);
-                    !other.is_present() || !slot_present(&other)
-                });
-            if others_empty {
-                quiesce(&device);
+            if n != 1 || !any_other_populated {
+                device.or32(PCIEALC, 1 << 26);
+                quiesce_mask |= 1 << i;
                 enabled = false;
             }
         } else if !enabled {
             // Disabled port with a device: disable the link.
             device.or32(LCTL, LD);
         }
-        state.enabled[usize::from(n - 1)] = enabled;
+        state.enabled[i] = enabled;
     }
+
+    // Poll all empty ports being quiesced concurrently instead of burning up
+    // to 50 ms sequentially per port (coreboot `no_dev_behind_port`).
+    if quiesce_mask != 0 {
+        let mut pending = quiesce_mask;
+        for _ in 0..5_000 {
+            for n in 1..=4u8 {
+                let bit = 1u8 << (n - 1);
+                if pending & bit != 0 && port(n).read32(PCIESTS1) & 0x1f00_0000 == 1 << 24 {
+                    pending &= !bit;
+                }
+            }
+            if pending == 0 {
+                break;
+            }
+            fstart_arch::x86::udelay(10);
+        }
+        for n in 1..=4u8 {
+            if quiesce_mask & (1u8 << (n - 1)) != 0 {
+                port(n).or32(PHYCTL4, SQDIS);
+            }
+        }
+    }
+
     // Port 1 is function 0 of 1c: hiding it hides every other port.
     if !state.enabled[0] && state.enabled[1..].iter().any(|&enabled| enabled) {
         fstart_log::warn!("baytrail: keeping PCIe port 1 for the ports behind it");
         state.enabled[0] = true;
     }
     for n in 1..=4u8 {
-        if port(n).is_present() {
+        if present[usize::from(n - 1)] {
             super::set_enabled(Function::PciePort(n), state.enabled[usize::from(n - 1)]);
         }
     }
@@ -209,16 +235,29 @@ pub fn init(config: &PcieConfig, state: &PcieState) {
     }
 }
 
-/// Wait up to 50 ms for the link of each enabled port before scanning
-/// behind it.
+/// Wait up to 50 ms concurrently for the links of all enabled populated ports
+/// before scanning behind them.
 pub fn wait_for_links(state: &PcieState) {
-    for n in (1..=4u8).filter(|n| state.enabled[usize::from(n - 1)]) {
-        let device = port(n);
-        for _ in 0..5_000 {
-            if device.read32(LCTL) & 1 << 29 != 0 {
-                break;
-            }
-            fstart_arch::x86::udelay(10);
+    let mut pending = 0u8;
+    for n in 1..=4u8 {
+        let i = usize::from(n - 1);
+        if state.enabled[i] && state.populated[i] {
+            pending |= 1 << i;
         }
+    }
+    if pending == 0 {
+        return;
+    }
+    for _ in 0..5_000 {
+        for n in 1..=4u8 {
+            let bit = 1u8 << (n - 1);
+            if pending & bit != 0 && port(n).read32(LCTL) & (1 << 29) != 0 {
+                pending &= !bit;
+            }
+        }
+        if pending == 0 {
+            break;
+        }
+        fstart_arch::x86::udelay(10);
     }
 }
