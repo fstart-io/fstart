@@ -264,12 +264,12 @@ dependencies = [
 [[package]]
 name = "crabefi-bounds"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 
 [[package]]
 name = "crabefi-core"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.10.0",
@@ -305,7 +305,7 @@ dependencies = [
 [[package]]
 name = "crabefi-efi-types"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 dependencies = [
  "zerocopy",
 ]
@@ -313,7 +313,7 @@ dependencies = [
 [[package]]
 name = "crabefi-hw"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 dependencies = [
  "embedded-hal",
  "tock-registers",
@@ -322,7 +322,7 @@ dependencies = [
 [[package]]
 name = "crabefi-memmap"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 dependencies = [
  "crabefi-runtime-abi",
  "heapless",
@@ -333,7 +333,7 @@ dependencies = [
 [[package]]
 name = "crabefi-pkcs7"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 dependencies = [
  "sha2 0.11.0",
 ]
@@ -341,17 +341,17 @@ dependencies = [
 [[package]]
 name = "crabefi-runtime-abi"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 
 [[package]]
 name = "crabefi-runtime-bundle"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 
 [[package]]
 name = "crabefi-ui"
 version = "0.1.0"
-source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8#4e8e515c6dacd5f6e3527d1849f63337a3aeb1f8"
+source = "git+https://github.com/ArthurHeymans/CrabEFI.git?rev=d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62#d3339a5941dd94f1fdf5fd057b7c5b7e1e049a62"
 dependencies = [
  "heapless",
  "log",

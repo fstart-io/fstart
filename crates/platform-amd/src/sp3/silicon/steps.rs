@@ -131,6 +131,8 @@ pub struct Ctx {
     pub cppc: Vec<Cppc>,
     /// An SMM handler is installed and locked.
     pub smm_installed: bool,
+    /// SMM and PSP locks were already active on entry (CPU-only retaining reset).
+    pub retained_locks: bool,
     /// What the board attaches to its engines, with the bridge DXIO mapped
     /// each PCIe link to ([`fstart_driver_amd::dxio::ports::attached`]).
     pub ports: heapless::Vec<fstart_driver_amd::dxio::ports::AttachedPort, MAX_ENGINES>,
@@ -150,6 +152,16 @@ impl Ctx {
         tops: DramTops,
     ) -> Self {
         let generation = identity.silicon();
+        #[cfg(target_os = "none")]
+        let retained_locks = {
+            use fstart_arch::x86::cpu::amd::msr::{HWCR, Hwcr};
+            use fstart_arch::x86::cpu::msr::{MsrAccess, NativeMsr};
+            use tock_registers::interfaces::Readable;
+            // SAFETY: HWCR exists on every AMD64 CPU.
+            unsafe { NativeMsr::new() }.reg(HWCR).is_set(Hwcr::SMM_LOCK)
+        };
+        #[cfg(not(target_os = "none"))]
+        let retained_locks = false;
         Self {
             generation,
             identity,
@@ -182,6 +194,7 @@ impl Ctx {
             apic_ids: Vec::new(),
             cppc: Vec::new(),
             smm_installed: false,
+            retained_locks,
             ports: heapless::Vec::new(),
         }
     }
@@ -354,6 +367,12 @@ pub fn ready_to_boot(
     fch::tasks::late::hw_acpi(&ctx.fch, ctx.generation, &[]);
     fch_late()?;
     sp3_df::program::ready_to_boot(&ctx.df, &ctx.topology.nodes);
+    if ctx.retained_locks {
+        fstart_log::info!(
+            "sp3: SMM/PSP locks retained across CPU-only reset; skipping PSP LockDFReg/BootDone"
+        );
+        return Ok(());
+    }
     let mut psp = psp(ctx)?;
     boot::lock_df(&mut psp, &ctx.timer).step("PSP LockDFReg")?;
     // Milan's: a TPM answers in its locality-0 page (all-ones: none).

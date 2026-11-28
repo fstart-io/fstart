@@ -18,8 +18,10 @@ use runtime::{EMPTY_REGION, firmware_reservations, runtime_platform_config};
 pub type MemoryRegion = crabefi::MemoryRegion;
 pub type MemoryType = crabefi::MemoryType;
 pub type FramebufferConfig = crabefi::FramebufferConfig;
-pub use crabefi::peripheral;
-pub use crabefi::{PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, StorageBackend};
+pub use crabefi::{
+    PciEcamRegion, RuntimeImageSource, RuntimePlatformConfig, RuntimeResetConfig, StorageBackend,
+};
+pub use crabefi::{peripheral, reset_mechanism};
 
 /// fstart-owned UEFI payload configuration.
 ///
@@ -66,6 +68,10 @@ pub struct PlatformConfig<'a> {
     pub hooks: Option<&'a dyn crabefi::PlatformHooks>,
 }
 
+/// Recommended warm-reset-preserved RAM window size for CrabEFI's deferred
+/// runtime variable journal (matches CrabEFI's retained staging layout).
+pub const DEFERRED_BUFFER_SIZE: u64 = 128 * 1024;
+
 /// Common fstart-owned UEFI launch inputs.
 pub struct UefiLaunchConfig<'a> {
     /// Boot-lifetime ACPI shutdown controls supplied by the platform.
@@ -93,6 +99,14 @@ pub struct UefiLaunchConfig<'a> {
     /// Bounded flash region for CrabEFI's variable store. None keeps the
     /// variables volatile.
     pub variable_storage: Option<&'a mut dyn StorageBackend>,
+    /// Optional warm-reset-preserved reserved RAM window for CrabEFI's
+    /// deferred runtime variable journal. Honored only when
+    /// `variable_storage` is also provided; `None` keeps deferred writes
+    /// disabled.
+    pub deferred_buffer: Option<fstart_core::description::Range>,
+    /// Optional reset method callable after `ExitBootServices`; `None` uses
+    /// the architecture default. Distinct from the boot-time ACPI controls.
+    pub runtime_reset: Option<RuntimeResetConfig>,
     /// The options the firmware settings menu shows.
     pub settings: Option<settings::FirmwareSettings>,
 }
@@ -280,6 +294,8 @@ fn launch_with_adapters(
         fstart_log::max_level(),
     ));
     let mut variable_storage = launch.variable_storage;
+    let deferred_buffer =
+        runtime::deferred_buffer_config(variable_storage.is_some(), launch.deferred_buffer);
     let mut launch_settings = launch.settings;
     let has_settings = launch_settings.as_mut().is_some_and(settings::install);
     let platform_hooks = FstartHooks {
@@ -314,7 +330,7 @@ fn launch_with_adapters(
         // This constant follows the effective dependency features, including
         // full/basic unification. The loader checks ABI and exact capabilities.
         runtime_image: crabefi::BUNDLED_RUNTIME_IMAGE,
-        runtime: runtime_platform_config(),
+        runtime: runtime_platform_config(deferred_buffer, launch.runtime_reset),
         heap_pre_initialized: false,
         acpi_devices: launch.acpi_devices,
     })

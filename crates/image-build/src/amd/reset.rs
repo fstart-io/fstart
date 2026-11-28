@@ -147,7 +147,7 @@ impl Layout {
             little_endian: true,
             stored: vec![self.image],
             runtime: vec![self.image, self.early],
-            identity_mapping: true,
+            identity_mapping: false,
             entry: Some(end - 0x10),
             copy: None,
             descriptor: Some(Descriptor {

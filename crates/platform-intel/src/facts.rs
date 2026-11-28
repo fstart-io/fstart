@@ -96,8 +96,14 @@ impl PciSubsystemId {
 }
 
 /// The SPI flash console region (`fbuild --debug flash-console`, coreboot
-/// `CONSOLE_SPI_FLASH`), after the memory cache: whole 64-KiB erase blocks.
+/// `CONSOLE_SPI_FLASH`), after the memory cache and variable store: whole
+/// 64-KiB erase blocks.
 pub const FLASH_CONSOLE_SIZE: u32 = 0x40000;
+
+/// The persistent UEFI variable store region (`"varstore"`), placed after the
+/// optional memory cache at the beginning of the BIOS mapping: 256 KiB of
+/// 64-KiB-aligned flash.
+pub const VARSTORE_SIZE: u32 = 0x40000;
 
 /// Board-owned physical flash and attached-device assets, not build policy.
 #[derive(Debug, Clone, Copy)]
@@ -110,6 +116,10 @@ pub struct BoardFacts {
     /// Reserve two 64-KiB erase banks at the beginning of the BIOS mapping.
     /// Training payloads and flash writes are owned by the shared Intel flow.
     pub memory_cache: bool,
+    /// Reserve a 256-KiB mutable `"varstore"` region at the beginning of the
+    /// BIOS mapping (after any memory cache) and a 128-KiB warm-reset-preserved
+    /// deferred variable buffer for CrabEFI runtime variable persistence.
+    pub variable_storage: bool,
     /// Build every stage for 32-bit protected mode instead of long mode, for
     /// CPUs without AMD64 (Core Duo and older). No paging, no UEFI payload.
     pub protected_mode: bool,
@@ -138,6 +148,7 @@ impl BoardFacts {
             flash_size,
             data_assets: &[],
             memory_cache: false,
+            variable_storage: false,
             protected_mode: false,
         }
     }
@@ -148,12 +159,38 @@ impl BoardFacts {
         self
     }
 
-    /// Bytes of mutable flash (memory cache, then the flash console when the
-    /// build selects it) before the read-only image at the beginning of the
-    /// BIOS mapping.
+    /// Opt in to a persistent UEFI variable store (`"varstore"`) and deferred
+    /// runtime variable buffer for CrabEFI.
+    #[must_use]
+    pub const fn with_variable_storage(mut self) -> Self {
+        self.variable_storage = true;
+        self
+    }
+
+    /// Offset of the `"varstore"` mutable flash region relative to the start
+    /// of the BIOS mapping, if enabled.
+    pub const fn varstore_offset(&self) -> Option<u32> {
+        if self.variable_storage {
+            Some(if self.memory_cache {
+                crate::memory_cache::EXTENT_SIZE
+            } else {
+                0
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Bytes of mutable flash (memory cache, variable store, then the flash
+    /// console when the build selects it) before the read-only image at the
+    /// beginning of the BIOS mapping.
     pub const fn mutable_prefix(&self, flash_console: bool) -> u32 {
         (if self.memory_cache {
             crate::memory_cache::EXTENT_SIZE
+        } else {
+            0
+        }) + (if self.variable_storage {
+            VARSTORE_SIZE
         } else {
             0
         }) + if flash_console { FLASH_CONSOLE_SIZE } else { 0 }

@@ -29,7 +29,12 @@ pub fn host<S: HostSoc>(max_cpus: u16) -> Host {
             apob_destination: S::APOB.base,
             source: S::SOURCE,
         }),
-        option_store: None,
+        option_store: S::NVRAM.map(
+            |region| fstart_image_build::options::OptionStore::Varstore {
+                offset: (region.base - S::LAYOUT.flash.base) as u32,
+                size: region.size as u32,
+            },
+        ),
     }
 }
 

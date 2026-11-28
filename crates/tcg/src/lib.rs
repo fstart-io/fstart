@@ -420,14 +420,31 @@ impl State {
                 });
                 auth.zeroize();
                 // Without a random authorization the hierarchy goes off.
-                result.or_else(|_| {
-                    tpm20::hierarchy_control(
-                        self.tpm,
-                        tpm20::hierarchy::PLATFORM,
-                        tpm20::hierarchy::PLATFORM,
-                        false,
-                    )
-                })
+                result
+                    .or_else(|_| {
+                        tpm20::hierarchy_control(
+                            self.tpm,
+                            tpm20::hierarchy::PLATFORM,
+                            tpm20::hierarchy::PLATFORM,
+                            false,
+                        )
+                    })
+                    .or_else(|error| {
+                        // Across a CPU-only retaining reset the discrete TPM is
+                        // not reset, so the platform hierarchy is already locked
+                        // (either its auth was randomized or phEnable is clear).
+                        let already_locked = matches!(
+                            error,
+                            TpmError::Code(code)
+                                if matches!(code & 0xbf, 0x85 | 0x8e | 0xa2)
+                        );
+                        if already_locked {
+                            fstart_log::info!("tcg: TPM 2.0 platform hierarchy already locked");
+                            Ok(())
+                        } else {
+                            Err(error)
+                        }
+                    })
             }
             Family::Tpm12 => {
                 tpm12::physical_presence(self.tpm, tpm12::pp::NOTPRESENT | tpm12::pp::LOCK).or_else(

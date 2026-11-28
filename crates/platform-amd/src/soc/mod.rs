@@ -202,6 +202,11 @@ pub trait Init: Sized + 'static {
     /// Release `aps` APs into the reset vector, which the flow routed to
     /// the MP engine. The error is for the MP engine's log.
     fn release_aps(ctx: &Ctx<'_, Self>, chipset: &Self::Chipset, aps: u16) -> Result<(), u32>;
+    /// Whether APs are already out of cold reset (e.g. after a CPU-only
+    /// retaining reset) and should be woken with LAPIC INIT-SIPI-SIPI.
+    fn use_sipi_ap_launch(_ctx: &Ctx<'_, Self>, _chipset: &Self::Chipset) -> bool {
+        false
+    }
     /// Threads whose CCX init or microcode load failed.
     fn cpu_errors(cpu: &Self::Cpu) -> u32;
     /// Every thread ran its CCX init; `apic_ids` are theirs, the BSP's

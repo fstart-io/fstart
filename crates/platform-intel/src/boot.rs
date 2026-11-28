@@ -171,10 +171,46 @@ pub(crate) fn running_reservations(
     Ok(windows)
 }
 
+/// Size of the warm-reset-preserved CrabEFI deferred variable buffer (128 KiB),
+/// placed immediately after the [`RegionKind::FirmwareStore`] window so it is
+/// disjoint from postcar, ramstage, the recreated store, and early memtest.
+#[cfg(feature = "ramstage")]
+pub(crate) const DEFERRED_BUFFER_SIZE: u64 = 0x2_0000;
+
+/// Compute the physical DRAM window for CrabEFI's deferred variable journal
+/// right after the firmware store window.
+#[cfg(feature = "ramstage")]
+pub(crate) fn deferred_buffer_region(
+    geometry: IntelBootLayout<'static>,
+) -> Result<fstart_core::layout::Region, ServiceError> {
+    let store = geometry.region(RegionKind::FirmwareStore)?;
+    let base = store.end().ok_or(ServiceError::InvalidParam)?;
+    let end = base
+        .checked_add(DEFERRED_BUFFER_SIZE)
+        .ok_or(ServiceError::InvalidParam)?;
+    if !base.is_multiple_of(0x1000) {
+        return Err(ServiceError::InvalidParam);
+    }
+    for owned in geometry.firmware_owned_regions()? {
+        let owned_end = owned.end().ok_or(ServiceError::InvalidParam)?;
+        if base < owned_end && end > owned.base {
+            return Err(ServiceError::InvalidParam);
+        }
+    }
+    Ok(fstart_core::layout::Region {
+        kind: RegionKind::Reserved,
+        base,
+        size: DEFERRED_BUFFER_SIZE,
+    })
+}
+
 /// Exclude everything the firmware rewrites across an S3 resume from the map
 /// handed to the OS: the bootstrap windows, the boot-media arena, the store
 /// window and the low conventional-memory scratch the resume path uses. A
 /// normal boot later returns the unused part of the store window.
+///
+/// When `reserve_deferred` is true, also reserves the 128-KiB deferred
+/// variable buffer right after the store window if it lies inside detected RAM.
 ///
 /// Without this, Linux is free to allocate over the very bytes that postcar
 /// and the ramstage are reloaded into on wake.
@@ -182,10 +218,29 @@ pub(crate) fn running_reservations(
 pub(crate) fn reserve_firmware_memory(
     e820: &mut fstart_core::services::memory_detect::E820State,
     geometry: IntelBootLayout<'static>,
+    reserve_deferred: bool,
 ) -> Result<(), ServiceError> {
     use fstart_core::services::memory_detect::E820Kind;
     for region in geometry.firmware_owned_regions()? {
         e820.reserve_range_as(region.base, region.size, E820Kind::Reserved)?;
+    }
+    if reserve_deferred {
+        let deferred = deferred_buffer_region(geometry)?;
+        let end = deferred.end().ok_or(ServiceError::InvalidParam)?;
+        let in_ram = e820.entries().iter().any(|entry| {
+            entry.kind == E820Kind::Ram as u32
+                && entry.addr <= deferred.base
+                && entry.addr.saturating_add(entry.size) >= end
+        });
+        if in_ram {
+            e820.reserve_range_as(deferred.base, deferred.size, E820Kind::Reserved)?;
+        } else {
+            fstart_log::warn!(
+                "varstore: deferred buffer {:#x}..{:#x} outside detected RAM",
+                deferred.base,
+                end
+            );
+        }
     }
     // Postcar handoff stash, S3 wake trampoline and SIPI page.
     e820.reserve_range_as(

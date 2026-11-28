@@ -34,25 +34,29 @@ pub fn start(
     errors: impl Fn() -> u32,
     threads: u16,
     max_cpus: u16,
+    use_sipi: bool,
     mut release: impl FnMut(u16) -> Result<(), u32>,
 ) -> Result<Cpus, &'static str> {
     let drivers: [&dyn CpuDriver; 1] = [cpu];
-    let route = ApRoute::to(mp::AP_BOOTSTRAP_ADDRESS).map_err(|_| "AP route")?;
-    let mut launch = |aps: u16| {
-        // The APs leave the reset entry for the SIPI trampoline the MP
-        // engine installed before calling this.
-        route_aps(route);
-        release(aps)
+    let config = MpConfig {
+        cpu_drivers: &drivers,
+        num_cpus: threads,
+        max_cpus,
     };
-    let mp = mp::mp_init_with_launcher(
-        &MpConfig {
-            cpu_drivers: &drivers,
-            num_cpus: threads,
-            max_cpus,
-        },
-        &mut launch,
-    );
-    route_aps(ApRoute::PARK);
+    let mp = if use_sipi {
+        mp::mp_init(&config)
+    } else {
+        let route = ApRoute::to(mp::AP_BOOTSTRAP_ADDRESS).map_err(|_| "AP route")?;
+        let mut launch = |aps: u16| {
+            // The APs leave the reset entry for the SIPI trampoline the MP
+            // engine installed before calling this.
+            route_aps(route);
+            release(aps)
+        };
+        let mp = mp::mp_init_with_launcher(&config, &mut launch);
+        route_aps(ApRoute::PARK);
+        mp
+    };
     let errors = errors();
     let mp = match mp {
         Ok(mp) => {

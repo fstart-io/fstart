@@ -58,7 +58,8 @@ impl fstart_platform_intel::facts::IntelBoardFacts for crate::Board {
     const FACTS: fstart_platform_intel::facts::BoardFacts =
         fstart_platform_intel::facts::BoardFacts::new(FlashLayout::IntelIfd(FLASH), 0x800000)
             .with_data_assets(&[VBT])
-            .with_memory_cache();
+            .with_memory_cache()
+            .with_variable_storage();
 }
 
 /// EC SCI is GPIO1 (GPE 0x11); the EC wake GPI is GPIO13.

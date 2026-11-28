@@ -444,6 +444,33 @@ pub(crate) fn install_smm<F>(
         config,
         sources: super::smm::sources,
     };
+    {
+        use fstart_arch::x86::cpu::amd::msr::{HWCR, Hwcr, SMM_ADDR};
+        use fstart_arch::x86::cpu::msr::MsrAccess;
+        use tock_registers::interfaces::Readable;
+        // SAFETY: HWCR and SMM_ADDR exist on every AMD64 CPU.
+        let cpu = unsafe { NativeMsr::new() };
+        if cpu.reg(HWCR).is_set(Hwcr::SMM_LOCK) {
+            let locked_base = cpu.reg(SMM_ADDR).get();
+            if locked_base != flow.tseg.base {
+                fstart_log::error!(
+                    "sp3: SMM already locked at {:#x}, expected {:#x}",
+                    locked_base,
+                    flow.tseg.base
+                );
+                return Err("SMM base mismatch");
+            }
+            fstart_log::info!(
+                "sp3: SMM already locked at {:#x} across CPU-only reset; keeping retained handler",
+                locked_base
+            );
+            super::smm::sources(&soc.fch, &config);
+            state.smm = Some(config);
+            state.soc.smm_installed = true;
+            state.soc.retained_locks = true;
+            return Ok(());
+        }
+    }
     crate::tseg::install("sp3", mp, &smi, flow.tseg.base, flow.tseg.size as u32)?;
     fstart_driver_amd::fch::smi::route_psp(soc.fch.acpi());
     fstart_driver_amd::fch::smi::software_smi(soc.fch.io(), crate::smm::sw::PSP_SMM_INFO);
@@ -510,6 +537,20 @@ pub(crate) fn launch<F>(
         handoff.variable_storage = storage
             .as_mut()
             .map(|s| s as &mut dyn fstart_payload::crabefi::StorageBackend);
+        if handoff.variable_storage.is_some() {
+            handoff.deferred_buffer = Some(fstart_payload::Range::new(
+                layout::DEFERRED_BUFFER.base,
+                layout::DEFERRED_BUFFER.size,
+            ));
+            if Generation::of(state.soc.generation) == Generation::Rome {
+                use fstart_payload::crabefi::{RuntimeResetConfig, reset_mechanism};
+                handoff.runtime_reset = Some(RuntimeResetConfig {
+                    mechanism: reset_mechanism::X86_CF9_INIT,
+                    reserved: 0,
+                    io_or_mmio_base: 0xcf9,
+                });
+            }
+        }
     }
     fstart_payload::boot(handoff, ())
 }

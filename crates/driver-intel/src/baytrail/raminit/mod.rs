@@ -241,9 +241,7 @@ pub fn sdram_initialize<P: ConfigRegionAccess>(
     }
     fstart_log::info!("baytrail: memory test passed");
 
-    let mut memory_info = MemoryInfo::new(8192);
-    let device = ddr3::memory_device(&p.dimm, spd, 0, 0, p.freq.mts());
-    memory_info.push(device);
+    let memory_info = memory_info(&p, spd);
     let cache = TrainingCache::capture(spd, &p, stolen, &map);
     Ok(Trained {
         map,
@@ -251,6 +249,12 @@ pub fn sdram_initialize<P: ConfigRegionAccess>(
         memory_info,
         cache,
     })
+}
+
+pub(super) fn memory_info(p: &Params, spd: &[u8]) -> MemoryInfo {
+    let mut info = MemoryInfo::new(8192);
+    info.push(ddr3::memory_device(&p.dimm, spd, 0, 0, p.freq.mts()));
+    info
 }
 
 /// Replay a cached cold-boot training record and exit DDR3 self-refresh
@@ -279,9 +283,7 @@ pub fn sdram_resume<P: ConfigRegionAccess>(
     pmc::regs().gen_pmcon1.modify(pmc::GEN_PMCON1::DISB::CLEAR);
     mc::lock(iosf);
 
-    let mut memory_info = MemoryInfo::new(8192);
-    let device = ddr3::memory_device(&p.dimm, spd, 0, 0, p.freq.mts());
-    memory_info.push(device);
+    let memory_info = memory_info(&p, spd);
     Ok(Trained {
         map,
         freq: p.freq,
