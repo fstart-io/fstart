@@ -76,7 +76,7 @@ dependencies = [
 [[package]]
 name = "aspeed-hal"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=9cae061f9b44c4c8e557deaca7dd00a6b33a8c56#9cae061f9b44c4c8e557deaca7dd00a6b33a8c56"
+source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=a2310692a6dd8cfeace911991a3a097a35ba92d5#a2310692a6dd8cfeace911991a3a097a35ba92d5"
 dependencies = [
  "aspeed-mmio",
  "aspeed-pac",
@@ -85,12 +85,12 @@ dependencies = [
 [[package]]
 name = "aspeed-mmio"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=9cae061f9b44c4c8e557deaca7dd00a6b33a8c56#9cae061f9b44c4c8e557deaca7dd00a6b33a8c56"
+source = "git+https://github.com/kyanitecomputer/aspeed-rs?rev=a2310692a6dd8cfeace911991a3a097a35ba92d5#a2310692a6dd8cfeace911991a3a097a35ba92d5"
 
 [[package]]
 name = "aspeed-pac"
 version = "0.1.0"
-source = "git+https://github.com/kyanitecomputer/aspeed-data?rev=d4e6530b98e0bfa926f9b709f3a4d6612d5f75fe#d4e6530b98e0bfa926f9b709f3a4d6612d5f75fe"
+source = "git+https://github.com/kyanitecomputer/aspeed-data?rev=7ecc50d0fb5f346adb4a7c086b655dda7938f1a5#7ecc50d0fb5f346adb4a7c086b655dda7938f1a5"
 
 [[package]]
 name = "atomic_refcell"
@@ -1205,6 +1205,16 @@ dependencies = [
  "fstart-driver-uart",
  "fstart-log",
  "fstart-platform-sunxi",
+]
+
+[[package]]
+name = "fstart-board-ocp-leopard-bmc"
+version = "0.1.0"
+dependencies = [
+ "fstart-core",
+ "fstart-driver-uart",
+ "fstart-log",
+ "fstart-platform-aspeed",
 ]
 
 [[package]]

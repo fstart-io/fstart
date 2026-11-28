@@ -9,6 +9,8 @@
 #[cfg(feature = "stage")]
 extern crate ufmt;
 
+#[cfg(all(feature = "stage", feature = "ast2400", target_arch = "arm"))]
+pub mod ast2400;
 #[cfg(all(feature = "stage", feature = "ast2500", target_arch = "arm"))]
 pub mod ast2500;
 pub mod facts;
@@ -16,7 +18,11 @@ pub mod head;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod layout;
-#[cfg(all(feature = "stage", feature = "ast2500", target_arch = "arm"))]
+#[cfg(all(
+    feature = "stage",
+    any(feature = "ast2400", feature = "ast2500"),
+    target_arch = "arm"
+))]
 mod stage;
 
 #[cfg(feature = "stage")]
